@@ -1,0 +1,8 @@
+{
+  "name": "skills",
+  "version": "0.1.0",
+  "description": "自定义 skill 集合",
+  "skills": [
+    "trending"
+  ]
+}
