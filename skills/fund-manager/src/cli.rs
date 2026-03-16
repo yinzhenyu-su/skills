@@ -115,4 +115,12 @@ pub enum FundCommands {
     },
     /// List all tracked funds
     List,
+    /// Sync fund metadata from remote
+    Sync {
+        /// Force sync even if not expired
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        /// Specific fund to sync (syncs all if omitted)
+        fund: Option<String>,
+    },
 }

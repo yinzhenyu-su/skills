@@ -120,7 +120,8 @@ fn test_buy_auto_calculation() {
     {
         let db_path = temp_app_dir.join("fund.db");
         let conn = rusqlite::Connection::open(db_path).unwrap();
-        conn.execute("INSERT INTO fund (code, name, current_fee_rate) VALUES ('000300', '沪深300', '0.0015')", []).unwrap();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute("INSERT INTO fund (code, name, management_fee, last_sync_at) VALUES ('000300', '沪深300', '0.0015', ?1)", [&now]).unwrap();
         conn.execute("INSERT INTO nav_history (fund_code, date, nav) VALUES ('000300', '2026-03-09', '1.25')", []).unwrap();
     }
     
@@ -156,7 +157,8 @@ fn test_status_valuation_and_pl() {
     {
         let db_path = temp_app_dir.join("fund.db");
         let conn = rusqlite::Connection::open(db_path).unwrap();
-        conn.execute("INSERT INTO fund (code, name, current_fee_rate) VALUES ('000300', '沪深300', '0.00')", []).unwrap();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute("INSERT INTO fund (code, name, management_fee, last_sync_at) VALUES ('000300', '沪深300', '0.00', ?1)", [&now]).unwrap();
         // Day 1: Buy 1000 shares at 1.00 (Cost = 1000)
         conn.execute("INSERT INTO nav_history (fund_code, date, nav) VALUES ('000300', '2026-03-08', '1.00')", []).unwrap();
         conn.execute("INSERT INTO transaction_log (wallet_id, fund_code, type, money, shares, nav, fee, date) 
@@ -305,12 +307,20 @@ fn test_wallet_override_and_auto_discovery() {
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet").arg("use").arg("WalletA").assert().success();
 
+    // Mock db to bypass Nginx forbidden on API during tests
+    {
+        let db_path = temp_app_dir.join("fund.db");
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute("INSERT INTO fund (code, name, management_fee, last_sync_at) VALUES ('160119', '南方500', '0.00', ?1)", [&now]).unwrap();
+        conn.execute("INSERT INTO nav_history (fund_code, date, nav) VALUES ('160119', '2026-03-09', '1.00')", []).unwrap();
+    }
+
     // 2. Buy fund 160119 for WalletB
     Command::cargo_bin("fund-manager").unwrap()
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("buy").arg("160119").arg("--money").arg("1000").arg("--auto").arg("--wallet").arg("WalletB")
         .assert().success()
-        .stdout(predicate::str::contains("Successfully created new fund"))
         .stdout(predicate::str::contains("Bought 160119"));
 
     // 3. Verify WalletA is empty

@@ -11,10 +11,7 @@ pub struct EastmoneyHtmlProvider;
 impl Provider for EastmoneyHtmlProvider {
     async fn fetch(&self, code: &str) -> Result<FundData, String> {
         let url = format!("https://fund.eastmoney.com/{}.html", code);
-        let client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = crate::provider::build_http_client()?;
 
         let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
         let body = resp.text().await.map_err(|e| e.to_string())?;
@@ -23,11 +20,8 @@ impl Provider for EastmoneyHtmlProvider {
         
         Ok(FundData {
             code: code.to_string(),
-            name: None,
-            nav: None,
-            acc_nav: None,
             fee_rate: fee,
-            date: None,
+            ..Default::default()
         })
     }
 }

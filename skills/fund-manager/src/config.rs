@@ -2,6 +2,12 @@ use std::path::PathBuf;
 use std::env;
 use dirs;
 
+pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+pub fn get_user_agent() -> String {
+    env::var("FUND_MANAGER_UA").unwrap_or_else(|_| DEFAULT_USER_AGENT.to_string())
+}
+
 pub fn get_app_dir() -> PathBuf {
     if let Ok(path) = env::var("FUND_MANAGER_APP_DIR") {
         return PathBuf::from(path);

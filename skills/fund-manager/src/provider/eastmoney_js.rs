@@ -22,10 +22,7 @@ struct JsFundResponse {
 impl Provider for EastmoneyJsProvider {
     async fn fetch(&self, code: &str) -> Result<FundData, String> {
         let url = format!("https://fundgz.1234567.com.cn/js/{}.js", code);
-        let client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = crate::provider::build_http_client()?;
         
         let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
         let body = resp.text().await.map_err(|e| e.to_string())?;
@@ -43,9 +40,8 @@ pub fn parse_js_response(body: &str) -> Result<FundData, String> {
         code: resp.fundcode,
         name: Some(resp.name),
         nav: Some(Decimal::from_str(&resp.dwjz).map_err(|e| e.to_string())?),
-        acc_nav: None,
-        fee_rate: None,
         date: Some(resp.jzrq),
+        ..Default::default()
     })
 }
 

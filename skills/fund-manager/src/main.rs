@@ -3,6 +3,7 @@ mod db;
 mod cli;
 mod finance;
 mod provider;
+mod resolver;
 
 #[cfg(test)]
 mod db_tests;
@@ -20,6 +21,12 @@ use provider::aggregator::Aggregator;
 use provider::eastmoney_js::EastmoneyJsProvider;
 use provider::eastmoney_html::EastmoneyHtmlProvider;
 
+use chrono::Local;
+
+fn get_today() -> String {
+    Local::now().format("%Y-%m-%d").to_string()
+}
+
 async fn sync_funds(conn: &Connection) -> Result<(), String> {
     if env::var("FORCE_SYNC_FAILURE").is_ok() {
         return Err("Network unreachable".to_string());
@@ -28,6 +35,7 @@ async fn sync_funds(conn: &Connection) -> Result<(), String> {
     let mut aggregator = Aggregator::new();
     aggregator.add_provider(Box::new(EastmoneyJsProvider));
     aggregator.add_provider(Box::new(EastmoneyHtmlProvider));
+    aggregator.add_provider(Box::new(provider::eastmoney_lsjz::EastmoneyLsjzProvider));
 
     let mut stmt = conn.prepare("SELECT code FROM fund").map_err(|e| e.to_string())?;
     let codes: Vec<String> = stmt.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?
@@ -36,11 +44,54 @@ async fn sync_funds(conn: &Connection) -> Result<(), String> {
     for code in codes {
         if let Ok(data) = aggregator.fetch_all(&code).await {
             if let Some(nav) = data.nav {
-                let date = data.date.unwrap_or_else(|| "2026-03-09".to_string());
+                let date = data.date.unwrap_or_else(get_today);
                 db::insert_nav_history_idempotent(conn, &code, &date, &nav.to_string()).map_err(|e| e.to_string())?;
             }
             if let Some(fee) = data.fee_rate {
-                conn.execute("UPDATE fund SET current_fee_rate = ?1 WHERE code = ?2", [fee.to_string(), code]).map_err(|e| e.to_string())?;
+                conn.execute("UPDATE fund SET management_fee = ?1 WHERE code = ?2", [fee.to_string(), code]).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    // Auto-settle pending transactions
+    settle_pending_transactions(conn).await?;
+
+    Ok(())
+}
+
+async fn settle_pending_transactions(conn: &Connection) -> Result<(), String> {
+    let pending = db::get_pending_transactions(conn).map_err(|e| e.to_string())?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    println!("Checking {} pending transactions for settlement...", pending.len());
+
+    let mut aggregator = Aggregator::new();
+    aggregator.add_provider(Box::new(provider::eastmoney_lsjz::EastmoneyLsjzProvider));
+
+    for p in pending {
+        match aggregator.fetch_at_date(&p.fund_code, Some(&p.date)).await {
+            Ok(data) => {
+                if let Some(nav) = data.nav {
+                    let money = Decimal::from_str(&p.money).map_err(|e| e.to_string())?;
+                    
+                    // We need fee_rate to calculate shares correctly. 
+                    // Let's get it from the fund table.
+                    let fund_obj = db::get_fund_by_code_or_name(conn, &p.fund_code).map_err(|e| e.to_string())?
+                        .ok_or_else(|| format!("Fund {} not found in DB", p.fund_code))?;
+                    
+                    let fee_rate = fund_obj.management_fee.as_deref().unwrap_or("0.0015");
+                    let fee_rate_dec = Decimal::from_str(fee_rate.trim_end_matches('%')).unwrap_or(dec!(0.0015));
+                    
+                    let res = finance::calculate_purchase(money, nav, fee_rate_dec);
+                    
+                    db::settle_transaction(conn, p.id, &res.shares.to_string(), &nav.to_string()).map_err(|e| e.to_string())?;
+                    println!("✅ Settled transaction for {} on {}: {} shares at NAV {}", p.fund_code, p.date, res.shares, nav);
+                }
+            }
+            Err(_) => {
+                // Not found yet, skip
             }
         }
     }
@@ -75,44 +126,6 @@ fn confirm_action(prompt: &str, force_yes: bool) -> bool {
     io::stdin().read_line(&mut input).expect("Failed to read input");
     
     input.trim().to_lowercase() == "y"
-}
-
-fn is_fund_code(input: &str) -> bool {
-    input.len() == 6 && input.chars().all(|c| c.is_ascii_digit())
-}
-
-async fn find_or_create_fund(conn: &Connection, fund_input: &str) -> db::Fund {
-    if let Some(f) = db::get_fund_by_code_or_name(conn, fund_input).expect("DB error") {
-        return f;
-    }
-
-    if is_fund_code(fund_input) {
-        println!("✨ Fund '{}' not found locally. Attempting to fetch from Eastmoney...", fund_input);
-        let mut aggregator = Aggregator::new();
-        aggregator.add_provider(Box::new(EastmoneyJsProvider));
-        aggregator.add_provider(Box::new(EastmoneyHtmlProvider));
-
-        match aggregator.fetch_all(fund_input).await {
-            Ok(data) => {
-                let name = data.name.unwrap_or_else(|| "Unknown Fund".to_string());
-                let fee_rate = data.fee_rate.map(|f| f.to_string()).unwrap_or_else(|| "0.00".to_string());
-                db::add_fund(conn, &data.code, &name, &fee_rate).expect("Failed to add fund");
-                if let Some(nav) = data.nav {
-                    let date = data.date.unwrap_or_else(|| "2026-03-09".to_string());
-                    db::insert_nav_history_idempotent(conn, &data.code, &date, &nav.to_string()).expect("DB error");
-                }
-                println!("Successfully created new fund: {} ({})", name, data.code);
-                db::get_fund_by_code_or_name(conn, &data.code).expect("DB error").unwrap()
-            }
-            Err(e) => {
-                eprintln!("Error: Could not fetch fund info for '{}': {}", fund_input, e);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        eprintln!("Error: Fund '{}' not found and is not a valid 6-digit code.", fund_input);
-        std::process::exit(1);
-    }
 }
 
 #[tokio::main]
@@ -199,7 +212,9 @@ async fn main() {
         },
         Commands::Fund { command } => match command {
             cli::FundCommands::Add { code, name, fee } => {
-                db::add_fund(&conn, &code, &name, &fee).expect("Failed to add fund");
+                db::add_fund(
+                    &conn, &code, &name, None, None, None, None, None, Some(&fee), None, None, None
+                ).expect("Failed to add fund");
                 println!("Successfully added fund: {} ({})", name, code);
             }
             cli::FundCommands::Delete { fund } => {
@@ -220,16 +235,45 @@ async fn main() {
             cli::FundCommands::List => {
                 let funds = db::get_all_funds(&conn).expect("DB error");
                 let mut table = Table::new();
-                table.set_header(vec!["Code", "Name", "Fee Rate", "Last Sync"]);
+                table.set_header(vec!["Code", "Name", "Type", "Risk", "Manager", "Last Sync"]);
                 for f in funds {
                     table.add_row(vec![
                         f.code,
                         f.name,
-                        f.current_fee_rate.unwrap_or_else(|| "N/A".to_string()),
+                        f.fund_type.unwrap_or_else(|| "N/A".to_string()),
+                        f.risk_level.unwrap_or_else(|| "-".to_string()),
+                        f.manager.unwrap_or_else(|| "-".to_string()),
                         f.last_sync_at.unwrap_or_else(|| "Never".to_string()),
                     ]);
                 }
                 println!("{table}");
+            }
+            cli::FundCommands::Sync { force, fund } => {
+                let funds_to_sync = if let Some(identifier) = fund {
+                    let f = db::get_fund_by_code_or_name(&conn, &identifier).expect("DB error")
+                        .unwrap_or_else(|| {
+                            eprintln!("Error: Fund '{}' not found.", identifier);
+                            std::process::exit(1);
+                        });
+                    vec![f]
+                } else {
+                    db::get_all_funds(&conn).expect("DB error")
+                };
+
+                for f in funds_to_sync {
+                    if force {
+                        println!("🔄 Force syncing {} ({})...", f.name, f.code);
+                        match resolver::sync_fund_details(&conn, &f.code).await {
+                            Ok(_) => println!("✅ Done."),
+                            Err(e) => eprintln!("❌ Error syncing {}: {}", f.code, e),
+                        }
+                    } else {
+                         match resolver::resolve_fund(&conn, &f.code).await {
+                            Ok(_) => println!("✅ Checked/Synced {}.", f.code),
+                            Err(e) => eprintln!("❌ Error: {}", e),
+                        }
+                    }
+                }
             }
         },
         Commands::Status { fund: _ } => {
@@ -272,49 +316,70 @@ async fn main() {
         }
         Commands::Buy { fund, money, auto, shares, nav, wallet } => {
             let wallet_id = resolve_wallet_id(&conn, wallet);
-            let fund_obj = find_or_create_fund(&conn, &fund).await;
+            let fund_obj = resolver::resolve_fund(&conn, &fund).await.unwrap_or_else(|e| {
+                eprintln!("Error resolving fund: {}", e);
+                std::process::exit(1);
+            });
 
-            let (final_shares, final_nav, final_fee) = if auto {
-                let latest_nav_str = db::get_latest_nav(&conn, &fund_obj.code).expect("DB error")
-                    .expect("No NAV data found for this fund. Cannot use --auto.");
-                let latest_nav = Decimal::from_str(&latest_nav_str).expect("Invalid NAV in DB");
-                let fee_rate = fund_obj.current_fee_rate.as_deref().unwrap_or("0.00");
-                let fee_rate_dec = Decimal::from_str(fee_rate).unwrap_or_default();
+            let today = get_today();
+
+            if auto {
+                let latest_nav_data = db::get_latest_nav_with_date(&conn, &fund_obj.code).expect("DB error");
                 
-                let res = finance::calculate_purchase(money, latest_nav, fee_rate_dec);
-                (res.shares, latest_nav, res.fee)
+                let is_today_nav = latest_nav_data.as_ref().map(|(_, d)| d == &today).unwrap_or(false);
+
+                if is_today_nav {
+                    // Today's NAV is available, settle now
+                    let (latest_nav_str, _) = latest_nav_data.unwrap();
+                    let latest_nav = Decimal::from_str(&latest_nav_str).expect("Invalid NAV in DB");
+                    let fee_rate = fund_obj.management_fee.as_deref().unwrap_or("0.0015");
+                    let fee_rate_dec = Decimal::from_str(fee_rate.trim_end_matches('%')).unwrap_or(dec!(0.0015));
+                    
+                    let res = finance::calculate_purchase(money, latest_nav, fee_rate_dec);
+                    db::add_transaction(
+                        &conn, wallet_id, &fund_obj.code, "buy", 
+                        &money.to_string(), Some(&res.shares.to_string()), Some(&latest_nav.to_string()), 
+                        &res.fee.to_string(), &today, "settled"
+                    ).expect("Failed to record transaction");
+
+                    println!("Bought {}: {} shares (NAV: {}, Fee: {})", fund_obj.code, res.shares, latest_nav, res.fee);
+                } else {
+                    // Today's NAV is NOT available yet, create pending transaction
+                    let fee_rate = fund_obj.management_fee.as_deref().unwrap_or("0.0015");
+                    let fee_rate_dec = Decimal::from_str(fee_rate.trim_end_matches('%')).unwrap_or(dec!(0.0015));
+                    let fee = (money * fee_rate_dec / (dec!(1) + fee_rate_dec)).round_dp(2);
+
+                    db::add_transaction(
+                        &conn, wallet_id, &fund_obj.code, "buy", 
+                        &money.to_string(), None, None, 
+                        &fee.to_string(), &today, "pending"
+                    ).expect("Failed to record transaction");
+
+                    println!("Today's NAV not yet available for {}. Created a pending transaction.", fund_obj.code);
+                    println!("It will be automatically settled when you run 'fund sync' after the official NAV is published.");
+                }
             } else {
                 let s = shares.expect("Must provide --shares if not using --auto");
                 let n = nav.expect("Must provide --nav if not using --auto");
-                (s, n, Decimal::ZERO)
-            };
+                // For manual buy, we assume it's settled today or on the specified date (if we had a date arg)
+                db::add_transaction(
+                    &conn, wallet_id, &fund_obj.code, "buy", 
+                    &money.to_string(), Some(&s.to_string()), Some(&n.to_string()), 
+                    "0", &today, "settled"
+                ).expect("Failed to record transaction");
 
-            let today = "2026-03-09"; // Dummy date for now
-            db::add_transaction(
-                &conn, 
-                wallet_id, 
-                &fund_obj.code, 
-                "buy", 
-                &money.to_string(), 
-                &final_shares.to_string(), 
-                &final_nav.to_string(), 
-                &final_fee.to_string(), 
-                today
-            ).expect("Failed to record transaction");
-
-            println!("Bought {}: {} shares (NAV: {}, Fee: {})", fund_obj.code, final_shares, final_nav, final_fee);
+                println!("Bought {}: {} shares (NAV: {})", fund_obj.code, s, n);
+            }
         }
         Commands::Sell { fund, money, auto, shares, nav, fee, wallet } => {
             let wallet_id = resolve_wallet_id(&conn, wallet);
-            
-            let fund_obj = db::get_fund_by_code_or_name(&conn, &fund).expect("DB error")
-                .unwrap_or_else(|| {
-                    eprintln!("Error: Fund '{}' not found in database. You cannot sell a fund you've never owned or tracked.", fund);
-                    std::process::exit(1);
-                });
+
+            let fund_obj = resolver::resolve_fund(&conn, &fund).await.unwrap_or_else(|e| {
+                eprintln!("Error resolving fund: {}", e);
+                std::process::exit(1);
+            });
 
             let current_shares = db::get_fund_shares(&conn, wallet_id, &fund_obj.code).expect("DB error");
-
             // 1. Resolve NAV
             let final_nav = if let Some(n_str) = nav {
                 Decimal::from_str(&n_str).expect("Invalid --nav")
@@ -331,8 +396,6 @@ async fn main() {
                 let m = Decimal::from_str(&m_str).expect("Invalid --money");
                 (m / final_nav).round_dp(2)
             } else if auto {
-                // If auto is set but no money/shares, we might assume money is needed? 
-                // Let's assume --auto means use latest NAV if --nav is missing (handled).
                 panic!("Please provide --shares or --money for sell command.");
             } else {
                 panic!("Please provide --shares or --money for sell command.");
@@ -351,7 +414,7 @@ async fn main() {
                 Decimal::ZERO
             };
 
-            let received_money = total_money - final_fee;
+            let received_money = (total_money - final_fee).round_dp(2);
 
             // 4. Preview and Confirm
             println!("┌─────────────────────────────────────────┐");
@@ -367,24 +430,24 @@ async fn main() {
             println!("└─────────────────────────────────────────┘");
             
             if confirm_action("确认记录此笔交易？", cli.yes) {
-                let today = "2026-03-09"; // Dummy date
+                let today = get_today();
                 db::add_transaction(
                     &conn, 
                     wallet_id, 
                     &fund_obj.code, 
                     "sell", 
                     &received_money.to_string(), 
-                    &final_shares.to_string(), 
-                    &final_nav.to_string(), 
+                    Some(&final_shares.to_string()), 
+                    Some(&final_nav.to_string()), 
                     &final_fee.to_string(), 
-                    today
+                    &today,
+                    "settled"
                 ).expect("Failed to record transaction");
 
                 println!("Sold {}: {} shares", fund_obj.code, final_shares);
             } else {
                 println!("Transaction cancelled.");
             }
-
         }
     }
 }

@@ -199,10 +199,30 @@ jQuery183019830549511523854_1773128744941({
 });
 ```
 
-## 获取根据输入文本获取匹配基金
+## 根据输入文本获取匹配基金
 
 请求：GET `https://news.10jqka.com.cn/public/index_keyboard.php?type=fund&search-text=015&jsoncallback=jQuery1830027070694497917103_1773124646433`
 响应：
+
+注意：部分基金可能搜索不到，比如160119
+
+```bash
+curl 'https://news.10jqka.com.cn/public/index_keyboard.php?type=fund&search-text=015&jsoncallback=jQuery1830027070694497917103_1773124646433' \
+  -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+  -H 'Accept-Language: zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7' \
+  -H 'Cache-Control: max-age=0' \
+  -H 'Connection: keep-alive' \
+  -H 'DNT: 1' \
+  -H 'Sec-Fetch-Dest: document' \
+  -H 'Sec-Fetch-Mode: navigate' \
+  -H 'Sec-Fetch-Site: none' \
+  -H 'Sec-Fetch-User: ?1' \
+  -H 'Upgrade-Insecure-Requests: 1' \
+  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36' \
+  -H 'sec-ch-ua: "Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "macOS"'
+```
 
 ```javascript
 jQuery1830027070694497917103_1773124646433(["0||015000 \u534e\u6cf0\u4fdd\u5174\u5409\u5e74\u76c8\u6df7\u5408C \u57fa\u91d1", "0||015001 \u5de5\u94f6\u7269\u6d41\u4ea7\u4e1a\u80a1\u7968C \u57fa\u91d1", "0||015002 \u5de5\u94f6\u751f\u6001\u73af\u5883\u80a1\u7968C \u57fa\u91d1", "0||015003 \u4e2d\u90ae\u5c0a\u4f51\u4e00\u5e74\u5b9a\u5f00\u503a\u5238 \u57fa\u91d1", "0||015004 \u4e2d\u90ae\u80fd\u6e90\u9769\u65b0\u6df7\u5408\u53d1\u8d77\u5f0fA \u57fa\u91d1"]);
@@ -228,3 +248,499 @@ jQuery18302776145446923678_1773131650567({
     "PageIndex": 0
 })
 ```
+
+## 获取基金净值
+
+接口：<https://api.fund.eastmoney.com/f10/lsjz?callback=jQuery18306819045531849094_1773656476226&fundCode=160119&pageIndex=1&pageSize=20&startDate=&endDate=&_=1773656638251>
+
+根据开始和结束日期获取基金净值数据，日期格式为：2020-01-01，不传则以当前日期作为截止日期
+
+返回值：
+
+```javascript
+jQuery18306819045531849094_1773656476226({
+    "Data": {
+        "LSJZList": [
+            {
+                "FSRQ": "2026-03-13",
+                "DWJZ": "2.3026",
+                "LJJZ": "2.4026",
+                "JZZZL": "-1.35",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-03-12",
+                "DWJZ": "2.3342",
+                "LJJZ": "2.4342",
+                "JZZZL": "-0.52",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-03-11",
+                "DWJZ": "2.3465",
+                "LJJZ": "2.4465",
+                "JZZZL": "-0.08",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-03-10",
+                "DWJZ": "2.3483",
+                "LJJZ": "2.4483",
+                "JZZZL": "1.52",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-03-09",
+                "DWJZ": "2.3131",
+                "LJJZ": "2.4131",
+                "JZZZL": "-0.92",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-03-06",
+                "DWJZ": "2.3345",
+                "LJJZ": "2.4345",
+                "JZZZL": "0.60",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-03-05",
+                "DWJZ": "2.3205",
+                "LJJZ": "2.4205",
+                "JZZZL": "0.66",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-03-04",
+                "DWJZ": "2.3052",
+                "LJJZ": "2.4052",
+                "JZZZL": "-0.41",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-03-03",
+                "DWJZ": "2.3147",
+                "LJJZ": "2.4147",
+                "JZZZL": "-4.16",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-03-02",
+                "DWJZ": "2.4151",
+                "LJJZ": "2.5151",
+                "JZZZL": "-0.02",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-02-27",
+                "DWJZ": "2.4155",
+                "LJJZ": "2.5155",
+                "JZZZL": "1.12",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-02-26",
+                "DWJZ": "2.3888",
+                "LJJZ": "2.4888",
+                "JZZZL": "0.33",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-02-25",
+                "DWJZ": "2.3809",
+                "LJJZ": "2.4809",
+                "JZZZL": "1.52",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-02-24",
+                "DWJZ": "2.3452",
+                "LJJZ": "2.4452",
+                "JZZZL": "1.06",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-02-13",
+                "DWJZ": "2.3207",
+                "LJJZ": "2.4207",
+                "JZZZL": "-1.41",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-02-12",
+                "DWJZ": "2.3539",
+                "LJJZ": "2.4539",
+                "JZZZL": "1.13",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-02-11",
+                "DWJZ": "2.3277",
+                "LJJZ": "2.4277",
+                "JZZZL": "0.24",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-02-10",
+                "DWJZ": "2.3221",
+                "LJJZ": "2.4221",
+                "JZZZL": "-0.04",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-02-09",
+                "DWJZ": "2.3231",
+                "LJJZ": "2.4231",
+                "JZZZL": "1.92",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            },
+            {
+                "FSRQ": "2026-02-06",
+                "DWJZ": "2.2794",
+                "LJJZ": "2.3794",
+                "JZZZL": "0.00",
+                "SGZT": "开放申购",
+                "SHZT": "开放赎回",
+                "FHFCZ": "",
+                "FHFCBZ": "",
+                "NAVTYPE": "1",
+                "SDATE": null,
+                "ACTUALSYI": "",
+                "DTYPE": null,
+                "FHSP": ""
+            }
+        ],
+        "FundType": "001",
+        "SYType": null,
+        "isNewType": false,
+        "Feature": "020,030,031,050,051,053"
+    },
+    "ErrCode": 0,
+    "ErrMsg": null,
+    "TotalCount": 3989,
+    "Expansion": null,
+    "PageSize": 20,
+    "PageIndex": 1
+})
+```
+
+<!-- 接口（html）：<https://fundf10.eastmoney.com/jjjz_160119.html>
+
+同花顺
+
+```python
+def fund_etf_category_ths(symbol: str = "ETF", date: str = "") -> pd.DataFrame:
+    """
+    同花顺理财-基金数据-每日净值-实时行情
+    https://fund.10jqka.com.cn/datacenter/jz/
+    :param symbol: 基金类型; choice of {"股票型", "债券型", "混合型", "ETF", "LOF", "QDII", "保本型", "指数型", ""}; "" 表示全部
+    :type symbol: str
+    :param date: 查询日期
+    :type date: str
+    :return: 基金实时行情
+    :rtype: pandas.DataFrame
+    """
+    symbol_map = {
+        "股票型": "gpx",
+        "债券型": "zqx",
+        "混合型": "hhx",
+        "ETF": "ETF",
+        "LOF": "LOF",
+        "QDII": "QDII",
+        "保本型": "bbx",
+        "指数型": "zsx",
+        "": "all",
+    }
+    inner_symbol = symbol_map.get(symbol, "ETF")
+    inner_date = "-".join([date[:4], date[4:6], date[6:]]) if date != "" else 0
+    url = (
+        f"https://fund.10jqka.com.cn/data/Net/info/"
+        f"{inner_symbol}_rate_desc_{inner_date}_0_1_9999_0_0_0_jsonp_g.html"
+    )
+    r = requests.get(url, timeout=15)
+    data_text = r.text[2:-1]
+    data_json = json.loads(data_text)
+    temp_df = pd.DataFrame(data_json["data"]["data"]).T
+    temp_df.reset_index(inplace=True, drop=True)
+    temp_df.reset_index(inplace=True)
+    temp_df["index"] = temp_df["index"] + 1
+    temp_df.rename(
+        columns={
+            "index": "序号",
+            "code": "基金代码",
+            "typename": "基金类型",
+            "net": "当前-单位净值",
+            "name": "基金名称",
+            "totalnet": "当前-累计净值",
+            "newnet": "最新-单位净值",
+            "newtotalnet": "最新-累计净值",
+            "newdate": "最新-交易日",
+            "net1": "前一日-单位净值",
+            "totalnet1": "前一日-累计净值",
+            "ranges": "增长值",
+            "rate": "增长率",
+            "shstat": "赎回状态",
+            "sgstat": "申购状态",
+        },
+        inplace=True,
+    )
+    temp_df = temp_df[
+        [
+            "序号",
+            "基金代码",
+            "基金名称",
+            "当前-单位净值",
+            "当前-累计净值",
+            "前一日-单位净值",
+            "前一日-累计净值",
+            "增长值",
+            "增长率",
+            "赎回状态",
+            "申购状态",
+            "最新-交易日",
+            "最新-单位净值",
+            "最新-累计净值",
+            "基金类型",
+        ]
+    ]
+    query_date = inner_date if inner_date != 0 else temp_df["最新-交易日"][0]
+    temp_df["查询日期"] = query_date
+    temp_df["查询日期"] = pd.to_datetime(temp_df["查询日期"], errors="coerce").dt.date
+    temp_df["当前-单位净值"] = pd.to_numeric(temp_df["当前-单位净值"], errors="coerce")
+    temp_df["当前-累计净值"] = pd.to_numeric(temp_df["当前-累计净值"], errors="coerce")
+    temp_df["前一日-单位净值"] = pd.to_numeric(
+        temp_df["前一日-单位净值"], errors="coerce"
+    )
+    temp_df["前一日-累计净值"] = pd.to_numeric(
+        temp_df["前一日-累计净值"], errors="coerce"
+    )
+    temp_df["增长值"] = pd.to_numeric(temp_df["增长值"], errors="coerce")
+    temp_df["增长率"] = pd.to_numeric(temp_df["增长率"], errors="coerce")
+    temp_df["最新-单位净值"] = pd.to_numeric(temp_df["最新-单位净值"], errors="coerce")
+    temp_df["最新-累计净值"] = pd.to_numeric(temp_df["最新-累计净值"], errors="coerce")
+    temp_df["最新-交易日"] = pd.to_datetime(
+        temp_df["最新-交易日"], errors="coerce"
+    ).dt.date
+    return temp_df
+```
+
+东方财富
+
+```python
+def fund_open_fund_daily_em() -> pd.DataFrame:
+    """
+    东方财富网-天天基金网-基金数据-开放式基金净值
+    https://fund.eastmoney.com/fund.html#os_0;isall_0;ft_;pt_1
+    :return: 当前交易日的所有开放式基金净值数据
+    :rtype: pandas.DataFrame
+    """
+    url = "https://fund.eastmoney.com/Data/Fund_JJJZ_Data.aspx"
+    params = {
+        "t": "1",
+        "lx": "1",
+        "letter": "",
+        "gsid": "",
+        "text": "",
+        "sort": "zdf,desc",
+        "page": "1,50000",
+        "dt": "1580914040623",
+        "atfc": "",
+        "onlySale": "0",
+    }
+    res = requests.get(url, params=params, headers=headers)
+    text_data = res.text
+    data_json = demjson.decode(text_data.strip("var db="))
+    temp_df = pd.DataFrame(data_json["datas"])
+    show_day = data_json["showday"]
+    temp_df.columns = [
+        "基金代码",
+        "基金简称",
+        "-",
+        f"{show_day[0]}-单位净值",
+        f"{show_day[0]}-累计净值",
+        f"{show_day[1]}-单位净值",
+        f"{show_day[1]}-累计净值",
+        "日增长值",
+        "日增长率",
+        "申购状态",
+        "赎回状态",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "手续费",
+        "-",
+        "-",
+        "-",
+    ]
+    data_df = temp_df[
+        [
+            "基金代码",
+            "基金简称",
+            f"{show_day[0]}-单位净值",
+            f"{show_day[0]}-累计净值",
+            f"{show_day[1]}-单位净值",
+            f"{show_day[1]}-累计净值",
+            "日增长值",
+            "日增长率",
+            "申购状态",
+            "赎回状态",
+            "手续费",
+        ]
+    ]
+    return data_df
+``` -->

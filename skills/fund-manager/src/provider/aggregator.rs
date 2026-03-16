@@ -15,18 +15,22 @@ impl Aggregator {
     }
 
     pub async fn fetch_all(&self, code: &str) -> Result<FundData, String> {
+        self.fetch_at_date(code, None).await
+    }
+
+    pub async fn fetch_at_date(&self, code: &str, date: Option<&str>) -> Result<FundData, String> {
         let mut final_data = FundData {
             code: code.to_string(),
-            name: None,
-            nav: None,
-            acc_nav: None,
-            fee_rate: None,
-            date: None,
+            ..Default::default()
         };
 
         let mut futures = Vec::new();
         for p in &self.providers {
-            futures.push(p.fetch(code));
+            if let Some(d) = date {
+                futures.push(p.fetch_at_date(code, d));
+            } else {
+                futures.push(p.fetch(code));
+            }
         }
 
         let results = tokio::time::timeout(
@@ -41,6 +45,14 @@ impl Aggregator {
                 if data.acc_nav.is_some() { final_data.acc_nav = data.acc_nav; }
                 if data.fee_rate.is_some() { final_data.fee_rate = data.fee_rate; }
                 if data.date.is_some() { final_data.date = data.date; }
+                if data.fund_type.is_some() { final_data.fund_type = data.fund_type; }
+                if data.risk_level.is_some() { final_data.risk_level = data.risk_level; }
+                if data.manager.is_some() { final_data.manager = data.manager; }
+                if data.company.is_some() { final_data.company = data.company; }
+                if data.establish_date.is_some() { final_data.establish_date = data.establish_date; }
+                if data.mgmt_fee.is_some() { final_data.mgmt_fee = data.mgmt_fee; }
+                if data.trust_fee.is_some() { final_data.trust_fee = data.trust_fee; }
+                if data.sales_fee.is_some() { final_data.sales_fee = data.sales_fee; }
             }
         }
 
@@ -64,6 +76,7 @@ mod tests {
         #[async_trait]
         impl Provider for MyProvider {
             async fn fetch(&self, code: &str) -> Result<FundData, String>;
+            async fn fetch_at_date(&self, code: &str, date: &str) -> Result<FundData, String>;
         }
     }
 
@@ -75,9 +88,8 @@ mod tests {
                 code: code.to_string(),
                 name: Some("Fund".to_string()),
                 nav: Some(dec!(1.0)),
-                acc_nav: None,
-                fee_rate: None,
                 date: Some("2026-03-09".to_string()),
+                ..Default::default()
             }));
 
         let mut mock_html = MockMyProvider::new();
@@ -93,18 +105,5 @@ mod tests {
         assert_eq!(res.name.unwrap(), "Fund");
         assert_eq!(res.nav.unwrap(), dec!(1.0));
         assert!(res.fee_rate.is_none());
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_real_fetch_000300() {
-        let mut aggregator = Aggregator::new();
-        aggregator.add_provider(Box::new(crate::provider::eastmoney_js::EastmoneyJsProvider));
-        aggregator.add_provider(Box::new(crate::provider::eastmoney_html::EastmoneyHtmlProvider));
-
-        let res = aggregator.fetch_all("000300").await.unwrap();
-        assert_eq!(res.code, "000300");
-        assert!(res.name.is_some());
-        assert!(res.nav.is_some());
     }
 }

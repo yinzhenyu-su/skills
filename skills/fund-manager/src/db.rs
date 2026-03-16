@@ -22,11 +22,33 @@ pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS fund (
             code TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            current_fee_rate TEXT,
+            fund_type TEXT,
+            risk_level TEXT,
+            manager TEXT,
+            company TEXT,
+            establish_date TEXT,
+            management_fee TEXT,
+            trust_fee TEXT,
+            sales_fee TEXT,
             last_sync_at DATETIME
         )",
         [],
     )?;
+
+    // Simple migration for existing columns
+    let new_cols = [
+        ("fund_type", "TEXT"),
+        ("risk_level", "TEXT"),
+        ("manager", "TEXT"),
+        ("company", "TEXT"),
+        ("establish_date", "TEXT"),
+        ("management_fee", "TEXT"),
+        ("trust_fee", "TEXT"),
+        ("sales_fee", "TEXT"),
+    ];
+    for (name, col_type) in new_cols {
+        let _ = conn.execute(&format!("ALTER TABLE fund ADD COLUMN {} {}", name, col_type), []);
+    }
 
     // Create nav_history table
     conn.execute(
@@ -41,7 +63,7 @@ pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
         [],
     )?;
 
-    // Create transaction table
+    // Create transaction table with status and nullable shares/nav
     conn.execute(
         "CREATE TABLE IF NOT EXISTS transaction_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,15 +71,51 @@ pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
             fund_code TEXT NOT NULL,
             type TEXT NOT NULL, -- 'buy' or 'sell'
             money TEXT NOT NULL,
-            shares TEXT NOT NULL,
-            nav TEXT NOT NULL,
+            shares TEXT,        -- Nullable for pending buys
+            nav TEXT,           -- Nullable for pending buys
             fee TEXT NOT NULL,
             date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'settled', -- 'pending' or 'settled'
             FOREIGN KEY (wallet_id) REFERENCES wallet (id) ON DELETE CASCADE,
             FOREIGN KEY (fund_code) REFERENCES fund (code) ON DELETE CASCADE
         )",
         [],
     )?;
+
+    // Migration for transaction_log: add status if not exists
+    let has_status: bool = conn
+        .prepare("PRAGMA table_info(transaction_log)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .any(|name| name.unwrap_or_default() == "status");
+
+    if !has_status {
+        // Since we also want to make shares/nav nullable, and SQLite doesn't support 
+        // altering constraints easily, we recreate the table if status is missing.
+        conn.execute("ALTER TABLE transaction_log RENAME TO transaction_log_old", [])?;
+        conn.execute(
+            "CREATE TABLE transaction_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_id INTEGER NOT NULL,
+                fund_code TEXT NOT NULL,
+                type TEXT NOT NULL,
+                money TEXT NOT NULL,
+                shares TEXT,
+                nav TEXT,
+                fee TEXT NOT NULL,
+                date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'settled',
+                FOREIGN KEY (wallet_id) REFERENCES wallet (id) ON DELETE CASCADE,
+                FOREIGN KEY (fund_code) REFERENCES fund (code) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO transaction_log (id, wallet_id, fund_code, type, money, shares, nav, fee, date, status)
+             SELECT id, wallet_id, fund_code, type, money, shares, nav, fee, date, 'settled' FROM transaction_log_old",
+            [],
+        )?;
+        conn.execute("DROP TABLE transaction_log_old", [])?;
+    }
 
     // Create app_config table for active wallet
     conn.execute(
@@ -102,10 +160,29 @@ pub fn get_all_wallets(conn: &Connection) -> Result<Vec<Wallet>> {
     Ok(wallets)
 }
 
-pub fn add_fund(conn: &Connection, code: &str, name: &str, fee_rate: &str) -> Result<()> {
+pub fn add_fund(
+    conn: &Connection, 
+    code: &str, 
+    name: &str, 
+    fund_type: Option<&str>,
+    risk_level: Option<&str>,
+    manager: Option<&str>,
+    company: Option<&str>,
+    establish_date: Option<&str>,
+    mgmt_fee: Option<&str>,
+    trust_fee: Option<&str>,
+    sales_fee: Option<&str>,
+    last_sync_at: Option<&str>,
+) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO fund (code, name, current_fee_rate) VALUES (?1, ?2, ?3)",
-        [code, name, fee_rate],
+        "INSERT OR REPLACE INTO fund (
+            code, name, fund_type, risk_level, manager, company, establish_date, 
+            management_fee, trust_fee, sales_fee, last_sync_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![
+            code, name, fund_type, risk_level, manager, company, establish_date, 
+            mgmt_fee, trust_fee, sales_fee, last_sync_at
+        ],
     )?;
     Ok(())
 }
@@ -150,19 +227,36 @@ pub fn insert_nav_history_idempotent(conn: &Connection, code: &str, date: &str, 
 pub struct Fund {
     pub code: String,
     pub name: String,
-    pub current_fee_rate: Option<String>,
+    pub fund_type: Option<String>,
+    pub risk_level: Option<String>,
+    pub manager: Option<String>,
+    pub company: Option<String>,
+    pub establish_date: Option<String>,
+    pub management_fee: Option<String>,
+    pub trust_fee: Option<String>,
+    pub sales_fee: Option<String>,
     pub last_sync_at: Option<String>,
 }
 
 pub fn get_fund_by_code_or_name(conn: &Connection, identifier: &str) -> Result<Option<Fund>> {
-    let mut stmt = conn.prepare("SELECT code, name, current_fee_rate, last_sync_at FROM fund WHERE code = ?1 OR name = ?1")?;
+    let mut stmt = conn.prepare("SELECT 
+        code, name, fund_type, risk_level, manager, company, establish_date, 
+        management_fee, trust_fee, sales_fee, last_sync_at 
+        FROM fund WHERE code = ?1 OR name = ?1")?;
     let mut rows = stmt.query([identifier])?;
     if let Some(row) = rows.next()? {
         Ok(Some(Fund {
             code: row.get(0)?,
             name: row.get(1)?,
-            current_fee_rate: row.get(2)?,
-            last_sync_at: row.get(3)?,
+            fund_type: row.get(2)?,
+            risk_level: row.get(3)?,
+            manager: row.get(4)?,
+            company: row.get(5)?,
+            establish_date: row.get(6)?,
+            management_fee: row.get(7)?,
+            trust_fee: row.get(8)?,
+            sales_fee: row.get(9)?,
+            last_sync_at: row.get(10)?,
         }))
     } else {
         Ok(None)
@@ -170,13 +264,23 @@ pub fn get_fund_by_code_or_name(conn: &Connection, identifier: &str) -> Result<O
 }
 
 pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
-    let mut stmt = conn.prepare("SELECT code, name, current_fee_rate, last_sync_at FROM fund")?;
+    let mut stmt = conn.prepare("SELECT 
+        code, name, fund_type, risk_level, manager, company, establish_date, 
+        management_fee, trust_fee, sales_fee, last_sync_at 
+        FROM fund")?;
     let rows = stmt.query_map([], |row| {
         Ok(Fund {
             code: row.get(0)?,
             name: row.get(1)?,
-            current_fee_rate: row.get(2)?,
-            last_sync_at: row.get(3)?,
+            fund_type: row.get(2)?,
+            risk_level: row.get(3)?,
+            manager: row.get(4)?,
+            company: row.get(5)?,
+            establish_date: row.get(6)?,
+            management_fee: row.get(7)?,
+            trust_fee: row.get(8)?,
+            sales_fee: row.get(9)?,
+            last_sync_at: row.get(10)?,
         })
     })?;
 
@@ -185,6 +289,16 @@ pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
         funds.push(row?);
     }
     Ok(funds)
+}
+
+pub fn get_latest_nav_with_date(conn: &Connection, code: &str) -> Result<Option<(String, String)>> {
+    let mut stmt = conn.prepare("SELECT nav, date FROM nav_history WHERE fund_code = ?1 ORDER BY date DESC LIMIT 1")?;
+    let mut rows = stmt.query([code])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some((row.get(0)?, row.get(1)?)))
+    } else {
+        Ok(None)
+    }
 }
 
 pub fn get_latest_nav(conn: &Connection, code: &str) -> Result<Option<String>> {
@@ -203,15 +317,16 @@ pub fn add_transaction(
     fund_code: &str,
     t_type: &str,
     money: &str,
-    shares: &str,
-    nav: &str,
+    shares: Option<&str>,
+    nav: Option<&str>,
     fee: &str,
     date: &str,
+    status: &str,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO transaction_log (wallet_id, fund_code, type, money, shares, nav, fee, date) 
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        rusqlite::params![wallet_id, fund_code, t_type, money, shares, nav, fee, date],
+        "INSERT INTO transaction_log (wallet_id, fund_code, type, money, shares, nav, fee, date, status) 
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![wallet_id, fund_code, t_type, money, shares, nav, fee, date, status],
     )?;
     Ok(())
 }
@@ -234,7 +349,7 @@ pub fn get_holdings(conn: &Connection, wallet_id: i64) -> Result<Vec<Holding>> {
             (SELECT nav FROM nav_history WHERE fund_code = f.code ORDER BY date DESC LIMIT 1) as latest_nav
          FROM fund f
          JOIN transaction_log t ON f.code = t.fund_code
-         WHERE t.wallet_id = ?1
+         WHERE t.wallet_id = ?1 AND t.status = 'settled'
          GROUP BY f.code"
     )?;
     
@@ -260,11 +375,49 @@ pub fn get_fund_shares(conn: &Connection, wallet_id: i64, fund_code: &str) -> Re
         "SELECT 
             SUM(CASE WHEN type = 'buy' THEN CAST(shares AS REAL) ELSE -CAST(shares AS REAL) END)
          FROM transaction_log 
-         WHERE wallet_id = ?1 AND fund_code = ?2"
+         WHERE wallet_id = ?1 AND fund_code = ?2 AND status = 'settled'"
     )?;
     let val: Option<f64> = stmt.query_row([wallet_id.to_string(), fund_code.to_string()], |row| row.get(0))?;
     let shares_f64 = val.unwrap_or(0.0);
     Ok(Decimal::from_f64(shares_f64).unwrap_or_default().round_dp(2))
+}
+
+pub fn settle_transaction(
+    conn: &Connection,
+    id: i64,
+    shares: &str,
+    nav: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE transaction_log SET shares = ?1, nav = ?2, status = 'settled' WHERE id = ?3",
+        rusqlite::params![shares, nav, id],
+    )?;
+    Ok(())
+}
+
+pub struct PendingTransaction {
+    pub id: i64,
+    pub fund_code: String,
+    pub date: String,
+    pub money: String,
+}
+
+pub fn get_pending_transactions(conn: &Connection) -> Result<Vec<PendingTransaction>> {
+    let mut stmt = conn.prepare("SELECT id, fund_code, date, money FROM transaction_log WHERE status = 'pending'")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(PendingTransaction {
+            id: row.get(0)?,
+            fund_code: row.get(1)?,
+            date: row.get(2)?,
+            money: row.get(3)?,
+        })
+    })?;
+
+    let mut pending = Vec::new();
+    for row in rows {
+        pending.push(row?);
+    }
+    Ok(pending)
 }
 
 pub fn delete_fund(conn: &Connection, code: &str) -> Result<()> {
