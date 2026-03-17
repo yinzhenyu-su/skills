@@ -83,6 +83,30 @@ impl Aggregator {
                 if data.sales_fee.is_some() {
                     final_data.sales_fee = data.sales_fee;
                 }
+                if data.snapshot_date.is_some() {
+                    final_data.snapshot_date = data.snapshot_date;
+                }
+                if data.rating_3y.is_some() {
+                    final_data.rating_3y = data.rating_3y;
+                }
+                if data.rating_5y.is_some() {
+                    final_data.rating_5y = data.rating_5y;
+                }
+                if data.rank_pct_3y.is_some() {
+                    final_data.rank_pct_3y = data.rank_pct_3y;
+                }
+                if data.sharpe_3y.is_some() {
+                    final_data.sharpe_3y = data.sharpe_3y;
+                }
+                if data.calmar_3y.is_some() {
+                    final_data.calmar_3y = data.calmar_3y;
+                }
+                if data.max_drawdown_3y.is_some() {
+                    final_data.max_drawdown_3y = data.max_drawdown_3y;
+                }
+                if data.investor_gap_3y.is_some() {
+                    final_data.investor_gap_3y = data.investor_gap_3y;
+                }
             }
         }
 

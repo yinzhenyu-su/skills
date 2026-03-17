@@ -191,4 +191,15 @@ pub enum FundCommands {
         /// Specific fund to sync (required if not using --all)
         fund: Option<String>,
     },
+    /// Inspect a fund's health and performance (Morningstar)
+    #[command(
+        long_about = "Show detailed health report for a fund from Morningstar analysis.\n\nEXAMPLES:\n    fund fund inspect 000513\n    fund fund inspect \"汇添富全球医疗\""
+    )]
+    Inspect {
+        /// Fund code or name
+        fund: String,
+        /// Force refresh analysis data
+        #[arg(short, long, default_value_t = false)]
+        force: bool,
+    },
 }

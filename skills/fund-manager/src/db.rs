@@ -133,6 +133,24 @@ pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
         [],
     )?;
 
+    // Create fund_analysis table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS fund_analysis (
+            fund_code TEXT PRIMARY KEY,
+            snapshot_date TEXT,
+            rating_3y INTEGER,
+            rating_5y INTEGER,
+            rank_pct_3y REAL,
+            sharpe_3y REAL,
+            calmar_3y REAL,
+            max_drawdown_3y REAL,
+            investor_gap_3y REAL,
+            last_update DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (fund_code) REFERENCES fund (code) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
     Ok(())
 }
 
@@ -242,6 +260,7 @@ pub fn insert_nav_history_idempotent(
     Ok(())
 }
 
+#[derive(Clone, Debug)]
 pub struct Fund {
     pub code: String,
     pub name: String,
@@ -281,6 +300,37 @@ pub fn get_fund_by_code_or_name(conn: &Connection, identifier: &str) -> Result<O
     } else {
         Ok(None)
     }
+}
+
+pub fn search_funds_locally(conn: &Connection, identifier: &str) -> Result<Vec<Fund>> {
+    let mut stmt = conn.prepare(
+        "SELECT 
+        code, name, fund_type, risk_level, manager, company, establish_date, 
+        management_fee, trust_fee, sales_fee, last_sync_at 
+        FROM fund WHERE code LIKE ?1 OR name LIKE ?1",
+    )?;
+    let pattern = format!("%{}%", identifier);
+    let rows = stmt.query_map([pattern], |row| {
+        Ok(Fund {
+            code: row.get(0)?,
+            name: row.get(1)?,
+            fund_type: row.get(2)?,
+            risk_level: row.get(3)?,
+            manager: row.get(4)?,
+            company: row.get(5)?,
+            establish_date: row.get(6)?,
+            management_fee: row.get(7)?,
+            trust_fee: row.get(8)?,
+            sales_fee: row.get(9)?,
+            last_sync_at: row.get(10)?,
+        })
+    })?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
 }
 
 pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
@@ -534,6 +584,66 @@ pub fn get_earliest_pending_date(conn: &Connection, code: Option<&str>) -> Resul
 pub fn delete_fund(conn: &Connection, code: &str) -> Result<()> {
     conn.execute("DELETE FROM fund WHERE code = ?1", [code])?;
     Ok(())
+}
+
+pub struct FundAnalysis {
+    pub fund_code: String,
+    pub snapshot_date: Option<String>,
+    pub rating_3y: Option<i32>,
+    pub rating_5y: Option<i32>,
+    pub rank_pct_3y: Option<f64>,
+    pub sharpe_3y: Option<f64>,
+    pub calmar_3y: Option<f64>,
+    pub max_drawdown_3y: Option<f64>,
+    pub investor_gap_3y: Option<f64>,
+    pub last_update: String,
+}
+
+pub fn add_fund_analysis(conn: &Connection, analysis: &FundAnalysis) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO fund_analysis (
+            fund_code, snapshot_date, rating_3y, rating_5y, rank_pct_3y, 
+            sharpe_3y, calmar_3y, max_drawdown_3y, investor_gap_3y
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            analysis.fund_code,
+            analysis.snapshot_date,
+            analysis.rating_3y,
+            analysis.rating_5y,
+            analysis.rank_pct_3y,
+            analysis.sharpe_3y,
+            analysis.calmar_3y,
+            analysis.max_drawdown_3y,
+            analysis.investor_gap_3y,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get_fund_analysis(conn: &Connection, code: &str) -> Result<Option<FundAnalysis>> {
+    let mut stmt = conn.prepare(
+        "SELECT 
+            fund_code, snapshot_date, rating_3y, rating_5y, rank_pct_3y, 
+            sharpe_3y, calmar_3y, max_drawdown_3y, investor_gap_3y, last_update 
+        FROM fund_analysis WHERE fund_code = ?1",
+    )?;
+    let mut rows = stmt.query([code])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(FundAnalysis {
+            fund_code: row.get(0)?,
+            snapshot_date: row.get(1)?,
+            rating_3y: row.get(2)?,
+            rating_5y: row.get(3)?,
+            rank_pct_3y: row.get(4)?,
+            sharpe_3y: row.get(5)?,
+            calmar_3y: row.get(6)?,
+            max_drawdown_3y: row.get(7)?,
+            investor_gap_3y: row.get(8)?,
+            last_update: row.get(9)?,
+        }))
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

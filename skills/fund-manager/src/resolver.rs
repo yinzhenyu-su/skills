@@ -1,6 +1,6 @@
 use crate::db::{self, Fund};
 use crate::provider::aggregator::Aggregator;
-use crate::provider::ths_search::ThsSearchProvider;
+use crate::provider::morningstar_search::MorningstarSearchProvider;
 use chrono::{Duration, NaiveDateTime, Utc};
 use inquire::Select;
 use rusqlite::Connection;
@@ -13,14 +13,15 @@ pub async fn resolve_fund(
     conn: &Connection,
     input: &str,
     interactive: bool,
+    local_only: bool,
 ) -> Result<Fund, String> {
     // 1. Precise match locally (by code or exact name)
     if let Some(f) = db::get_fund_by_code_or_name(conn, input).map_err(|e| e.to_string())? {
         return maybe_sync_fund(conn, f).await;
     }
 
-    // 2. Fallback to direct fetch for 6-digit codes
-    if is_6_digit_code(input) {
+    // 2. Fallback to direct fetch for 6-digit codes (if not local_only)
+    if !local_only && is_6_digit_code(input) {
         println!(
             "✨ '{}' looks like a fund code. Trying direct fetch...",
             input
@@ -36,12 +37,60 @@ pub async fn resolve_fund(
         }
     }
 
-    // 3. Fuzzy search remotely
+    // 3. Local fuzzy search
+    let local_results = db::search_funds_locally(conn, input).map_err(|e| e.to_string())?;
+    if !local_results.is_empty() {
+        if local_results.len() == 1 {
+            let f = local_results[0].clone();
+            println!("✨ Found 1 local match: {} ({})", f.name, f.code);
+            return maybe_sync_fund(conn, f).await;
+        }
+
+        if interactive {
+            let options: Vec<String> = local_results
+                .iter()
+                .map(|f| format!("[{}] {}", f.code, f.name))
+                .collect();
+
+            let ans = Select::new(
+                &format!("Multiple matches found in local database for '{}'. Please select:", input),
+                options,
+            )
+            .prompt()
+            .map_err(|e| e.to_string())?;
+
+            let selected_code = ans
+                .split(']')
+                .next()
+                .unwrap()
+                .trim_start_matches('[')
+                .to_string();
+
+            let f = local_results.iter().find(|r| r.code == selected_code).unwrap().clone();
+            return maybe_sync_fund(conn, f).await;
+        } else {
+            let matches = local_results
+                .iter()
+                .map(|f| format!("{} ({})", f.name, f.code))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "Ambiguous local match for '{}'. Found multiple: {}",
+                input, matches
+            ));
+        }
+    }
+
+    if local_only {
+        return Err(format!("No funds found locally matching '{}'", input));
+    }
+
+    // 4. Fuzzy search remotely
     println!(
         "🔍 Fund '{}' not found locally. Searching remotely...",
         input
     );
-    let search_provider = ThsSearchProvider;
+    let search_provider = MorningstarSearchProvider;
     let results = search_provider.search(input).await?;
 
     if results.is_empty() {
@@ -60,19 +109,28 @@ pub async fn resolve_fund(
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
-                "Ambiguous name '{}'. Found multiple matches: {}",
+                "Ambiguous remote name '{}'. Found multiple matches: {}",
                 input, matches
             ));
         }
 
         let options: Vec<String> = results
             .iter()
-            .map(|r| format!("[{}] {}", r.code, r.name))
+            .map(|r| {
+                if let Some(t) = &r.fund_type {
+                    format!("[{}] {} ({})", r.code, r.name, t)
+                } else {
+                    format!("[{}] {}", r.code, r.name)
+                }
+            })
             .collect();
 
-        let ans = Select::new("Multiple matches found. Please select a fund:", options)
-            .prompt()
-            .map_err(|e| e.to_string())?;
+        let ans = Select::new(
+            &format!("Multiple remote matches found for '{}'. Please select:", input),
+            options,
+        )
+        .prompt()
+        .map_err(|e| e.to_string())?;
 
         // Extract code from "[code] name"
         ans.split(']')
@@ -82,7 +140,7 @@ pub async fn resolve_fund(
             .to_string()
     };
 
-    // 3. Sync details and return
+    // 5. Sync details and return
     sync_fund_details(conn, &selected_code).await
 }
 
@@ -128,6 +186,7 @@ pub async fn sync_fund_details(conn: &Connection, code: &str) -> Result<Fund, St
     aggregator.add_provider(Box::new(
         crate::provider::eastmoney_html::EastmoneyHtmlProvider,
     ));
+    aggregator.add_provider(Box::new(crate::provider::morningstar::MorningstarProvider));
 
     let data = aggregator.fetch_all(code).await?;
 
@@ -152,6 +211,23 @@ pub async fn sync_fund_details(conn: &Connection, code: &str) -> Result<Fund, St
     if let (Some(nav), Some(date)) = (data.nav, data.date) {
         db::insert_nav_history_idempotent(conn, &data.code, &date, &nav.to_string())
             .map_err(|e| e.to_string())?;
+    }
+
+    // Store analysis data if available (e.g. from Morningstar)
+    if data.rating_3y.is_some() || data.sharpe_3y.is_some() {
+        let analysis = db::FundAnalysis {
+            fund_code: code.to_string(),
+            snapshot_date: data.snapshot_date,
+            rating_3y: data.rating_3y,
+            rating_5y: data.rating_5y,
+            rank_pct_3y: data.rank_pct_3y,
+            sharpe_3y: data.sharpe_3y,
+            calmar_3y: data.calmar_3y,
+            max_drawdown_3y: data.max_drawdown_3y,
+            investor_gap_3y: data.investor_gap_3y,
+            last_update: now,
+        };
+        db::add_fund_analysis(conn, &analysis).map_err(|e| e.to_string())?;
     }
 
     db::get_fund_by_code_or_name(conn, code)

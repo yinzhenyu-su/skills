@@ -126,6 +126,134 @@ fn confirm_action(prompt: &str, force_yes: bool) -> bool {
     input.trim().to_lowercase() == "y"
 }
 
+async fn handle_inspect(conn: &Connection, identifier: &str, force: bool) -> Result<(), String> {
+    let fund = resolver::resolve_fund(conn, identifier, true, false).await?;
+
+    let analysis_opt = db::get_fund_analysis(conn, &fund.code).map_err(|e| e.to_string())?;
+
+    let needs_update = if force {
+        true
+    } else if let Some(ref a) = analysis_opt {
+        // Update if older than 30 days
+        if let Ok(last) = chrono::NaiveDateTime::parse_from_str(&a.last_update, "%Y-%m-%d %H:%M:%S") {
+            (chrono::Utc::now().naive_utc() - last).num_days() > 30
+        } else {
+            true
+        }
+    } else {
+        true
+    };
+
+    let final_analysis = if needs_update {
+        println!(
+            "🔄 Fetching deep analysis for {} ({}) from Morningstar...",
+            fund.name, fund.code
+        );
+        let updated_fund = resolver::sync_fund_details(conn, &fund.code).await?;
+        db::get_fund_analysis(conn, &updated_fund.code).map_err(|e| e.to_string())?
+    } else {
+        analysis_opt
+    };
+
+    if let Some(a) = final_analysis {
+        format_inspect_report(&fund, &a);
+    } else {
+        println!("❌ No analysis data available for this fund.");
+    }
+
+    Ok(())
+}
+
+fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
+    let mut table = Table::new();
+    table.set_header(vec!["Metric", "Value", "Description"]);
+
+    table.add_row(vec![
+        "Fund".to_string(),
+        format!("{} ({})", fund.name, fund.code),
+        "Official name and code".to_string(),
+    ]);
+
+    table.add_row(vec![
+        "Morningstar Category".to_string(),
+        fund.fund_type.clone().unwrap_or_else(|| "N/A".to_string()),
+        "Investment style".to_string(),
+    ]);
+
+    let rating_3y = analysis
+        .rating_3y
+        .map(|r| "★".repeat(r as usize))
+        .unwrap_or_else(|| "N/A".to_string());
+    table.add_row(vec![
+        "Rating (3Y)".to_string(),
+        rating_3y,
+        "Morningstar 3-year comprehensive rating".to_string(),
+    ]);
+
+    let rank = analysis
+        .rank_pct_3y
+        .map(|r| format!("{:.2}%", r))
+        .unwrap_or_else(|| "N/A".to_string());
+    table.add_row(vec![
+        "Category Rank (3Y)".to_string(),
+        rank,
+        "Percentage rank in category (lower is better)".to_string(),
+    ]);
+
+    let sharpe = analysis
+        .sharpe_3y
+        .map(|s| format!("{:.2}", s))
+        .unwrap_or_else(|| "N/A".to_string());
+    table.add_row(vec![
+        "Sharpe Ratio (3Y)".to_string(),
+        sharpe,
+        "Risk-adjusted return (higher is better)".to_string(),
+    ]);
+
+    let calmar = analysis
+        .calmar_3y
+        .map(|c| format!("{:.2}", c))
+        .unwrap_or_else(|| "N/A".to_string());
+    table.add_row(vec![
+        "Calmar Ratio (3Y)".to_string(),
+        calmar,
+        "Return over maximum drawdown (higher is better)".to_string(),
+    ]);
+
+    let mdd = analysis
+        .max_drawdown_3y
+        .map(|m| format!("{:.2}%", m))
+        .unwrap_or_else(|| "N/A".to_string());
+    table.add_row(vec![
+        "Max Drawdown (3Y)".to_string(),
+        mdd,
+        "Worst historical peak-to-trough decline".to_string(),
+    ]);
+
+    let gap = analysis
+        .investor_gap_3y
+        .map(|g| format!("{:.2}%", g))
+        .unwrap_or_else(|| "N/A".to_string());
+    table.add_row(vec![
+        "Investor Gap (3Y)".to_string(),
+        gap,
+        "Diff between fund return and avg investor return".to_string(),
+    ]);
+
+    println!("\n📊 Fund Health Report (Morningstar Data)");
+    println!("{table}");
+
+    if let Some(g) = analysis.investor_gap_3y {
+        if g > 5.0 {
+            println!(
+                "💡 Insight: High investor gap (>{:.1}%) suggests this fund is highly volatile,",
+                g
+            );
+            println!("   and investors often lose money due to bad timing (buying high, selling low).");
+        }
+    }
+}
+
 async fn handle_import(
     conn: &Connection,
     wallet_id: i64,
@@ -273,7 +401,7 @@ async fn handle_import(
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Resolve fund (non-interactive)
-        match resolver::resolve_fund(conn, &item.raw_input, false).await {
+        match resolver::resolve_fund(conn, &item.raw_input, false, false).await {
             Ok(fund_obj) => {
                 // Check existing holdings
                 let current_shares =
@@ -487,10 +615,10 @@ async fn main() {
                 println!("Successfully added fund: {} ({})", name, code);
             }
             cli::FundCommands::Delete { fund } => {
-                let fund_obj = db::get_fund_by_code_or_name(&conn, &fund)
-                    .expect("DB error")
-                    .unwrap_or_else(|| {
-                        eprintln!("Error: Fund '{}' not found.", fund);
+                let fund_obj = resolver::resolve_fund(&conn, &fund, true, true)
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error resolving fund: {}", e);
                         std::process::exit(1);
                     });
 
@@ -535,13 +663,13 @@ async fn main() {
                 }
 
                 let fund_code = if let Some(identifier) = fund {
-                    let f = db::get_fund_by_code_or_name(&conn, &identifier)
-                        .expect("DB error")
-                        .unwrap_or_else(|| {
-                            eprintln!("Error: Fund '{}' not found.", identifier);
+                    match resolver::resolve_fund(&conn, &identifier, true, false).await {
+                        Ok(f) => Some(f.code),
+                        Err(e) => {
+                            eprintln!("Error resolving fund: {}", e);
                             std::process::exit(1);
-                        });
-                    Some(f.code)
+                        }
+                    }
                 } else {
                     None
                 };
@@ -551,6 +679,12 @@ async fn main() {
                     std::process::exit(1);
                 }
                 println!("✅ Sync completed.");
+            }
+            cli::FundCommands::Inspect { fund, force } => {
+                if let Err(e) = handle_inspect(&conn, &fund, force).await {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
             }
         },
         Commands::Status { fund: _ } => {
@@ -617,7 +751,7 @@ async fn main() {
             date,
         } => {
             let wallet_id = resolve_wallet_id(&conn, wallet);
-            let fund_obj = resolver::resolve_fund(&conn, &fund, true)
+            let fund_obj = resolver::resolve_fund(&conn, &fund, true, false)
                 .await
                 .unwrap_or_else(|e| {
                     eprintln!("Error resolving fund: {}", e);
@@ -742,7 +876,7 @@ async fn main() {
         } => {
             let wallet_id = resolve_wallet_id(&conn, wallet);
 
-            let fund_obj = resolver::resolve_fund(&conn, &fund, true)
+            let fund_obj = resolver::resolve_fund(&conn, &fund, true, false)
                 .await
                 .unwrap_or_else(|e| {
                     eprintln!("Error resolving fund: {}", e);

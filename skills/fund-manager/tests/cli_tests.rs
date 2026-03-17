@@ -1047,3 +1047,23 @@ fn test_fund_import_override() {
         .stdout(predicate::str::contains("5000"))
         .stdout(predicate::str::contains("6000").not());
 }
+
+#[test]
+fn test_fund_inspect_not_found() {
+    let temp_app_dir = env::temp_dir().join("fund-manager-test-inspect-not-found");
+    if temp_app_dir.exists() {
+        fs::remove_dir_all(&temp_app_dir).unwrap();
+    }
+    fs::create_dir_all(&temp_app_dir).unwrap();
+
+    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
+    
+    // fund fund inspect 999999
+    cmd.arg("fund")
+        .arg("inspect")
+        .arg("999999")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Failed to fetch"));
+}

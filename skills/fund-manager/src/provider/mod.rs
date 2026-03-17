@@ -17,6 +17,15 @@ pub struct FundData {
     pub mgmt_fee: Option<String>,
     pub trust_fee: Option<String>,
     pub sales_fee: Option<String>,
+    // Analysis fields
+    pub snapshot_date: Option<String>,
+    pub rating_3y: Option<i32>,
+    pub rating_5y: Option<i32>,
+    pub rank_pct_3y: Option<f64>,
+    pub sharpe_3y: Option<f64>,
+    pub calmar_3y: Option<f64>,
+    pub max_drawdown_3y: Option<f64>,
+    pub investor_gap_3y: Option<f64>,
 }
 
 #[async_trait]
@@ -58,4 +67,5 @@ pub mod eastmoney_details;
 pub mod eastmoney_html;
 pub mod eastmoney_js;
 pub mod eastmoney_lsjz;
-pub mod ths_search;
+pub mod morningstar;
+pub mod morningstar_search;
