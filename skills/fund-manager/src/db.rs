@@ -1,7 +1,8 @@
 use rusqlite::{Connection, Result};
-use std::path::Path;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use std::path::Path;
+use std::str::FromStr;
 
 pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
     let conn = Connection::open(path)?;
@@ -47,7 +48,10 @@ pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
         ("sales_fee", "TEXT"),
     ];
     for (name, col_type) in new_cols {
-        let _ = conn.execute(&format!("ALTER TABLE fund ADD COLUMN {} {}", name, col_type), []);
+        let _ = conn.execute(
+            &format!("ALTER TABLE fund ADD COLUMN {} {}", name, col_type),
+            [],
+        );
     }
 
     // Create nav_history table
@@ -89,9 +93,12 @@ pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
         .any(|name| name.unwrap_or_default() == "status");
 
     if !has_status {
-        // Since we also want to make shares/nav nullable, and SQLite doesn't support 
+        // Since we also want to make shares/nav nullable, and SQLite doesn't support
         // altering constraints easily, we recreate the table if status is missing.
-        conn.execute("ALTER TABLE transaction_log RENAME TO transaction_log_old", [])?;
+        conn.execute(
+            "ALTER TABLE transaction_log RENAME TO transaction_log_old",
+            [],
+        )?;
         conn.execute(
             "CREATE TABLE transaction_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,10 +137,7 @@ pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
 }
 
 pub fn add_wallet(conn: &Connection, name: &str) -> Result<()> {
-    conn.execute(
-        "INSERT INTO wallet (name) VALUES (?1)",
-        [name],
-    )?;
+    conn.execute("INSERT INTO wallet (name) VALUES (?1)", [name])?;
     Ok(())
 }
 
@@ -161,9 +165,9 @@ pub fn get_all_wallets(conn: &Connection) -> Result<Vec<Wallet>> {
 }
 
 pub fn add_fund(
-    conn: &Connection, 
-    code: &str, 
-    name: &str, 
+    conn: &Connection,
+    code: &str,
+    name: &str,
     fund_type: Option<&str>,
     risk_level: Option<&str>,
     manager: Option<&str>,
@@ -180,8 +184,17 @@ pub fn add_fund(
             management_fee, trust_fee, sales_fee, last_sync_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         rusqlite::params![
-            code, name, fund_type, risk_level, manager, company, establish_date, 
-            mgmt_fee, trust_fee, sales_fee, last_sync_at
+            code,
+            name,
+            fund_type,
+            risk_level,
+            manager,
+            company,
+            establish_date,
+            mgmt_fee,
+            trust_fee,
+            sales_fee,
+            last_sync_at
         ],
     )?;
     Ok(())
@@ -216,7 +229,12 @@ pub fn get_active_wallet_id(conn: &Connection) -> Result<Option<i64>> {
     }
 }
 
-pub fn insert_nav_history_idempotent(conn: &Connection, code: &str, date: &str, nav: &str) -> Result<()> {
+pub fn insert_nav_history_idempotent(
+    conn: &Connection,
+    code: &str,
+    date: &str,
+    nav: &str,
+) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO nav_history (fund_code, date, nav) VALUES (?1, ?2, ?3)",
         [code, date, nav],
@@ -239,10 +257,12 @@ pub struct Fund {
 }
 
 pub fn get_fund_by_code_or_name(conn: &Connection, identifier: &str) -> Result<Option<Fund>> {
-    let mut stmt = conn.prepare("SELECT 
+    let mut stmt = conn.prepare(
+        "SELECT 
         code, name, fund_type, risk_level, manager, company, establish_date, 
         management_fee, trust_fee, sales_fee, last_sync_at 
-        FROM fund WHERE code = ?1 OR name = ?1")?;
+        FROM fund WHERE code = ?1 OR name = ?1",
+    )?;
     let mut rows = stmt.query([identifier])?;
     if let Some(row) = rows.next()? {
         Ok(Some(Fund {
@@ -264,10 +284,12 @@ pub fn get_fund_by_code_or_name(conn: &Connection, identifier: &str) -> Result<O
 }
 
 pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
-    let mut stmt = conn.prepare("SELECT 
+    let mut stmt = conn.prepare(
+        "SELECT 
         code, name, fund_type, risk_level, manager, company, establish_date, 
         management_fee, trust_fee, sales_fee, last_sync_at 
-        FROM fund")?;
+        FROM fund",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok(Fund {
             code: row.get(0)?,
@@ -292,7 +314,9 @@ pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
 }
 
 pub fn get_latest_nav_with_date(conn: &Connection, code: &str) -> Result<Option<(String, String)>> {
-    let mut stmt = conn.prepare("SELECT nav, date FROM nav_history WHERE fund_code = ?1 ORDER BY date DESC LIMIT 1")?;
+    let mut stmt = conn.prepare(
+        "SELECT nav, date FROM nav_history WHERE fund_code = ?1 ORDER BY date DESC LIMIT 1",
+    )?;
     let mut rows = stmt.query([code])?;
     if let Some(row) = rows.next()? {
         Ok(Some((row.get(0)?, row.get(1)?)))
@@ -302,13 +326,77 @@ pub fn get_latest_nav_with_date(conn: &Connection, code: &str) -> Result<Option<
 }
 
 pub fn get_latest_nav(conn: &Connection, code: &str) -> Result<Option<String>> {
-    let mut stmt = conn.prepare("SELECT nav FROM nav_history WHERE fund_code = ?1 ORDER BY date DESC LIMIT 1")?;
+    let mut stmt = conn
+        .prepare("SELECT nav FROM nav_history WHERE fund_code = ?1 ORDER BY date DESC LIMIT 1")?;
     let mut rows = stmt.query([code])?;
     if let Some(row) = rows.next()? {
         Ok(Some(row.get(0)?))
     } else {
         Ok(None)
     }
+}
+
+pub fn get_nav_at_date(conn: &Connection, code: &str, date: &str) -> Result<Option<Decimal>> {
+    let mut stmt =
+        conn.prepare("SELECT nav FROM nav_history WHERE fund_code = ?1 AND date = ?2")?;
+    let mut rows = stmt.query([code, date])?;
+    if let Some(row) = rows.next()? {
+        let nav_str: String = row.get(0)?;
+        Ok(Decimal::from_str(&nav_str).ok())
+    } else {
+        Ok(None)
+    }
+}
+
+/// Find the next available NAV starting from a given date, searching forward up to max_days.
+/// Returns (actual_date, nav) if found, None if not found within the range.
+pub fn find_next_available_nav(
+    conn: &Connection,
+    code: &str,
+    start_date: &str,
+    max_days: i64,
+) -> Result<Option<(String, Decimal)>> {
+    use chrono::NaiveDate;
+
+    let start = NaiveDate::parse_from_str(start_date, "%Y-%m-%d")
+        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+
+    for i in 0..=max_days {
+        let current_date = start + chrono::Duration::days(i);
+        let date_str = current_date.format("%Y-%m-%d").to_string();
+
+        if let Some(nav) = get_nav_at_date(conn, code, &date_str)? {
+            return Ok(Some((date_str, nav)));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Find the previous available NAV before a given date, searching backward up to max_days.
+/// Returns (actual_date, nav) if found, None if not found within the range.
+/// Used for sell transactions where we need the NAV from the day before.
+pub fn find_prev_available_nav(
+    conn: &Connection,
+    code: &str,
+    start_date: &str,
+    max_days: i64,
+) -> Result<Option<(String, Decimal)>> {
+    use chrono::NaiveDate;
+
+    let start = NaiveDate::parse_from_str(start_date, "%Y-%m-%d")
+        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+
+    for i in 0..=max_days {
+        let current_date = start - chrono::Duration::days(i);
+        let date_str = current_date.format("%Y-%m-%d").to_string();
+
+        if let Some(nav) = get_nav_at_date(conn, code, &date_str)? {
+            return Ok(Some((date_str, nav)));
+        }
+    }
+
+    Ok(None)
 }
 
 pub fn add_transaction(
@@ -344,15 +432,15 @@ pub fn get_holdings(conn: &Connection, wallet_id: i64) -> Result<Vec<Holding>> {
         "SELECT 
             f.code, 
             f.name, 
-            SUM(CASE WHEN t.type = 'buy' THEN CAST(t.shares AS REAL) ELSE -CAST(t.shares AS REAL) END) as total_shares,
-            SUM(CASE WHEN t.type = 'buy' THEN CAST(t.money AS REAL) ELSE -CAST(t.money AS REAL) END) as net_cost,
+            SUM(CASE WHEN t.type IN ('buy', 'import') THEN CAST(t.shares AS REAL) ELSE -CAST(t.shares AS REAL) END) as total_shares,
+            SUM(CASE WHEN t.type IN ('buy', 'import') THEN CAST(t.money AS REAL) ELSE -CAST(t.money AS REAL) END) as net_cost,
             (SELECT nav FROM nav_history WHERE fund_code = f.code ORDER BY date DESC LIMIT 1) as latest_nav
          FROM fund f
          JOIN transaction_log t ON f.code = t.fund_code
          WHERE t.wallet_id = ?1 AND t.status = 'settled'
          GROUP BY f.code"
     )?;
-    
+
     let rows = stmt.query_map([wallet_id], |row| {
         Ok(Holding {
             fund_code: row.get(0)?,
@@ -373,21 +461,21 @@ pub fn get_holdings(conn: &Connection, wallet_id: i64) -> Result<Vec<Holding>> {
 pub fn get_fund_shares(conn: &Connection, wallet_id: i64, fund_code: &str) -> Result<Decimal> {
     let mut stmt = conn.prepare(
         "SELECT 
-            SUM(CASE WHEN type = 'buy' THEN CAST(shares AS REAL) ELSE -CAST(shares AS REAL) END)
+            SUM(CASE WHEN type IN ('buy', 'import') THEN CAST(shares AS REAL) ELSE -CAST(shares AS REAL) END)
          FROM transaction_log 
          WHERE wallet_id = ?1 AND fund_code = ?2 AND status = 'settled'"
     )?;
-    let val: Option<f64> = stmt.query_row([wallet_id.to_string(), fund_code.to_string()], |row| row.get(0))?;
+    let val: Option<f64> = stmt
+        .query_row([wallet_id.to_string(), fund_code.to_string()], |row| {
+            row.get(0)
+        })?;
     let shares_f64 = val.unwrap_or(0.0);
-    Ok(Decimal::from_f64(shares_f64).unwrap_or_default().round_dp(2))
+    Ok(Decimal::from_f64(shares_f64)
+        .unwrap_or_default()
+        .round_dp(2))
 }
 
-pub fn settle_transaction(
-    conn: &Connection,
-    id: i64,
-    shares: &str,
-    nav: &str,
-) -> Result<()> {
+pub fn settle_transaction(conn: &Connection, id: i64, shares: &str, nav: &str) -> Result<()> {
     conn.execute(
         "UPDATE transaction_log SET shares = ?1, nav = ?2, status = 'settled' WHERE id = ?3",
         rusqlite::params![shares, nav, id],
@@ -403,7 +491,9 @@ pub struct PendingTransaction {
 }
 
 pub fn get_pending_transactions(conn: &Connection) -> Result<Vec<PendingTransaction>> {
-    let mut stmt = conn.prepare("SELECT id, fund_code, date, money FROM transaction_log WHERE status = 'pending'")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, fund_code, date, money FROM transaction_log WHERE status = 'pending'",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok(PendingTransaction {
             id: row.get(0)?,
@@ -434,17 +524,162 @@ mod tests {
     fn test_init_db() {
         let tmp_file = NamedTempFile::new().unwrap();
         let path = tmp_file.path();
-        
+
         init_db(path).expect("Failed to init DB");
-        
+
         let conn = Connection::open(path).unwrap();
-        let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'").unwrap();
-        let tables: Vec<String> = stmt.query_map([], |row| row.get(0)).unwrap().map(|r| r.unwrap()).collect();
-        
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
         assert!(tables.contains(&"wallet".to_string()));
         assert!(tables.contains(&"fund".to_string()));
         assert!(tables.contains(&"nav_history".to_string()));
         assert!(tables.contains(&"transaction_log".to_string()));
         assert!(tables.contains(&"app_config".to_string()));
+    }
+
+    #[test]
+    fn test_find_next_available_nav_same_day() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+
+        let conn = Connection::open(path).unwrap();
+
+        // Insert a fund
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            Some("股票型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        // Insert NAV for the same day
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-16", "1.5000")
+            .expect("Failed to insert nav");
+
+        // Should find NAV on the same day
+        let result =
+            find_next_available_nav(&conn, "000300", "2026-03-16", 20).expect("Failed to query");
+        assert!(result.is_some());
+        let (date, nav) = result.unwrap();
+        assert_eq!(date, "2026-03-16");
+    }
+
+    #[test]
+    fn test_find_next_available_nav_delayed() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+
+        let conn = Connection::open(path).unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            Some("股票型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        // Insert NAV only for 3 days later
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-19", "1.5200")
+            .expect("Failed to insert nav");
+
+        // Should find NAV after 3 days
+        let result =
+            find_next_available_nav(&conn, "000300", "2026-03-16", 20).expect("Failed to query");
+        assert!(result.is_some());
+        let (date, nav) = result.unwrap();
+        assert_eq!(date, "2026-03-19");
+    }
+
+    #[test]
+    fn test_find_next_available_nav_not_found() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+
+        let conn = Connection::open(path).unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            Some("股票型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        // No NAV inserted
+        let result =
+            find_next_available_nav(&conn, "000300", "2026-03-16", 20).expect("Failed to query");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_prev_available_nav() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+
+        let conn = Connection::open(path).unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            Some("股票型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        // Insert NAV for 2 days before
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-14", "1.4800")
+            .expect("Failed to insert nav");
+
+        // Should find NAV 2 days before
+        let result =
+            find_prev_available_nav(&conn, "000300", "2026-03-16", 20).expect("Failed to query");
+        assert!(result.is_some());
+        let (date, nav) = result.unwrap();
+        assert_eq!(date, "2026-03-14");
     }
 }

@@ -12,11 +12,11 @@ pub fn calculate_purchase(money: Decimal, nav: Decimal, fee_rate: Decimal) -> Pu
     let one = dec!(1);
     let net_amount = money / (one + fee_rate);
     let fee = money - net_amount;
-    
+
     // Round fee to 2 decimal places
     let fee = fee.round_dp(2);
     let net_amount = money - fee;
-    
+
     let shares = net_amount / nav;
     // Round shares to 2 decimal places
     let shares = shares.round_dp(2);
@@ -41,7 +41,9 @@ pub fn resolve_shares(input: &str, total: Decimal) -> Result<Decimal, String> {
         }
     }
 
-    Decimal::from_str(input).map(|d| d.round_dp(2)).map_err(|e| e.to_string())
+    Decimal::from_str(input)
+        .map(|d| d.round_dp(2))
+        .map_err(|e| e.to_string())
 }
 
 pub fn resolve_fee(input: &str, total_money: Decimal) -> Result<Decimal, String> {
@@ -51,7 +53,9 @@ pub fn resolve_fee(input: &str, total_money: Decimal) -> Result<Decimal, String>
         let rate = Decimal::from_str(rate_str.trim()).map_err(|e| e.to_string())?;
         Ok((total_money * (rate / dec!(100))).round_dp(2))
     } else {
-        Decimal::from_str(input).map(|d| d.round_dp(2)).map_err(|e| e.to_string())
+        Decimal::from_str(input)
+            .map(|d| d.round_dp(2))
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -65,7 +69,7 @@ mod tests {
         let nav = dec!(1.25);
         let fee_rate = dec!(0.0015); // 0.15%
         let result = calculate_purchase(money, nav, fee_rate);
-        
+
         assert_eq!(result.fee, dec!(1.50));
         assert_eq!(result.shares, dec!(800.00)); // 1000 / 1.25 = 800
     }

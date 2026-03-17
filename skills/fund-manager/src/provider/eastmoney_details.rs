@@ -43,7 +43,7 @@ impl Provider for EastmoneyDetailProvider {
             code
         );
         let client = crate::provider::build_http_client()?;
-        
+
         let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
         let body = resp.text().await.map_err(|e| e.to_string())?;
         parse_detail_response(&body)
@@ -53,7 +53,7 @@ impl Provider for EastmoneyDetailProvider {
 pub fn parse_detail_response(body: &str) -> Result<FundData, String> {
     let resp: DetailResponse = serde_json::from_str(body).map_err(|e| e.to_string())?;
     let d = resp.datas.ok_or("No 'Datas' in detail response")?;
-    
+
     Ok(FundData {
         code: d.FCODE,
         name: Some(d.SHORTNAME),

@@ -7,7 +7,9 @@ pub struct Aggregator {
 
 impl Aggregator {
     pub fn new() -> Self {
-        Self { providers: Vec::new() }
+        Self {
+            providers: Vec::new(),
+        }
     }
 
     pub fn add_provider(&mut self, provider: Box<dyn Provider + Send + Sync>) {
@@ -35,24 +37,52 @@ impl Aggregator {
 
         let results = tokio::time::timeout(
             tokio::time::Duration::from_secs(10),
-            futures::future::join_all(futures)
-        ).await.map_err(|_| "Fetch operation timed out".to_string())?;
+            futures::future::join_all(futures),
+        )
+        .await
+        .map_err(|_| "Fetch operation timed out".to_string())?;
 
         for res in results {
             if let Ok(data) = res {
-                if data.name.is_some() { final_data.name = data.name; }
-                if data.nav.is_some() { final_data.nav = data.nav; }
-                if data.acc_nav.is_some() { final_data.acc_nav = data.acc_nav; }
-                if data.fee_rate.is_some() { final_data.fee_rate = data.fee_rate; }
-                if data.date.is_some() { final_data.date = data.date; }
-                if data.fund_type.is_some() { final_data.fund_type = data.fund_type; }
-                if data.risk_level.is_some() { final_data.risk_level = data.risk_level; }
-                if data.manager.is_some() { final_data.manager = data.manager; }
-                if data.company.is_some() { final_data.company = data.company; }
-                if data.establish_date.is_some() { final_data.establish_date = data.establish_date; }
-                if data.mgmt_fee.is_some() { final_data.mgmt_fee = data.mgmt_fee; }
-                if data.trust_fee.is_some() { final_data.trust_fee = data.trust_fee; }
-                if data.sales_fee.is_some() { final_data.sales_fee = data.sales_fee; }
+                if data.name.is_some() {
+                    final_data.name = data.name;
+                }
+                if data.nav.is_some() {
+                    final_data.nav = data.nav;
+                }
+                if data.acc_nav.is_some() {
+                    final_data.acc_nav = data.acc_nav;
+                }
+                if data.fee_rate.is_some() {
+                    final_data.fee_rate = data.fee_rate;
+                }
+                if data.date.is_some() {
+                    final_data.date = data.date;
+                }
+                if data.fund_type.is_some() {
+                    final_data.fund_type = data.fund_type;
+                }
+                if data.risk_level.is_some() {
+                    final_data.risk_level = data.risk_level;
+                }
+                if data.manager.is_some() {
+                    final_data.manager = data.manager;
+                }
+                if data.company.is_some() {
+                    final_data.company = data.company;
+                }
+                if data.establish_date.is_some() {
+                    final_data.establish_date = data.establish_date;
+                }
+                if data.mgmt_fee.is_some() {
+                    final_data.mgmt_fee = data.mgmt_fee;
+                }
+                if data.trust_fee.is_some() {
+                    final_data.trust_fee = data.trust_fee;
+                }
+                if data.sales_fee.is_some() {
+                    final_data.sales_fee = data.sales_fee;
+                }
             }
         }
 
@@ -67,9 +97,9 @@ impl Aggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_decimal_macros::dec;
     use mockall::predicate::*;
     use mockall::*;
+    use rust_decimal_macros::dec;
 
     mock! {
         pub MyProvider {}
@@ -83,17 +113,19 @@ mod tests {
     #[tokio::test]
     async fn test_aggregator_merging_logic() {
         let mut mock_js = MockMyProvider::new();
-        mock_js.expect_fetch()
-            .returning(|code| Ok(FundData {
+        mock_js.expect_fetch().returning(|code| {
+            Ok(FundData {
                 code: code.to_string(),
                 name: Some("Fund".to_string()),
                 nav: Some(dec!(1.0)),
                 date: Some("2026-03-09".to_string()),
                 ..Default::default()
-            }));
+            })
+        });
 
         let mut mock_html = MockMyProvider::new();
-        mock_html.expect_fetch()
+        mock_html
+            .expect_fetch()
             .returning(|_| Err("HTML Error".to_string()));
 
         let mut aggregator = Aggregator::new();
@@ -101,7 +133,7 @@ mod tests {
         aggregator.add_provider(Box::new(mock_html));
 
         let res = aggregator.fetch_all("000300").await.unwrap();
-        
+
         assert_eq!(res.name.unwrap(), "Fund");
         assert_eq!(res.nav.unwrap(), dec!(1.0));
         assert!(res.fee_rate.is_none());

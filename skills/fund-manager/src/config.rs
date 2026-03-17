@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-use std::env;
 use dirs;
+use std::env;
+use std::path::PathBuf;
 
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -56,18 +56,20 @@ mod tests {
     fn test_paths_and_env_override() {
         // 1. Test default path logic
         // We must ensure the env var is not set
-        unsafe { env::remove_var("FUND_MANAGER_APP_DIR"); }
-        
+        unsafe {
+            env::remove_var("FUND_MANAGER_APP_DIR");
+        }
+
         let app_dir = get_app_dir();
         println!("Default App dir: {:?}", app_dir);
-        
+
         #[cfg(unix)]
         {
             let path_str = app_dir.to_str().unwrap();
             assert!(path_str.contains(".config"));
             assert!(path_str.contains("fund-manager"));
         }
-        
+
         #[cfg(windows)]
         {
             assert!(app_dir.to_str().unwrap().contains("fund-manager"));

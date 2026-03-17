@@ -23,7 +23,7 @@ impl Provider for EastmoneyJsProvider {
     async fn fetch(&self, code: &str) -> Result<FundData, String> {
         let url = format!("https://fundgz.1234567.com.cn/js/{}.js", code);
         let client = crate::provider::build_http_client()?;
-        
+
         let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
         let body = resp.text().await.map_err(|e| e.to_string())?;
         parse_js_response(&body)
@@ -31,11 +31,16 @@ impl Provider for EastmoneyJsProvider {
 }
 
 pub fn parse_js_response(body: &str) -> Result<FundData, String> {
-    let caps = JS_RE.captures(body).ok_or("Failed to match jsonpgz pattern")?;
-    let json_str = caps.get(1).ok_or("Failed to extract JSON from JS")?.as_str();
-    
+    let caps = JS_RE
+        .captures(body)
+        .ok_or("Failed to match jsonpgz pattern")?;
+    let json_str = caps
+        .get(1)
+        .ok_or("Failed to extract JSON from JS")?
+        .as_str();
+
     let resp: JsFundResponse = serde_json::from_str(json_str).map_err(|e| e.to_string())?;
-    
+
     Ok(FundData {
         code: resp.fundcode,
         name: Some(resp.name),

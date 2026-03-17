@@ -18,7 +18,7 @@ impl ThsSearchProvider {
             urlencoding::encode(text)
         );
         let client = crate::provider::build_http_client()?;
-        
+
         let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
         let body = resp.text().await.map_err(|e| e.to_string())?;
         parse_search_response(&body)
@@ -26,11 +26,16 @@ impl ThsSearchProvider {
 }
 
 pub fn parse_search_response(body: &str) -> Result<Vec<SearchResult>, String> {
-    let caps = SEARCH_RE.captures(body).ok_or("Failed to match search response pattern")?;
-    let json_str = caps.get(1).ok_or("Failed to extract JSON from search response")?.as_str();
-    
+    let caps = SEARCH_RE
+        .captures(body)
+        .ok_or("Failed to match search response pattern")?;
+    let json_str = caps
+        .get(1)
+        .ok_or("Failed to extract JSON from search response")?
+        .as_str();
+
     let results: Vec<String> = serde_json::from_str(json_str).map_err(|e| e.to_string())?;
-    
+
     let mut parsed = Vec::new();
     for r in results {
         // Format example: "0||015000 \u534e\u6cf0\u4fdd\u5174\u5409\u5e74\u76c8\u6df7\u5408C \u57fa\u91d1"

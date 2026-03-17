@@ -26,6 +26,15 @@ pub trait Provider {
         // Default: not supported by this provider
         Err("Date-specific fetch not supported by this provider".to_string())
     }
+    async fn fetch_range(
+        &self,
+        code: &str,
+        _start: &str,
+        _end: &str,
+    ) -> Result<Vec<FundData>, String> {
+        // Default: not supported by this provider
+        Err("Date-range fetch not supported by this provider".to_string())
+    }
 }
 
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -44,9 +53,9 @@ pub fn build_http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
-pub mod eastmoney_js;
-pub mod eastmoney_html;
+pub mod aggregator;
 pub mod eastmoney_details;
+pub mod eastmoney_html;
+pub mod eastmoney_js;
 pub mod eastmoney_lsjz;
 pub mod ths_search;
-pub mod aggregator;
