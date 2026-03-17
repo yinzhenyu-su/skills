@@ -298,9 +298,15 @@ async fn handle_import(
                         .map_err(|e| e.to_string())?;
 
                     if let Some((actual_date, nav)) = nav_result {
-                        let fee_rate = fund_obj.management_fee.as_deref().unwrap_or("0.0015");
-                        let fee_rate_dec = Decimal::from_str(fee_rate.trim_end_matches('%'))
-                            .unwrap_or(dec!(0.0015));
+                        let fee_rate_dec = if let Some(ref sf) = fund_obj.sales_fee {
+                            if !sf.trim().is_empty() && sf != "0.00%" {
+                                finance::parse_percentage_rate(sf)
+                            } else {
+                                dec!(0.0015)
+                            }
+                        } else {
+                            dec!(0.0015)
+                        };
 
                         let res = finance::calculate_purchase(item.money, nav, fee_rate_dec);
                         db::add_transaction(
@@ -318,9 +324,11 @@ async fn handle_import(
                         .map_err(|e| e.to_string())?;
                     } else {
                         // No NAV available within 20 days, create pending transaction
-                        let fee_rate = fund_obj.management_fee.as_deref().unwrap_or("0.0015");
-                        let fee_rate_dec = Decimal::from_str(fee_rate.trim_end_matches('%'))
-                            .unwrap_or(dec!(0.0015));
+                        let fee_rate_dec = if let Some(ref sf) = fund_obj.sales_fee {
+                            finance::parse_percentage_rate(sf)
+                        } else {
+                            dec!(0.0015)
+                        };
                         let fee =
                             (item.money * fee_rate_dec / (dec!(1) + fee_rate_dec)).round_dp(2);
 
@@ -521,69 +529,28 @@ async fn main() {
                 all,
                 fund,
             } => {
-                if all {
-                    // --all mode: sync all funds (metadata + 30 days NAV)
-                    let funds = db::get_all_funds(&conn).expect("DB error");
-                    if funds.is_empty() {
-                        println!("No funds to sync. Add funds first with 'fund fund add'.");
-                        std::process::exit(0);
-                    }
-
-                    let end_date = chrono::Local::now().format("%Y-%m-%d").to_string();
-                    let start_date = start.clone().unwrap_or_else(|| {
-                        (chrono::Local::now() - chrono::Duration::days(30))
-                            .format("%Y-%m-%d")
-                            .to_string()
-                    });
-
-                    println!(
-                        "Syncing all {} funds (metadata + {} to {})...",
-                        funds.len(),
-                        start_date,
-                        end_date
-                    );
-
-                    for f in &funds {
-                        // Sync metadata
-                        if let Err(e) = resolver::sync_fund_details(&conn, &f.code).await {
-                            eprintln!("Warning: Failed to sync metadata for {}: {}", f.code, e);
-                        }
-
-                        // Sync NAV history
-                        if let Err(e) = sync::sync_funds(
-                            &conn,
-                            Some(f.code.clone()),
-                            Some(start_date.clone()),
-                            Some(end_date.clone()),
-                            false,
-                        )
-                        .await
-                        {
-                            eprintln!("Warning: Failed to sync NAV for {}: {}", f.code, e);
-                        }
-                    }
-                    println!("✅ Sync completed for {} funds.", funds.len());
-                } else {
-                    // Regular mode: require --fund or use default behavior
-                    let fund_code = if let Some(identifier) = fund {
-                        let f = db::get_fund_by_code_or_name(&conn, &identifier)
-                            .expect("DB error")
-                            .unwrap_or_else(|| {
-                                eprintln!("Error: Fund '{}' not found.", identifier);
-                                std::process::exit(1);
-                            });
-                        Some(f.code)
-                    } else {
-                        None
-                    };
-
-                    if let Err(e) = sync::sync_funds(&conn, fund_code, start, end, auto_fill).await
-                    {
-                        eprintln!("Error during sync: {}", e);
-                        std::process::exit(1);
-                    }
-                    println!("✅ Sync completed.");
+                if !all && fund.is_none() {
+                    eprintln!("Error: Please specify a fund identifier or use --all for full sync.");
+                    std::process::exit(1);
                 }
+
+                let fund_code = if let Some(identifier) = fund {
+                    let f = db::get_fund_by_code_or_name(&conn, &identifier)
+                        .expect("DB error")
+                        .unwrap_or_else(|| {
+                            eprintln!("Error: Fund '{}' not found.", identifier);
+                            std::process::exit(1);
+                        });
+                    Some(f.code)
+                } else {
+                    None
+                };
+
+                if let Err(e) = sync::sync_funds(&conn, fund_code, start, end, auto_fill).await {
+                    eprintln!("Error during sync: {}", e);
+                    std::process::exit(1);
+                }
+                println!("✅ Sync completed.");
             }
         },
         Commands::Status { fund: _ } => {
@@ -673,9 +640,16 @@ async fn main() {
                     .expect("Failed to lookup NAV");
 
                 if let Some((actual_date, nav_val)) = nav_result {
-                    let fee_rate = fund_obj.management_fee.as_deref().unwrap_or("0.0015");
-                    let fee_rate_dec =
-                        Decimal::from_str(fee_rate.trim_end_matches('%')).unwrap_or(dec!(0.0015));
+                    // Purchase Fee priority: sales_fee -> 0.15% (default)
+                    let (fee_rate_dec, fee_source) = if let Some(ref sf) = fund_obj.sales_fee {
+                        if !sf.trim().is_empty() && sf != "0.00%" {
+                            (finance::parse_percentage_rate(sf), format!("sales_fee: {}", sf))
+                        } else {
+                            (dec!(0.0015), "default: 0.15%".to_string())
+                        }
+                    } else {
+                        (dec!(0.0015), "default: 0.15%".to_string())
+                    };
 
                     let res = finance::calculate_purchase(money, nav_val, fee_rate_dec);
                     db::add_transaction(
@@ -699,14 +673,16 @@ async fn main() {
                         );
                     }
                     println!(
-                        "Bought {}: {} shares (NAV: {}, Fee: {}) on {}",
-                        fund_obj.code, res.shares, nav_val, res.fee, actual_date
+                        "Bought {}: {} shares (NAV: {}, Fee: {} [{}]) on {}",
+                        fund_obj.code, res.shares, nav_val, res.fee, fee_source, actual_date
                     );
                 } else {
                     // NAV not available within 20 days, create pending transaction
-                    let fee_rate = fund_obj.management_fee.as_deref().unwrap_or("0.0015");
-                    let fee_rate_dec =
-                        Decimal::from_str(fee_rate.trim_end_matches('%')).unwrap_or(dec!(0.0015));
+                    let fee_rate_dec = if let Some(ref sf) = fund_obj.sales_fee {
+                        finance::parse_percentage_rate(sf)
+                    } else {
+                        dec!(0.0015)
+                    };
                     let fee = (money * fee_rate_dec / (dec!(1) + fee_rate_dec)).round_dp(2);
 
                     db::add_transaction(

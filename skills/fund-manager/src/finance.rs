@@ -24,6 +24,22 @@ pub fn calculate_purchase(money: Decimal, nav: Decimal, fee_rate: Decimal) -> Pu
     PurchaseResult { shares, fee }
 }
 
+/// Parses a percentage rate string (e.g. "0.15%") into a Decimal (e.g. 0.0015).
+pub fn parse_percentage_rate(input: &str) -> Decimal {
+    let input = input.trim();
+    if input.is_empty() {
+        return Decimal::ZERO;
+    }
+
+    if input.ends_with('%') {
+        let val_str = &input[..input.len() - 1];
+        let val = Decimal::from_str(val_str.trim()).unwrap_or(Decimal::ZERO);
+        (val / dec!(100)).round_dp(6)
+    } else {
+        Decimal::from_str(input).unwrap_or(Decimal::ZERO)
+    }
+}
+
 pub fn resolve_shares(input: &str, total: Decimal) -> Result<Decimal, String> {
     if input.to_lowercase() == "all" {
         return Ok(total);
@@ -62,6 +78,29 @@ pub fn resolve_fee(input: &str, total_money: Decimal) -> Result<Decimal, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_percentage_rate() {
+        assert_eq!(parse_percentage_rate("0.15%"), dec!(0.0015));
+        assert_eq!(parse_percentage_rate("1.5%"), dec!(0.015));
+        assert_eq!(parse_percentage_rate("0.0015"), dec!(0.0015));
+        assert_eq!(parse_percentage_rate("  0.12%  "), dec!(0.0012));
+        assert_eq!(parse_percentage_rate(""), dec!(0));
+    }
+
+    #[test]
+    fn test_calculate_purchase_with_low_fee() {
+        // 100 money, 0.15% fee, 2.3026 NAV
+        let money = dec!(100);
+        let nav = dec!(2.3026);
+        let fee_rate = parse_percentage_rate("0.15%");
+        let result = calculate_purchase(money, nav, fee_rate);
+
+        // 100 - 100/1.0015 = 0.1497... -> 0.15
+        assert_eq!(result.fee, dec!(0.15));
+        // (100 - 0.15) / 2.3026 = 43.3640... -> 43.36
+        assert_eq!(result.shares, dec!(43.36));
+    }
 
     #[test]
     fn test_calculate_purchase() {

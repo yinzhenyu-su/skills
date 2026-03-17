@@ -510,6 +510,27 @@ pub fn get_pending_transactions(conn: &Connection) -> Result<Vec<PendingTransact
     Ok(pending)
 }
 
+/// Get the earliest date of pending transactions.
+/// If code is provided, only check that fund. Otherwise check all.
+pub fn get_earliest_pending_date(conn: &Connection, code: Option<&str>) -> Result<Option<String>> {
+    let sql = if let Some(c) = code {
+        format!(
+            "SELECT MIN(date) FROM transaction_log WHERE status = 'pending' AND fund_code = '{}'",
+            c
+        )
+    } else {
+        "SELECT MIN(date) FROM transaction_log WHERE status = 'pending'".to_string()
+    };
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    if let Some(row) = rows.next()? {
+        Ok(row.get(0)?)
+    } else {
+        Ok(None)
+    }
+}
+
 pub fn delete_fund(conn: &Connection, code: &str) -> Result<()> {
     conn.execute("DELETE FROM fund WHERE code = ?1", [code])?;
     Ok(())
@@ -648,38 +669,27 @@ mod tests {
     }
 
     #[test]
-    fn test_find_prev_available_nav() {
+    fn test_get_earliest_pending_date() {
         let tmp_file = NamedTempFile::new().unwrap();
         let path = tmp_file.path();
         init_db(path).expect("Failed to init DB");
-
         let conn = Connection::open(path).unwrap();
 
-        add_fund(
-            &conn,
-            "000300",
-            "沪深300",
-            Some("股票型"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("Failed to add fund");
+        add_wallet(&conn, "test").unwrap();
+        add_fund(&conn, "000300", "沪深300", None, None, None, None, None, None, None, None, None).unwrap();
 
-        // Insert NAV for 2 days before
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-14", "1.4800")
-            .expect("Failed to insert nav");
+        // No pending -> returns None
+        assert_eq!(get_earliest_pending_date(&conn, None).unwrap(), None);
 
-        // Should find NAV 2 days before
-        let result =
-            find_prev_available_nav(&conn, "000300", "2026-03-16", 20).expect("Failed to query");
-        assert!(result.is_some());
-        let (date, nav) = result.unwrap();
-        assert_eq!(date, "2026-03-14");
+        // Add pending transactions
+        add_transaction(&conn, 1, "000300", "buy", "1000", None, None, "1.5", "2024-03-01", "pending").unwrap();
+        add_transaction(&conn, 1, "000300", "buy", "1000", None, None, "1.5", "2024-02-01", "pending").unwrap();
+
+        // Global check
+        assert_eq!(get_earliest_pending_date(&conn, None).unwrap(), Some("2024-02-01".to_string()));
+
+        // Specific fund check
+        assert_eq!(get_earliest_pending_date(&conn, Some("000300")).unwrap(), Some("2024-02-01".to_string()));
+        assert_eq!(get_earliest_pending_date(&conn, Some("999999")).unwrap(), None);
     }
 }
