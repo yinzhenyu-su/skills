@@ -7,6 +7,7 @@ use fund_manager::finance;
 use fund_manager::provider::{eastmoney_lsjz::EastmoneyLsjzProvider, Provider};
 use fund_manager::{config, resolver, sync};
 use rusqlite::Connection;
+use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::fs;
@@ -700,25 +701,63 @@ async fn main() {
                 }
             }
             FundCommands::List => {
-                let funds = db::get_all_funds(&conn).expect("数据库错误");
+                let active_wallet_id = db::get_active_wallet_id(&conn).expect("数据库错误");
+                let funds =
+                    db::get_funds_with_valuations(&conn, active_wallet_id).expect("数据库错误");
+
                 let mut table = Table::new();
-                table.set_header(vec![
-                    "代码",
-                    "名称",
-                    "类型",
-                    "风险等级",
-                    "基金经理",
-                    "最后同步",
-                ]);
-                for f in funds {
-                    table.add_row(vec![
-                        f.code,
-                        f.name,
-                        f.fund_type.unwrap_or_else(|| "N/A".to_string()),
+                let mut header = vec!["代码", "名称", "类型", "风险", "经理", "最新净值 (日期)"];
+                if active_wallet_id.is_some() {
+                    header.push("持有份额");
+                    header.push("总价值");
+                }
+                header.push("最后同步");
+                table.set_header(header);
+
+                for f_val in funds {
+                    let f = f_val.fund;
+                    let mut row = vec![
+                        f.code.clone(),
+                        f.name.clone(),
+                        f.fund_type.unwrap_or_else(|| "-".to_string()),
                         f.risk_level.unwrap_or_else(|| "-".to_string()),
                         f.manager.unwrap_or_else(|| "-".to_string()),
-                        f.last_sync_at.unwrap_or_else(|| "-".to_string()),
-                    ]);
+                    ];
+
+                    // 净值 (日期)
+                    if let Some(nav_str) = f_val.latest_nav.as_ref() {
+                        let date_str = f_val.latest_nav_date.as_ref()
+                            .map(|d| if d.len() >= 10 { &d[5..10] } else { d })
+                            .unwrap_or("??-??");
+                        row.push(format!("{} ({})", nav_str, date_str));
+                    } else {
+                        row.push("-".to_string());
+                    };
+
+                    if active_wallet_id.is_some() {
+                        // 份额
+                        row.push(format!("{:.2}", f_val.total_shares));
+
+                        // 总价值
+                        let valuation = if let Some(nav_str) = f_val.latest_nav {
+                            let nav = Decimal::from_str(&nav_str).unwrap_or_default();
+                            let shares = Decimal::from_f64(f_val.total_shares).unwrap_or_default();
+                            (nav * shares).round_dp(2)
+                        } else {
+                            Decimal::ZERO
+                        };
+                        row.push(valuation.to_string());
+                    }
+
+                    row.push(
+                        f.last_sync_at
+                            .as_ref()
+                            .map(|d| if d.len() >= 10 { &d[5..10] } else { d })
+                            .unwrap_or("-")
+                            .to_string(),
+                    );
+
+                    table.add_row(row);
                 }
                 println!("{table}");
             }

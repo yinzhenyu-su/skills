@@ -312,6 +312,14 @@ pub struct Fund {
     pub last_sync_at: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct FundWithValuation {
+    pub fund: Fund,
+    pub latest_nav: Option<String>,
+    pub latest_nav_date: Option<String>,
+    pub total_shares: f64,
+}
+
 pub fn get_fund_by_code_or_name(conn: &Connection, identifier: &str) -> Result<Option<Fund>> {
     let mut stmt = conn.prepare(
         "SELECT 
@@ -398,6 +406,54 @@ pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
         funds.push(row?);
     }
     Ok(funds)
+}
+
+pub fn get_funds_with_valuations(
+    conn: &Connection,
+    wallet_id: Option<i64>,
+) -> Result<Vec<FundWithValuation>> {
+    let mut stmt = conn.prepare(
+        "SELECT 
+            f.code, f.name, f.fund_type, f.risk_level, f.manager, f.company, f.establish_date,
+            f.management_fee, f.trust_fee, f.sales_fee, f.last_sync_at,
+            (SELECT nav FROM nav_history WHERE fund_code = f.code ORDER BY date DESC LIMIT 1) as latest_nav,
+            (SELECT date FROM nav_history WHERE fund_code = f.code ORDER BY date DESC LIMIT 1) as latest_nav_date,
+            SUM(CASE 
+                WHEN t.wallet_id = ?1 AND t.status = 'settled' 
+                THEN (CASE WHEN t.type IN ('buy', 'import') THEN CAST(t.shares AS REAL) ELSE -CAST(t.shares AS REAL) END)
+                ELSE 0 
+            END) as total_shares
+        FROM fund f
+        LEFT JOIN transaction_log t ON f.code = t.fund_code
+        GROUP BY f.code",
+    )?;
+
+    let rows = stmt.query_map([wallet_id], |row| {
+        Ok(FundWithValuation {
+            fund: Fund {
+                code: row.get(0)?,
+                name: row.get(1)?,
+                fund_type: row.get(2)?,
+                risk_level: row.get(3)?,
+                manager: row.get(4)?,
+                company: row.get(5)?,
+                establish_date: row.get(6)?,
+                management_fee: row.get(7)?,
+                trust_fee: row.get(8)?,
+                sales_fee: row.get(9)?,
+                last_sync_at: row.get(10)?,
+            },
+            latest_nav: row.get(11)?,
+            latest_nav_date: row.get(12)?,
+            total_shares: row.get::<_, Option<f64>>(13)?.unwrap_or(0.0),
+        })
+    })?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
 }
 
 pub fn get_all_fund_names_and_codes(conn: &Connection) -> Result<Vec<(String, String)>> {
