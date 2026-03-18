@@ -65,3 +65,89 @@ fn test_wallet_use() {
         .failure()
         .stderr(predicate::str::contains("不存在"));
 }
+
+#[test]
+fn test_wallet_delete() {
+    let ctx = TestContext::new("wallet-delete");
+
+    // 1. Add a wallet
+    ctx.cmd()
+        .arg("wallet")
+        .arg("add")
+        .arg("ToDelete")
+        .assert()
+        .success();
+
+    // 2. Delete it (using alias 'del' and -y)
+    ctx.cmd()
+        .arg("-y")
+        .arg("wallet")
+        .arg("del")
+        .arg("ToDelete")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Successfully deleted wallet: ToDelete"));
+
+    // 3. Verify it's gone from list
+    ctx.cmd()
+        .arg("wallet")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ToDelete").not());
+
+    // 4. Try deleting non-existent wallet
+    ctx.cmd()
+        .arg("wallet")
+        .arg("delete")
+        .arg("NoSuchWallet")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not exist"));
+}
+
+#[test]
+fn test_wallet_delete_active() {
+    let ctx = TestContext::new("wallet-delete-active");
+
+    // 1. Add and use wallet
+    ctx.cmd()
+        .arg("wallet")
+        .arg("add")
+        .arg("ActiveWallet")
+        .assert()
+        .success();
+
+    ctx.cmd()
+        .arg("wallet")
+        .arg("use")
+        .arg("ActiveWallet")
+        .assert()
+        .success();
+
+    // 2. Verify it is active
+    ctx.cmd()
+        .arg("wallet")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("*"));
+
+    // 3. Delete it
+    ctx.cmd()
+        .arg("-y")
+        .arg("wallet")
+        .arg("delete")
+        .arg("ActiveWallet")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("It was the active wallet, now no active wallet is selected"));
+
+    // 4. Verify no wallet is active
+    ctx.cmd()
+        .arg("wallet")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("*").not());
+}

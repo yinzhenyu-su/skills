@@ -621,6 +621,32 @@ async fn main() {
                     std::process::exit(1);
                 }
             },
+            WalletCommands::Delete { name } => {
+                let wallet_id_opt = db::get_wallet_id_by_name(&conn, &name).expect("DB error");
+                if let Some(id) = wallet_id_opt {
+                    let active_id = db::get_active_wallet_id(&conn).expect("DB error");
+                    let is_active = Some(id) == active_id;
+
+                    let prompt = format!(
+                        "Are you sure you want to delete wallet '{}' and ALL its transaction history?",
+                        name
+                    );
+                    if confirm_action(&prompt, cli.yes) {
+                        db::delete_wallet_by_name(&conn, &name).expect("Failed to delete wallet");
+                        if is_active {
+                            db::clear_active_wallet(&conn).expect("Failed to clear active wallet");
+                            println!("Successfully deleted wallet: {}. (It was the active wallet, now no active wallet is selected.)", name);
+                        } else {
+                            println!("Successfully deleted wallet: {}", name);
+                        }
+                    } else {
+                        println!("Deletion cancelled.");
+                    }
+                } else {
+                    eprintln!("Error: Wallet '{}' does not exist.", name);
+                    std::process::exit(1);
+                }
+            }
         },
         Commands::Fund { command } => match command {
             FundCommands::Add { code, name, fee } => {

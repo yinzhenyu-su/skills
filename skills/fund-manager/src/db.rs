@@ -238,6 +238,16 @@ pub fn get_wallet_id_by_name(conn: &Connection, name: &str) -> Result<Option<i64
     }
 }
 
+pub fn delete_wallet_by_name(conn: &Connection, name: &str) -> Result<()> {
+    conn.execute("DELETE FROM wallet WHERE name = ?1", [name])?;
+    Ok(())
+}
+
+pub fn clear_active_wallet(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM app_config WHERE key = 'active_wallet_id'", [])?;
+    Ok(())
+}
+
 pub fn set_active_wallet(conn: &Connection, wallet_id: i64) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO app_config (key, value) VALUES (?1, ?2)",
