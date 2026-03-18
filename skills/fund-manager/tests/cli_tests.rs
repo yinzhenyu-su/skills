@@ -20,7 +20,7 @@ fn test_wallet_add() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Successfully added wallet: Test Wallet",
+            "成功添加钱包：Test Wallet",
         ));
 
     // Verify DB entry
@@ -30,7 +30,7 @@ fn test_wallet_add() {
         .arg("Test Wallet")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("already exists"));
+        .stderr(predicate::str::contains("已存在"));
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn test_wallet_use() {
         .arg("Wallet2")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Now using wallet: Wallet2"));
+        .stdout(predicate::str::contains("当前已切换至钱包：Wallet2"));
 
     // 3. Switch to non-existent wallet
     ctx.cmd()
@@ -68,7 +68,7 @@ fn test_wallet_use() {
         .arg("NoSuchWallet")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("does not exist"));
+        .stderr(predicate::str::contains("不存在"));
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn test_status_sync_failure_warning() {
         .assert()
         .success() // App should not crash
         .stderr(predicate::str::contains(
-            "Warning: Could not fetch latest data",
+            "⚠️ 警告：无法获取最新数据",
         ));
 }
 
@@ -153,7 +153,7 @@ fn test_buy_auto_calculation() {
         .arg(TEST_DATE)
         .assert()
         .success()
-        .stdout(predicate::str::contains("Bought 000300"))
+        .stdout(predicate::str::contains("成功买入 000300"))
         .stdout(predicate::str::contains(TEST_DATE));
 }
 
@@ -378,7 +378,7 @@ fn test_wallet_override_and_auto_discovery() {
         .arg(TEST_DATE)
         .assert()
         .success()
-        .stdout(predicate::str::contains("Bought 160119"));
+        .stdout(predicate::str::contains("成功买入 160119"));
 
     // 3. Verify WalletA is empty
     Command::cargo_bin("fund-manager")
@@ -1052,5 +1052,5 @@ fn test_fund_inspect_not_found() {
         .arg("999999")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Failed to fetch"));
+        .stderr(predicate::str::contains("拉取基金"));
 }

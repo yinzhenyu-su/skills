@@ -15,7 +15,7 @@ fn test_wallet_add() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Successfully added wallet: Test Wallet",
+            "成功添加钱包：Test Wallet",
         ));
 
     // Verify DB entry
@@ -25,7 +25,7 @@ fn test_wallet_add() {
         .arg("Test Wallet")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("already exists"));
+        .stderr(predicate::str::contains("已存在"));
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn test_wallet_use() {
         .arg("Wallet2")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Now using wallet: Wallet2"));
+        .stdout(predicate::str::contains("当前已切换至钱包：Wallet2"));
 
     // 3. Switch to non-existent wallet
     ctx.cmd()
@@ -63,5 +63,5 @@ fn test_wallet_use() {
         .arg("NoSuchWallet")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("does not exist"));
+        .stderr(predicate::str::contains("不存在"));
 }

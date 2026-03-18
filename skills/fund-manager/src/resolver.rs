@@ -9,40 +9,118 @@ fn is_6_digit_code(input: &str) -> bool {
     input.len() == 6 && input.chars().all(|c| c.is_ascii_digit())
 }
 
+#[derive(Debug)]
+pub enum ResolveError {
+    NotFound(String),
+    Ambiguous(String, Vec<String>),
+    FetchFailed(String, String),
+    DatabaseError(String),
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolveError::NotFound(input) => write!(f, "未找到基金: '{}'", input),
+            ResolveError::Ambiguous(input, matches) => {
+                write!(f, "输入的 '{}' 存在歧义，找到多个匹配项: {}", input, matches.join(", "))
+            }
+            ResolveError::FetchFailed(input, err) => {
+                write!(f, "拉取基金 '{}' 详情失败: {}", input, err)
+            }
+            ResolveError::DatabaseError(err) => write!(f, "数据库错误: {}", err),
+        }
+    }
+}
+
+pub type ResolveResult<T> = Result<T, ResolveError>;
+
+pub struct AdviceEngine;
+
+impl AdviceEngine {
+    pub fn check_param_swap(fund_input: &str, value_input: &str) -> Option<String> {
+        // If fund_input is a number but not 6 digits, and value_input is exactly 6 digits
+        let is_fund_num = fund_input.chars().all(|c| c.is_ascii_digit());
+        let is_value_6_digits = is_6_digit_code(value_input);
+
+        if is_fund_num && fund_input.len() != 6 && is_value_6_digits {
+            return Some(format!(
+                "💡 Hint: 你是不是把[基金代码]和[金额/份额]写反了？\n   当前参数: 名称='{}', 数值='{}'\n   建议用法: fund ... {} {}",
+                fund_input, value_input, value_input, fund_input
+            ));
+        }
+        None
+    }
+
+    pub fn suggest_spelling(conn: &Connection, input: &str) -> Option<String> {
+        let all_local = db::get_all_fund_names_and_codes(conn).ok()?;
+        if all_local.is_empty() {
+            return None;
+        }
+
+        let mut matches = Vec::new();
+        for (code, name) in all_local {
+            // Simple case-insensitive contains or prefix match
+            let lower_input = input.to_lowercase();
+            let lower_name = name.to_lowercase();
+            let lower_code = code.to_lowercase();
+
+            if lower_name.contains(&lower_input)
+                || lower_code.contains(&lower_input)
+                || lower_input.contains(&lower_name)
+            {
+                matches.push(format!("'{}' ({})", name, code));
+            }
+
+            if matches.len() >= 2 {
+                break;
+            }
+        }
+
+        if !matches.is_empty() {
+            return Some(format!(
+                "❓ 未找到基金 '{}'。你是不是想找: {}？",
+                input,
+                matches.join(" 或 ")
+            ));
+        }
+        None
+    }
+}
+
 pub async fn resolve_fund(
     conn: &Connection,
     input: &str,
     interactive: bool,
     local_only: bool,
-) -> Result<Fund, String> {
+) -> ResolveResult<Fund> {
     // 1. Precise match locally (by code or exact name)
-    if let Some(f) = db::get_fund_by_code_or_name(conn, input).map_err(|e| e.to_string())? {
+    if let Some(f) = db::get_fund_by_code_or_name(conn, input)
+        .map_err(|e| ResolveError::DatabaseError(e.to_string()))?
+    {
         return maybe_sync_fund(conn, f).await;
     }
 
     // 2. Fallback to direct fetch for 6-digit codes (if not local_only)
     if !local_only && is_6_digit_code(input) {
         println!(
-            "✨ '{}' looks like a fund code. Trying direct fetch...",
+            "✨ '{}' 看起来像基金代码，正在尝试直接获取详情...",
             input
         );
         match sync_fund_details(conn, input).await {
             Ok(fund) => return Ok(fund),
             Err(e) => {
-                return Err(format!(
-                    "Failed to fetch fund details for '{}': {}",
-                    input, e
-                ));
+                return Err(ResolveError::FetchFailed(input.to_string(), e));
             }
         }
     }
 
     // 3. Local fuzzy search
-    let local_results = db::search_funds_locally(conn, input).map_err(|e| e.to_string())?;
+    let local_results =
+        db::search_funds_locally(conn, input).map_err(|e| ResolveError::DatabaseError(e.to_string()))?;
     if !local_results.is_empty() {
         if local_results.len() == 1 {
             let f = local_results[0].clone();
-            println!("✨ Found 1 local match: {} ({})", f.name, f.code);
+            println!("✨ 找到 1 个本地匹配项：{} ({})", f.name, f.code);
             return maybe_sync_fund(conn, f).await;
         }
 
@@ -53,11 +131,14 @@ pub async fn resolve_fund(
                 .collect();
 
             let ans = Select::new(
-                &format!("Multiple matches found in local database for '{}'. Please select:", input),
+                &format!(
+                    "在本地数据库中找到多个与 '{}' 相关的匹配项，请选择：",
+                    input
+                ),
                 options,
             )
             .prompt()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| ResolveError::DatabaseError(e.to_string()))?;
 
             let selected_code = ans
                 .split(']')
@@ -66,52 +147,51 @@ pub async fn resolve_fund(
                 .trim_start_matches('[')
                 .to_string();
 
-            let f = local_results.iter().find(|r| r.code == selected_code).unwrap().clone();
+            let f = local_results
+                .iter()
+                .find(|r| r.code == selected_code)
+                .unwrap()
+                .clone();
             return maybe_sync_fund(conn, f).await;
         } else {
-            let matches = local_results
+            let matches: Vec<String> = local_results
                 .iter()
                 .map(|f| format!("{} ({})", f.name, f.code))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(format!(
-                "Ambiguous local match for '{}'. Found multiple: {}",
-                input, matches
-            ));
+                .collect();
+            return Err(ResolveError::Ambiguous(input.to_string(), matches));
         }
     }
 
     if local_only {
-        return Err(format!("No funds found locally matching '{}'", input));
+        return Err(ResolveError::NotFound(input.to_string()));
     }
 
     // 4. Fuzzy search remotely
     println!(
-        "🔍 Fund '{}' not found locally. Searching remotely...",
+        "🔍 本地未找到基金 '{}'，正在尝试远程搜索...",
         input
     );
     let search_provider = MorningstarSearchProvider;
-    let results = search_provider.search(input).await?;
+    let results = search_provider
+        .search(input)
+        .await
+        .map_err(|e| ResolveError::FetchFailed(input.to_string(), e))?;
 
     if results.is_empty() {
-        return Err(format!("No funds found matching '{}'", input));
+        return Err(ResolveError::NotFound(input.to_string()));
     }
 
     let selected_code = if results.len() == 1 {
         let r = &results[0];
-        println!("✨ Found matching fund: {} ({})", r.name, r.code);
+        println!("✨ 发现匹配基金：{} ({})", r.name, r.code);
         r.code.clone()
     } else {
         if !interactive {
-            let matches = results
+            let matches: Vec<String> = results
                 .iter()
                 .map(|r| format!("{} ({})", r.name, r.code))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(format!(
-                "Ambiguous remote name '{}'. Found multiple matches: {}",
-                input, matches
-            ));
+                .collect();
+            return Err(ResolveError::Ambiguous(input.to_string(), matches));
         }
 
         let options: Vec<String> = results
@@ -126,11 +206,14 @@ pub async fn resolve_fund(
             .collect();
 
         let ans = Select::new(
-            &format!("Multiple remote matches found for '{}'. Please select:", input),
+            &format!(
+                "针对 '{}' 找到多个远程匹配结果，请选择：",
+                input
+            ),
             options,
         )
         .prompt()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ResolveError::DatabaseError(e.to_string()))?;
 
         // Extract code from "[code] name"
         ans.split(']')
@@ -141,10 +224,12 @@ pub async fn resolve_fund(
     };
 
     // 5. Sync details and return
-    sync_fund_details(conn, &selected_code).await
+    sync_fund_details(conn, &selected_code)
+        .await
+        .map_err(|e| ResolveError::FetchFailed(selected_code, e))
 }
 
-async fn maybe_sync_fund(conn: &Connection, fund: Fund) -> Result<Fund, String> {
+async fn maybe_sync_fund(conn: &Connection, fund: Fund) -> ResolveResult<Fund> {
     if std::env::var("SKIP_SYNC").is_ok() {
         return Ok(fund);
     }
@@ -156,8 +241,7 @@ async fn maybe_sync_fund(conn: &Connection, fund: Fund) -> Result<Fund, String> 
                 if Utc::now().naive_utc() - last_sync > Duration::days(30) {
                     needs_sync = true;
                 }
-            } else if let Ok(last_sync_date) =
-                chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+            } else if let Ok(last_sync_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
             {
                 let last_sync = last_sync_date.and_hms_opt(0, 0, 0).unwrap();
                 if Utc::now().naive_utc() - last_sync > Duration::days(30) {
@@ -170,8 +254,10 @@ async fn maybe_sync_fund(conn: &Connection, fund: Fund) -> Result<Fund, String> 
     };
 
     if needs_sync {
-        println!("🔄 Metadata for {} is outdated. Syncing...", fund.code);
-        sync_fund_details(conn, &fund.code).await
+        println!("🔄 {} 的元数据已过期，正在同步...", fund.code);
+        sync_fund_details(conn, &fund.code)
+            .await
+            .map_err(|e| ResolveError::FetchFailed(fund.code, e))
     } else {
         Ok(fund)
     }
@@ -233,4 +319,33 @@ pub async fn sync_fund_details(conn: &Connection, code: &str) -> Result<Fund, St
     db::get_fund_by_code_or_name(conn, code)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Failed to retrieve fund after sync".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_6_digit_code() {
+        assert!(is_6_digit_code("123456"));
+        assert!(!is_6_digit_code("12345"));
+        assert!(!is_6_digit_code("1234567"));
+        assert!(!is_6_digit_code("abcdef"));
+    }
+
+    #[test]
+    fn test_check_param_swap() {
+        // Case: swapped
+        let hint = AdviceEngine::check_param_swap("1000", "520570");
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("你是不是把[基金代码]和[金额/份额]写反了？"));
+
+        // Case: not swapped (fund is 6 digits)
+        let hint = AdviceEngine::check_param_swap("520570", "1000");
+        assert!(hint.is_none());
+
+        // Case: fund is not a number
+        let hint = AdviceEngine::check_param_swap("沪深300", "1000");
+        assert!(hint.is_none());
+    }
 }

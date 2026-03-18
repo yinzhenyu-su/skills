@@ -257,6 +257,20 @@ pub fn get_active_wallet_id(conn: &Connection) -> Result<Option<i64>> {
     }
 }
 
+pub fn get_active_wallet(conn: &Connection) -> Result<Wallet> {
+    let wallet_id = get_active_wallet_id(conn)?
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+    
+    let mut stmt = conn.prepare("SELECT id, name, created_at FROM wallet WHERE id = ?1")?;
+    stmt.query_row([wallet_id], |row| {
+        Ok(Wallet {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            created_at: row.get(2)?,
+        })
+    })
+}
+
 pub fn insert_nav_history_idempotent(
     conn: &Connection,
     code: &str,
@@ -371,6 +385,17 @@ pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
         funds.push(row?);
     }
     Ok(funds)
+}
+
+pub fn get_all_fund_names_and_codes(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare("SELECT code, name FROM fund")?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
 }
 
 pub fn get_latest_nav_with_date(conn: &Connection, code: &str) -> Result<Option<(String, String)>> {

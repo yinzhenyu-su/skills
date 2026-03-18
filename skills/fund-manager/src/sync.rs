@@ -52,7 +52,7 @@ pub async fn sync_funds(
         return Ok(());
     }
     if env::var("FORCE_SYNC_FAILURE").is_ok() {
-        return Err("Network unreachable".to_string());
+        return Err("网络不可达".to_string());
     }
 
     let is_all = specific_code.is_none();
@@ -82,11 +82,11 @@ pub async fn sync_funds(
 
     for (i, code) in codes.into_iter().enumerate() {
         let fund_name = db::get_fund_by_code_or_name(conn, &code)
-            .map(|f| f.map(|obj| obj.name).unwrap_or_else(|| "Unknown".to_string()))
-            .unwrap_or_else(|_| "Unknown".to_string());
+            .map(|f| f.map(|obj| obj.name).unwrap_or_else(|| "未知".to_string()))
+            .unwrap_or_else(|_| "未知".to_string());
 
         println!(
-            "[{}/{}] Syncing {} ({}) ...",
+            "[{}/{}] 正在同步 {} ({}) ...",
             i + 1,
             total,
             code,
@@ -112,7 +112,7 @@ pub async fn sync_funds(
                                 .map_err(|e| e.to_string())?;
                         }
                     }
-                    println!("  ✓ Synced {} days of history", count);
+                    println!("  ✓ 已同步 {} 天的历史净值", count);
                 }
             }
         }
@@ -156,7 +156,7 @@ pub async fn settle_pending_transactions(conn: &Connection) -> Result<(), String
     }
 
     println!(
-        "Checking {} pending transactions for settlement...",
+        "正在检查 {} 笔待确认交易以进行结算...",
         pending.len()
     );
 
@@ -168,7 +168,7 @@ pub async fn settle_pending_transactions(conn: &Connection) -> Result<(), String
             let money = Decimal::from_str(&p.money).map_err(|e| e.to_string())?;
             let fund_obj = db::get_fund_by_code_or_name(conn, &p.fund_code)
                 .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("Fund {} not found in DB", p.fund_code))?;
+                .ok_or_else(|| format!("数据库中未找到基金 {}", p.fund_code))?;
 
             // Use prioritized fee logic (same as main.rs buy branch)
             let fee_rate_dec = if let Some(ref sf) = fund_obj.sales_fee {
@@ -186,7 +186,7 @@ pub async fn settle_pending_transactions(conn: &Connection) -> Result<(), String
             db::settle_transaction(conn, p.id, &res.shares.to_string(), &nav.to_string())
                 .map_err(|e| e.to_string())?;
             println!(
-                "✅ Settled transaction for {} on {}: {} shares at NAV {}",
+                "✅ 已结算交易 - 基金: {}, 日期: {}, 份额: {}, 成交净值: {}",
                 p.fund_code, p.date, res.shares, nav
             );
         }

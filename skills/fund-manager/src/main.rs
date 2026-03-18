@@ -1,28 +1,23 @@
-use fund_manager::cli::{self, Cli, Commands, WalletCommands};
-use fund_manager::config;
-use fund_manager::db;
-use fund_manager::finance;
-use fund_manager::provider::{self, eastmoney_lsjz::EastmoneyLsjzProvider};
-use fund_manager::resolver;
-use fund_manager::sync;
-
 use clap::Parser;
 use comfy_table::Table;
 use csv::ReaderBuilder;
+use fund_manager::cli::{Cli, Commands, FundCommands, WalletCommands};
+use fund_manager::db;
+use fund_manager::finance;
+use fund_manager::provider::{eastmoney_lsjz::EastmoneyLsjzProvider, Provider};
+use fund_manager::{config, resolver, sync};
 use rusqlite::Connection;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::fs;
-use std::path::PathBuf;
+use std::io::{self, Write};
 use std::str::FromStr;
-
-use chrono::Local;
 
 struct ImportItem {
     raw_input: String,
     money: Decimal,
-    line_num: Option<usize>,
     date: String,
+    line_num: Option<usize>,
 }
 
 struct ImportResult {
@@ -32,55 +27,47 @@ struct ImportResult {
 }
 
 fn get_today() -> String {
-    Local::now().format("%Y-%m-%d").to_string()
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 fn parse_date(date_str: &str) -> Result<String, String> {
-    use chrono::NaiveDate;
-    NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .map_err(|e| {
-            format!(
-                "Invalid date format '{}': {}. Expected YYYY-MM-DD",
-                date_str, e
-            )
-        })
+    if date_str.len() != 10 {
+        return Err("日期格式必须为 YYYY-MM-DD".to_string());
+    }
+    // Simple validation
+    let parts: Vec<&str> = date_str.split('-').collect();
+    if parts.len() != 3 {
+        return Err("日期格式必须为 YYYY-MM-DD".to_string());
+    }
+    Ok(date_str.to_string())
 }
 
-/// Smart NAV lookup: local DB -> API -> forward lookup
-/// Returns (actual_date, nav) or None if not found
+/// Smart NAV lookup: Local DB -> Morningstar API -> Forward lookup (next available)
 async fn smart_nav_lookup(
     conn: &Connection,
     code: &str,
     requested_date: &str,
 ) -> Result<Option<(String, Decimal)>, String> {
-    // 1. Try local DB for exact date first
+    // 1. Check local DB first
     if let Ok(Some(nav)) = db::get_nav_at_date(conn, code, requested_date) {
         return Ok(Some((requested_date.to_string(), nav)));
     }
 
-    // 2. Local not found, try API
-    let lsjz = EastmoneyLsjzProvider;
-    match lsjz.fetch_by_date(code, requested_date).await {
-        Ok(data) => {
-            if let (Some(nav), Some(date)) = (data.nav, data.date) {
-                // Save to local DB
-                db::insert_nav_history_idempotent(conn, code, &date, &nav.to_string())
-                    .map_err(|e| e.to_string())?;
-                return Ok(Some((date, nav)));
-            }
-        }
-        Err(e) => {
-            println!(
-                "Note: API fetch failed for {} on {}, trying local forward lookup: {}",
-                code, requested_date, e
-            );
+    // 2. Not in DB, try to fetch from API
+    println!("🔍 正在从天天基金获取 {} 在 {} 的净值...", code, requested_date);
+    let provider = EastmoneyLsjzProvider;
+    if let Ok(data) = provider.fetch_at_date(code, requested_date).await {
+        if let Some(nav) = data.nav {
+            // Save to DB for future use
+            db::insert_nav_history_idempotent(conn, code, requested_date, &nav.to_string())
+                .map_err(|e: rusqlite::Error| e.to_string())?;
+            return Ok(Some((requested_date.to_string(), nav)));
         }
     }
 
     // 3. API also failed, fall back to forward lookup (up to 20 days)
     let nav_result =
-        db::find_next_available_nav(conn, code, requested_date, 20).map_err(|e| e.to_string())?;
+        db::find_next_available_nav(conn, code, requested_date, 20).map_err(|e: rusqlite::Error| e.to_string())?;
 
     Ok(nav_result)
 }
@@ -88,43 +75,69 @@ async fn smart_nav_lookup(
 fn resolve_wallet_id(conn: &Connection, wallet_name: Option<String>) -> i64 {
     if let Some(name) = wallet_name {
         db::get_wallet_id_by_name(conn, &name)
-            .expect("DB error")
+            .expect("数据库错误")
             .unwrap_or_else(|| {
-                eprintln!("Error: Wallet '{}' not found.", name);
+                eprintln!("❌ 错误：未找到名为 '{}' 的钱包。", name);
                 std::process::exit(1);
             })
     } else {
         db::get_active_wallet_id(conn)
-            .expect("DB error")
-            .expect("No active wallet selected. Use 'fund wallet use <name>' or specify --wallet.")
+            .expect("数据库错误")
+            .expect("未选择活跃钱包。请使用 'fund wallet use <名称>' 或指定 --wallet 参数。")
     }
 }
 
 fn confirm_action(prompt: &str, force_yes: bool) -> bool {
     if force_yes {
         println!(
-            "{} [y/N]: y (Skipping confirmation due to -y/--yes)",
+            "{} [y/N]: y (由于使用了 -y/--yes，已跳过确认)",
             prompt
         );
         return true;
     }
 
     print!("{} [y/N]: ", prompt);
-    use std::io::{self, Write};
     io::stdout().flush().unwrap();
 
     let mut input = String::new();
     io::stdin()
         .read_line(&mut input)
-        .expect("Failed to read input");
+        .expect("读取输入失败");
 
     input.trim().to_lowercase() == "y"
 }
 
-async fn handle_inspect(conn: &Connection, identifier: &str, force: bool) -> Result<(), String> {
+fn print_resolve_error(conn: &Connection, err: resolver::ResolveError, context_val: Option<&str>) {
+    eprintln!("❌ 错误：{}", err);
+
+    if let Some(val) = context_val {
+        if let resolver::ResolveError::NotFound(ref input) = err {
+            if let Some(hint) = resolver::AdviceEngine::check_param_swap(input, val) {
+                eprintln!("{}", hint);
+            }
+        }
+    }
+
+    if let resolver::ResolveError::NotFound(ref input) = err {
+        if let Some(suggestion) = resolver::AdviceEngine::suggest_spelling(conn, input) {
+            eprintln!("{}", suggestion);
+        }
+    }
+
+    if let Ok(wallet) = db::get_active_wallet(conn) {
+        eprintln!("   当前激活钱包: [{}]", wallet.name);
+    }
+}
+
+async fn handle_inspect(
+    conn: &Connection,
+    identifier: &str,
+    force: bool,
+) -> resolver::ResolveResult<()> {
     let fund = resolver::resolve_fund(conn, identifier, true, false).await?;
 
-    let analysis_opt = db::get_fund_analysis(conn, &fund.code).map_err(|e| e.to_string())?;
+    let analysis_opt = db::get_fund_analysis(conn, &fund.code)
+        .map_err(|e| resolver::ResolveError::DatabaseError(e.to_string()))?;
 
     let needs_update = if force {
         true
@@ -141,11 +154,14 @@ async fn handle_inspect(conn: &Connection, identifier: &str, force: bool) -> Res
 
     let final_analysis = if needs_update {
         println!(
-            "🔄 Fetching deep analysis for {} ({}) from Morningstar...",
+            "🔄 正在从晨星获取 {} ({}) 的深度分析数据...",
             fund.name, fund.code
         );
-        let updated_fund = resolver::sync_fund_details(conn, &fund.code).await?;
-        db::get_fund_analysis(conn, &updated_fund.code).map_err(|e| e.to_string())?
+        let updated_fund = resolver::sync_fund_details(conn, &fund.code)
+            .await
+            .map_err(|e| resolver::ResolveError::FetchFailed(fund.code.clone(), e))?;
+        db::get_fund_analysis(conn, &updated_fund.code)
+            .map_err(|e| resolver::ResolveError::DatabaseError(e.to_string()))?
     } else {
         analysis_opt
     };
@@ -153,7 +169,7 @@ async fn handle_inspect(conn: &Connection, identifier: &str, force: bool) -> Res
     if let Some(a) = final_analysis {
         format_inspect_report(&fund, &a);
     } else {
-        println!("❌ No analysis data available for this fund.");
+        println!("❌ 暂无该基金的分析数据。");
     }
 
     Ok(())
@@ -161,18 +177,18 @@ async fn handle_inspect(conn: &Connection, identifier: &str, force: bool) -> Res
 
 fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
     let mut table = Table::new();
-    table.set_header(vec!["Metric", "Value", "Description"]);
+    table.set_header(vec!["评价指标", "数值", "指标说明"]);
 
     table.add_row(vec![
-        "Fund".to_string(),
+        "基金名称".to_string(),
         format!("{} ({})", fund.name, fund.code),
-        "Official name and code".to_string(),
+        "基金的官方名称及代码".to_string(),
     ]);
 
     table.add_row(vec![
-        "Morningstar Category".to_string(),
+        "晨星分类".to_string(),
         fund.fund_type.clone().unwrap_or_else(|| "N/A".to_string()),
-        "Investment style".to_string(),
+        "基金的投资风格分类".to_string(),
     ]);
 
     let rating_3y = analysis
@@ -180,9 +196,9 @@ fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
         .map(|r| "★".repeat(r as usize))
         .unwrap_or_else(|| "N/A".to_string());
     table.add_row(vec![
-        "Rating (3Y)".to_string(),
+        "晨星评级 (3年)".to_string(),
         rating_3y,
-        "Morningstar 3-year comprehensive rating".to_string(),
+        "晨星三年期综合风险收益评级".to_string(),
     ]);
 
     let rank = analysis
@@ -190,9 +206,9 @@ fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
         .map(|r| format!("{:.2}%", r))
         .unwrap_or_else(|| "N/A".to_string());
     table.add_row(vec![
-        "Category Rank (3Y)".to_string(),
+        "同类排名 (3年)".to_string(),
         rank,
-        "Percentage rank in category (lower is better)".to_string(),
+        "在同类基金中的百分比排名（越小越好）".to_string(),
     ]);
 
     let sharpe = analysis
@@ -200,9 +216,9 @@ fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
         .map(|s| format!("{:.2}", s))
         .unwrap_or_else(|| "N/A".to_string());
     table.add_row(vec![
-        "Sharpe Ratio (3Y)".to_string(),
+        "夏普比率 (3年)".to_string(),
         sharpe,
-        "Risk-adjusted return (higher is better)".to_string(),
+        "衡量每承受一单位总风险所产生的超额回报（越高越好）".to_string(),
     ]);
 
     let calmar = analysis
@@ -210,9 +226,9 @@ fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
         .map(|c| format!("{:.2}", c))
         .unwrap_or_else(|| "N/A".to_string());
     table.add_row(vec![
-        "Calmar Ratio (3Y)".to_string(),
+        "卡玛比率 (3年)".to_string(),
         calmar,
-        "Return over maximum drawdown (higher is better)".to_string(),
+        "衡量收益与最大回撤的比率（越高越好）".to_string(),
     ]);
 
     let mdd = analysis
@@ -220,9 +236,9 @@ fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
         .map(|m| format!("{:.2}%", m))
         .unwrap_or_else(|| "N/A".to_string());
     table.add_row(vec![
-        "Max Drawdown (3Y)".to_string(),
+        "最大回撤 (3年)".to_string(),
         mdd,
-        "Worst historical peak-to-trough decline".to_string(),
+        "统计周期内的最大跌幅".to_string(),
     ]);
 
     let gap = analysis
@@ -230,21 +246,21 @@ fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
         .map(|g| format!("{:.2}%", g))
         .unwrap_or_else(|| "N/A".to_string());
     table.add_row(vec![
-        "Investor Gap (3Y)".to_string(),
+        "基民获得感".to_string(),
         gap,
-        "Diff between fund return and avg investor return".to_string(),
+        "基金回报与基民平均回报之差".to_string(),
     ]);
 
-    println!("\n📊 Fund Health Report (Morningstar Data)");
+    println!("\n📊 基金健康分析报告 (基于晨星数据)");
     println!("{table}");
 
     if let Some(g) = analysis.investor_gap_3y {
         if g > 5.0 {
             println!(
-                "💡 Insight: High investor gap (>{:.1}%) suggests this fund is highly volatile,",
+                "💡 洞察：较大的投资者获得感缺口 (>{:.1}%) 表明该基金波动较大，",
                 g
             );
-            println!("   and investors often lose money due to bad timing (buying high, selling low).");
+            println!("   且投资者常因追涨杀跌（择时错误）导致亏损。");
         }
     }
 }
@@ -252,7 +268,7 @@ fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
 async fn handle_import(
     conn: &Connection,
     wallet_id: i64,
-    file: Option<PathBuf>,
+    file: Option<std::path::PathBuf>,
     pairs: Vec<String>,
     merge: bool,
     override_flag: bool,
@@ -266,7 +282,7 @@ async fn handle_import(
         let mut rdr = ReaderBuilder::new()
             .has_headers(true)
             .from_path(path)
-            .map_err(|e| format!("Failed to open CSV: {}", e))?;
+            .map_err(|e| format!("无法打开 CSV 文件：{}", e))?;
 
         for (i, result) in rdr.records().enumerate() {
             let line_num = i + 2;
@@ -274,9 +290,9 @@ async fn handle_import(
                 Ok(record) => {
                     if record.len() < 2 {
                         results.push(ImportResult {
-                            input: format!("CSV Line {}", line_num),
+                            input: format!("CSV 第 {} 行", line_num),
                             success: false,
-                            reason: "Row has fewer than 2 columns".to_string(),
+                            reason: "该行少于 2 列数据".to_string(),
                         });
                         continue;
                     }
@@ -308,7 +324,7 @@ async fn handle_import(
                                 results.push(ImportResult {
                                     input: raw_input,
                                     success: false,
-                                    reason: format!("Amount must be positive: {}", money_str),
+                                    reason: format!("金额必须为正数：{}", money_str),
                                 });
                             } else {
                                 items.push(ImportItem {
@@ -323,23 +339,23 @@ async fn handle_import(
                             results.push(ImportResult {
                                 input: raw_input,
                                 success: false,
-                                reason: format!("Invalid money format: {} ({})", money_str, e),
+                                reason: format!("无效的金额格式：{} ({})", money_str, e),
                             });
                         }
                     }
                 }
                 Err(e) => {
                     results.push(ImportResult {
-                        input: format!("CSV Line {}", line_num),
+                        input: format!("CSV 第 {} 行", line_num),
                         success: false,
-                        reason: format!("CSV error: {}", e),
+                        reason: format!("CSV 错误：{}", e),
                     });
                 }
             }
         }
     } else if !pairs.is_empty() {
         if pairs.len() % 2 != 0 {
-            return Err("Positional arguments must be in pairs of [NAME MONEY]".to_string());
+            return Err("位置参数必须成对出现 [名称 金额]".to_string());
         }
         let date = if let Some(ref gd) = global_date {
             gd.clone()
@@ -355,7 +371,7 @@ async fn handle_import(
                         results.push(ImportResult {
                             input: raw_input,
                             success: false,
-                            reason: format!("Amount must be positive: {}", money_str),
+                            reason: format!("金额必须为正数：{}", money_str),
                         });
                     } else {
                         items.push(ImportItem {
@@ -370,17 +386,17 @@ async fn handle_import(
                     results.push(ImportResult {
                         input: raw_input,
                         success: false,
-                        reason: format!("Invalid money format: {} ({})", money_str, e),
+                        reason: format!("无效的金额格式：{} ({})", money_str, e),
                     });
                 }
             }
         }
     } else {
-        return Err("Please provide either --file or positional name/money pairs".to_string());
+        return Err("请提供 --file 参数或成对的名称/金额参数".to_string());
     }
 
     if items.is_empty() && results.is_empty() {
-        println!("No items found to import.");
+        println!("未发现可导入的项目。");
         return Ok(());
     }
 
@@ -404,21 +420,19 @@ async fn handle_import(
                 let already_exists = !current_shares.is_zero();
 
                 if already_exists && !merge && !override_flag {
-                    result.reason =
-                        "Fund already exists in wallet. Use --merge or --override.".to_string();
+                    result.reason = "该基金在钱包中已存在。请使用 --merge 或 --override 参数。".to_string();
                 } else {
                     if override_flag && already_exists {
                         conn.execute(
                             "DELETE FROM transaction_log WHERE wallet_id = ?1 AND fund_code = ?2",
                             rusqlite::params![wallet_id, fund_obj.code],
                         )
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e: rusqlite::Error| e.to_string())?;
                     }
 
                     // Handle settlement logic with smart NAV lookup (local DB -> API -> forward lookup)
                     let nav_result = smart_nav_lookup(conn, &fund_obj.code, &item.date)
-                        .await
-                        .map_err(|e| e.to_string())?;
+                        .await?;
 
                     if let Some((actual_date, nav)) = nav_result {
                         let fee_rate_dec = if let Some(ref sf) = fund_obj.sales_fee {
@@ -436,7 +450,7 @@ async fn handle_import(
                             conn,
                             wallet_id,
                             &fund_obj.code,
-                            "import",
+                            "buy",
                             &item.money.to_string(),
                             Some(&res.shares.to_string()),
                             Some(&nav.to_string()),
@@ -444,22 +458,21 @@ async fn handle_import(
                             &actual_date,
                             "settled",
                         )
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e: rusqlite::Error| e.to_string())?;
                     } else {
-                        // No NAV available within 20 days, create pending transaction
+                        // NAV not available, create pending
                         let fee_rate_dec = if let Some(ref sf) = fund_obj.sales_fee {
                             finance::parse_percentage_rate(sf)
                         } else {
                             dec!(0.0015)
                         };
-                        let fee =
-                            (item.money * fee_rate_dec / (dec!(1) + fee_rate_dec)).round_dp(2);
+                        let fee = (item.money * fee_rate_dec / (dec!(1) + fee_rate_dec)).round_dp(2);
 
                         db::add_transaction(
                             conn,
                             wallet_id,
                             &fund_obj.code,
-                            "import",
+                            "buy",
                             &item.money.to_string(),
                             None,
                             None,
@@ -467,13 +480,24 @@ async fn handle_import(
                             &item.date,
                             "pending",
                         )
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e: rusqlite::Error| e.to_string())?;
                     }
                     result.success = true;
                 }
             }
             Err(e) => {
-                result.reason = e;
+                let mut reason = e.to_string();
+                if let resolver::ResolveError::NotFound(ref input) = e {
+                    if let Some(hint) =
+                        resolver::AdviceEngine::check_param_swap(input, &item.money.to_string())
+                    {
+                        reason = format!("{}\n{}", reason, hint);
+                    }
+                    if let Some(suggestion) = resolver::AdviceEngine::suggest_spelling(conn, input) {
+                        reason = format!("{}\n{}", reason, suggestion);
+                    }
+                }
+                result.reason = reason;
             }
         }
         results.push(result);
@@ -481,23 +505,23 @@ async fn handle_import(
 
     // 3. Print Report
     let success_count = results.iter().filter(|r| r.success).count();
-    let fail_count = results.len() - success_count;
+    let fail_count = results.iter().filter(|r| !r.success).count();
 
-    println!("\n🚀 Import process finished!");
-    println!("✅ Success: {}", success_count);
-    println!("❌ Failed:  {}", fail_count);
+    println!("\n🚀 导入流程已完成！");
+    println!("✅ 成功：{}", success_count);
+    println!("❌ 失败：{}", fail_count);
 
     if fail_count > 0 {
         let mut table = Table::new();
-        table.set_header(vec!["Input", "Status", "Reason"]);
+        table.set_header(vec!["输入内容", "状态", "失败原因"]);
         for r in results.iter().filter(|r| !r.success) {
             table.add_row(vec![
                 r.input.clone(),
-                "FAILED".to_string(),
+                "失败".to_string(),
                 r.reason.clone(),
             ]);
         }
-        println!("\nFailure Details:");
+        println!("\n失败详情：");
         println!("{table}");
     }
 
@@ -509,36 +533,43 @@ async fn main() {
     let cli = Cli::parse();
 
     let app_dir = config::get_app_dir();
-    fs::create_dir_all(&app_dir).expect("Failed to create app directory");
+    fs::create_dir_all(&app_dir).expect("无法创建应用目录");
 
     let db_path = config::get_db_path();
-    db::init_db(&db_path).expect("Failed to initialize database");
+    db::init_db(&db_path).expect("数据库初始化失败");
 
-    let conn = Connection::open(&db_path).expect("Failed to open database");
+    let conn = Connection::open(&db_path).expect("无法打开数据库");
 
     match cli.command {
         Commands::Wallet { command } => match command {
             WalletCommands::Add { name } => match db::add_wallet(&conn, &name) {
-                Ok(_) => println!("Successfully added wallet: {}", name),
+                Ok(_) => println!("成功添加钱包：{}", name),
                 Err(e) => {
                     if e.to_string().contains("UNIQUE constraint failed") {
-                        eprintln!("Error: Wallet '{}' already exists.", name);
+                        eprintln!("❌ 错误：钱包 '{}' 已存在。", name);
                         std::process::exit(1);
                     } else {
-                        eprintln!("Error adding wallet: {}", e);
+                        eprintln!("❌ 错误（执行过程失败）：添加钱包：{}", e);
                         std::process::exit(1);
                     }
                 }
             },
             WalletCommands::List => {
-                let wallets = db::get_all_wallets(&conn).expect("DB error");
-                let active_id = db::get_active_wallet_id(&conn).expect("DB error");
+                let wallets = db::get_all_wallets(&conn).expect("数据库错误");
+                let active_id = db::get_active_wallet_id(&conn).expect("数据库错误");
 
                 let mut table = Table::new();
-                table.set_header(vec!["", "Name", "Valuation", "Cost", "Total P&L", "P&L %"]);
+                table.set_header(vec![
+                    "状态",
+                    "钱包名称",
+                    "当前市值",
+                    "持仓成本",
+                    "累计盈亏",
+                    "收益率",
+                ]);
 
                 for w in wallets {
-                    let holdings = db::get_holdings(&conn, w.id).expect("DB error");
+                    let holdings = db::get_holdings(&conn, w.id).expect("数据库错误");
                     let mut total_valuation = Decimal::ZERO;
                     let mut total_cost = Decimal::ZERO;
 
@@ -550,7 +581,6 @@ async fn main() {
                             .as_deref()
                             .and_then(|s| Decimal::from_str(s).ok())
                             .unwrap_or_default();
-
                         total_valuation += (shares * nav).round_dp(2);
                         total_cost += cost;
                     }
@@ -562,36 +592,38 @@ async fn main() {
                         ((pl / total_cost) * dec!(100)).round_dp(2)
                     };
 
-                    let active_mark = if Some(w.id) == active_id { "*" } else { "" };
-
                     table.add_row(vec![
-                        active_mark.to_string(),
-                        w.name,
-                        total_valuation.to_string(),
-                        total_cost.to_string(),
-                        pl.to_string(),
-                        format!("{:.2}%", pl_pct),
+                        if Some(w.id) == active_id {
+                            "*"
+                        } else {
+                            ""
+                        },
+                        &w.name,
+                        &total_valuation.to_string(),
+                        &total_cost.to_string(),
+                        &pl.to_string(),
+                        &format!("{:.2}%", pl_pct),
                     ]);
                 }
                 println!("{table}");
             }
             WalletCommands::Use { name } => match db::get_wallet_id_by_name(&conn, &name) {
                 Ok(Some(id)) => {
-                    db::set_active_wallet(&conn, id).expect("Failed to set active wallet");
-                    println!("Now using wallet: {}", name);
+                    db::set_active_wallet(&conn, id).expect("无法设置活跃钱包");
+                    println!("当前已切换至钱包：{}", name);
                 }
                 Ok(None) => {
-                    eprintln!("Error: Wallet '{}' does not exist.", name);
+                    eprintln!("❌ 错误：钱包 '{}' 不存在。", name);
                     std::process::exit(1);
                 }
                 Err(e) => {
-                    eprintln!("Error finding wallet: {}", e);
+                    eprintln!("❌ 错误（查找失败）：wallet: {}", e);
                     std::process::exit(1);
                 }
             },
         },
         Commands::Fund { command } => match command {
-            cli::FundCommands::Add { code, name, fee } => {
+            FundCommands::Add { code, name, fee } => {
                 db::add_fund(
                     &conn,
                     &code,
@@ -606,32 +638,40 @@ async fn main() {
                     None,
                     None,
                 )
-                .expect("Failed to add fund");
-                println!("Successfully added fund: {} ({})", name, code);
+                .expect("无法添加基金");
+                println!("成功添加基金：{} ({})", name, code);
             }
-            cli::FundCommands::Delete { fund } => {
-                let fund_obj = resolver::resolve_fund(&conn, &fund, true, true)
-                    .await
-                    .unwrap_or_else(|e| {
-                        eprintln!("Error resolving fund: {}", e);
+            FundCommands::Delete { fund } => {
+                let fund_obj = match resolver::resolve_fund(&conn, &fund, true, true).await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        print_resolve_error(&conn, e, None);
                         std::process::exit(1);
-                    });
+                    }
+                };
 
                 let prompt = format!(
-                    "Are you sure you want to delete fund {} and ALL its transaction history?",
+                    "您确定要删除基金 {} 及其所有的交易历史记录吗？",
                     fund_obj.code
                 );
                 if confirm_action(&prompt, cli.yes) {
-                    db::delete_fund(&conn, &fund_obj.code).expect("Failed to delete fund");
-                    println!("Successfully deleted fund: {}", fund_obj.code);
+                    db::delete_fund(&conn, &fund_obj.code).expect("无法删除基金");
+                    println!("成功删除基金：{}", fund_obj.code);
                 } else {
-                    println!("Deletion cancelled.");
+                    println!("操作已取消。");
                 }
             }
-            cli::FundCommands::List => {
-                let funds = db::get_all_funds(&conn).expect("DB error");
+            FundCommands::List => {
+                let funds = db::get_all_funds(&conn).expect("数据库错误");
                 let mut table = Table::new();
-                table.set_header(vec!["Code", "Name", "Type", "Risk", "Manager", "Last Sync"]);
+                table.set_header(vec![
+                    "代码",
+                    "名称",
+                    "类型",
+                    "风险等级",
+                    "基金经理",
+                    "最后同步",
+                ]);
                 for f in funds {
                     table.add_row(vec![
                         f.code,
@@ -639,12 +679,12 @@ async fn main() {
                         f.fund_type.unwrap_or_else(|| "N/A".to_string()),
                         f.risk_level.unwrap_or_else(|| "-".to_string()),
                         f.manager.unwrap_or_else(|| "-".to_string()),
-                        f.last_sync_at.unwrap_or_else(|| "Never".to_string()),
+                        f.last_sync_at.unwrap_or_else(|| "-".to_string()),
                     ]);
                 }
                 println!("{table}");
             }
-            cli::FundCommands::Sync {
+            FundCommands::Sync {
                 force: _,
                 start,
                 end,
@@ -653,15 +693,16 @@ async fn main() {
                 fund,
             } => {
                 if !all && fund.is_none() {
-                    eprintln!("Error: Please specify a fund identifier or use --all for full sync.");
+                    eprintln!("❌ 错误：请指定基金标识符或使用 --all 进行全量同步。");
+                    eprintln!("💡 提示：运行 'fund fund sync --all' 可以同步所有持有基金的元数据。");
                     std::process::exit(1);
                 }
 
-                let fund_code = if let Some(identifier) = fund {
-                    match resolver::resolve_fund(&conn, &identifier, true, false).await {
+                let fund_code = if let Some(ref identifier) = fund {
+                    match resolver::resolve_fund(&conn, identifier, true, false).await {
                         Ok(f) => Some(f.code),
                         Err(e) => {
-                            eprintln!("Error resolving fund: {}", e);
+                            print_resolve_error(&conn, e, None);
                             std::process::exit(1);
                         }
                     }
@@ -670,39 +711,39 @@ async fn main() {
                 };
 
                 if let Err(e) = sync::sync_funds(&conn, fund_code, start, end, auto_fill).await {
-                    eprintln!("Error during sync: {}", e);
+                    eprintln!("❌ 错误（执行过程失败）：同步：{}", e);
                     std::process::exit(1);
                 }
-                println!("✅ Sync completed.");
+                println!("✅ 同步已完成。");
             }
-            cli::FundCommands::Inspect { fund, force } => {
+            FundCommands::Inspect { fund, force } => {
                 if let Err(e) = handle_inspect(&conn, &fund, force).await {
-                    eprintln!("Error: {}", e);
+                    print_resolve_error(&conn, e, None);
                     std::process::exit(1);
                 }
             }
         },
         Commands::Status { fund: _ } => {
             if let Err(e) = sync::sync_funds(&conn, None, None, None, true).await {
-                eprintln!("Warning: Could not fetch latest data: {}", e);
-                eprintln!("Showing cached data from local database.");
+                eprintln!("⚠️ 警告：无法获取最新数据：{}", e);
+                eprintln!("当前显示的是本地数据库中的缓存数据。");
             }
 
             let wallet_id = db::get_active_wallet_id(&conn)
-                .expect("DB error")
-                .expect("No active wallet selected.");
+                .expect("数据库错误")
+                .expect("未选择活跃钱包。请使用 'fund wallet use <名称>' 或指定 --wallet 参数。");
 
-            let holdings = db::get_holdings(&conn, wallet_id).expect("DB error");
+            let holdings = db::get_holdings(&conn, wallet_id).expect("数据库错误");
 
             let mut table = Table::new();
             table.set_header(vec![
-                "Fund",
-                "Shares",
-                "Cost",
-                "NAV",
-                "Valuation",
-                "P&L",
-                "P&L %",
+                "基金",
+                "份额",
+                "持仓成本",
+                "当前净值",
+                "当前市值",
+                "盈亏额",
+                "收益率",
             ]);
 
             for h in holdings {
@@ -735,7 +776,7 @@ async fn main() {
             println!("{table}");
         }
         Commands::History { fund: _ } => {
-            println!("Transaction History (to be implemented)");
+            println!("交易历史记录 (暂未实现)");
         }
         Commands::Buy {
             fund,
@@ -746,16 +787,17 @@ async fn main() {
             date,
         } => {
             let wallet_id = resolve_wallet_id(&conn, wallet);
-            let fund_obj = resolver::resolve_fund(&conn, &fund, true, false)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("Error resolving fund: {}", e);
+            let fund_obj = match resolver::resolve_fund(&conn, &fund, true, false).await {
+                Ok(f) => f,
+                Err(e) => {
+                    print_resolve_error(&conn, e, Some(&money.to_string()));
                     std::process::exit(1);
-                });
+                }
+            };
 
             let tx_date = if let Some(d) = date {
                 parse_date(&d).unwrap_or_else(|e| {
-                    eprintln!("Error: {}", e);
+                    eprintln!("❌ 错误：{}", e);
                     std::process::exit(1);
                 })
             } else {
@@ -766,18 +808,18 @@ async fn main() {
             if shares.is_none() && nav.is_none() {
                 let nav_result = smart_nav_lookup(&conn, &fund_obj.code, &tx_date)
                     .await
-                    .expect("Failed to lookup NAV");
+                    .expect("无法查询净值");
 
                 if let Some((actual_date, nav_val)) = nav_result {
                     // Purchase Fee priority: sales_fee -> 0.15% (default)
                     let (fee_rate_dec, fee_source) = if let Some(ref sf) = fund_obj.sales_fee {
                         if !sf.trim().is_empty() && sf != "0.00%" {
-                            (finance::parse_percentage_rate(sf), format!("sales_fee: {}", sf))
+                            (finance::parse_percentage_rate(sf), format!("申购费率: {}", sf))
                         } else {
-                            (dec!(0.0015), "default: 0.15%".to_string())
+                            (dec!(0.0015), "默认费率: 0.15%".to_string())
                         }
                     } else {
-                        (dec!(0.0015), "default: 0.15%".to_string())
+                        (dec!(0.0015), "默认费率: 0.15%".to_string())
                     };
 
                     let res = finance::calculate_purchase(money, nav_val, fee_rate_dec);
@@ -793,16 +835,16 @@ async fn main() {
                         &actual_date,
                         "settled",
                     )
-                    .expect("Failed to record transaction");
+                    .expect("记录交易失败");
 
                     if actual_date != tx_date {
                         println!(
-                            "Note: NAV for {} not available, used {}",
+                            "💡 提示：{} 的净值数据不可用，已使用 {} 的净值。",
                             tx_date, actual_date
                         );
                     }
                     println!(
-                        "Bought {}: {} shares (NAV: {}, Fee: {} [{}]) on {}",
+                        "成功买入 {}: {} 份额 (净值: {}, 手续费: {} [{}])，交易日期: {}",
                         fund_obj.code, res.shares, nav_val, res.fee, fee_source, actual_date
                     );
                 } else {
@@ -826,20 +868,20 @@ async fn main() {
                         &tx_date,
                         "pending",
                     )
-                    .expect("Failed to record transaction");
+                    .expect("记录交易失败");
 
                     println!(
-                        "NAV not available within 20 days for {} on {}. Created a pending transaction.",
+                        "基金 {} 在 {} 及其前20天内的净值数据均不可用。已创建待确认交易。",
                         fund_obj.code, tx_date
                     );
                     println!(
-                        "It will be automatically settled when you run 'fund sync' after the official NAV is published."
+                        "当官方发布净值后，运行 'fund fund sync' 将自动结算此笔交易。"
                     );
                 }
             } else {
                 // Manual mode: user provides shares and nav
-                let s = shares.expect("Must provide --shares in manual mode");
-                let n = nav.expect("Must provide --nav in manual mode");
+                let s = shares.expect("手动买入模式必须提供 --shares");
+                let n = nav.expect("手动买入模式必须提供 --nav");
                 db::add_transaction(
                     &conn,
                     wallet_id,
@@ -852,10 +894,10 @@ async fn main() {
                     &tx_date,
                     "settled",
                 )
-                .expect("Failed to record transaction");
+                .expect("记录交易失败");
 
                 println!(
-                    "Bought {}: {} shares (NAV: {}) on {}",
+                    "成功买入 {}: {} 份额 (净值: {})，交易日期: {}",
                     fund_obj.code, s, n, tx_date
                 );
             }
@@ -871,16 +913,18 @@ async fn main() {
         } => {
             let wallet_id = resolve_wallet_id(&conn, wallet);
 
-            let fund_obj = resolver::resolve_fund(&conn, &fund, true, false)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("Error resolving fund: {}", e);
+            let fund_obj = match resolver::resolve_fund(&conn, &fund, true, false).await {
+                Ok(f) => f,
+                Err(e) => {
+                    let context = money.as_deref().or(shares.as_deref());
+                    print_resolve_error(&conn, e, context);
                     std::process::exit(1);
-                });
+                }
+            };
 
             let tx_date = if let Some(d) = date {
                 parse_date(&d).unwrap_or_else(|e| {
-                    eprintln!("Error: {}", e);
+                    eprintln!("❌ 错误：{}", e);
                     std::process::exit(1);
                 })
             } else {
@@ -888,20 +932,20 @@ async fn main() {
             };
 
             let current_shares =
-                db::get_fund_shares(&conn, wallet_id, &fund_obj.code).expect("DB error");
+                db::get_fund_shares(&conn, wallet_id, &fund_obj.code).expect("数据库错误");
 
             // 1. Resolve NAV (use find_prev_available_nav for sell - need previous day's NAV)
             let (final_nav, actual_date) = if let Some(n_str) = nav {
-                let n = Decimal::from_str(&n_str).expect("Invalid --nav");
+                let n = Decimal::from_str(&n_str).expect("无效的 --nav 参数");
                 (n, tx_date.clone())
             } else {
                 // Auto mode: use smart NAV lookup (find previous available NAV for sell)
                 let nav_result = db::find_prev_available_nav(&conn, &fund_obj.code, &tx_date, 20)
-                    .expect("DB error");
+                    .expect("数据库错误");
                 if let Some((actual_date, n)) = nav_result {
                     if actual_date != tx_date {
                         println!(
-                            "Note: NAV for {} not available, used {}",
+                            "💡 提示：{} 的净值数据不可用，已使用 {} 的净值。",
                             tx_date, actual_date
                         );
                     }
@@ -909,28 +953,31 @@ async fn main() {
                 } else {
                     // Fall back to latest NAV
                     let latest_nav_str = db::get_latest_nav(&conn, &fund_obj.code)
-                        .expect("DB error")
-                        .expect("No NAV data found for this fund. Please provide --nav.");
-                    let n = Decimal::from_str(&latest_nav_str).expect("Invalid NAV in DB");
-                    println!("Note: No historical NAV available, used latest NAV: {}", n);
+                        .expect("数据库错误")
+                        .expect("未找到该基金的净值数据。请使用 --nav 手动指定。");
+                    let n = Decimal::from_str(&latest_nav_str).expect("数据库中的净值数据无效");
+                    println!("💡 提示：无历史净值数据可用，已使用最新净值: {}", n);
                     (n, tx_date.clone())
                 }
             };
 
             // 2. Resolve Shares
             let final_shares = if let Some(s_input) = shares {
-                finance::resolve_shares(&s_input, current_shares).expect("Invalid --shares")
+                finance::resolve_shares(&s_input, current_shares).expect("无效的 --shares 参数")
             } else if let Some(m_str) = money {
-                let m = Decimal::from_str(&m_str).expect("Invalid --money");
+                let m = Decimal::from_str(&m_str).expect("无效的 --money 参数");
                 (m / final_nav).round_dp(2)
             } else {
-                panic!("Please provide --shares or --money for sell command.");
+                panic!("请为卖出命令提供 --shares 或 --money 参数。");
             };
 
             if final_shares > current_shares {
+                let wallet_name = db::get_active_wallet(&conn)
+                    .map(|w| w.name)
+                    .unwrap_or_else(|_| "未知".to_string());
                 eprintln!(
-                    "Error: Insufficient shares. Current: {}, Requested: {}",
-                    current_shares, final_shares
+                    "❌ 卖出失败：你在 [{}] 中仅持有 {} 份 '{}'，无法卖出 {} 份。",
+                    wallet_name, current_shares, fund_obj.code, final_shares
                 );
                 std::process::exit(1);
             }
@@ -938,7 +985,7 @@ async fn main() {
             // 3. Resolve Fee
             let total_money = final_shares * final_nav;
             let final_fee = if let Some(f_input) = fee {
-                finance::resolve_fee(&f_input, total_money).expect("Invalid --fee")
+                finance::resolve_fee(&f_input, total_money).expect("无效的 --fee 参数")
             } else {
                 Decimal::ZERO
             };
@@ -947,7 +994,7 @@ async fn main() {
 
             // 4. Preview and Confirm
             println!("┌─────────────────────────────────────────┐");
-            println!("│           赎回操作预览 (PREVIEW)          │");
+            println!("│           赎回操作预览 (预览)            │");
             println!("├─────────────────────────────────────────┤");
             println!("│ 基金: {} ({})", fund_obj.name, fund_obj.code);
             println!(
@@ -976,14 +1023,14 @@ async fn main() {
                     &tx_date,
                     "settled",
                 )
-                .expect("Failed to record transaction");
+                .expect("记录交易失败");
 
                 println!(
-                    "Sold {}: {} shares on {}",
+                    "成功卖出 {}: {} 份额，交易日期: {}",
                     fund_obj.code, final_shares, tx_date
                 );
             } else {
-                println!("Transaction cancelled.");
+                println!("交易已取消。");
             }
         }
         Commands::Import {
@@ -997,7 +1044,7 @@ async fn main() {
             let wallet_id = resolve_wallet_id(&conn, wallet);
             let validated_date = if let Some(d) = date {
                 Some(parse_date(&d).unwrap_or_else(|e| {
-                    eprintln!("Error: {}", e);
+                    eprintln!("❌ 错误：{}", e);
                     std::process::exit(1);
                 }))
             } else {
@@ -1014,7 +1061,7 @@ async fn main() {
             )
             .await
             {
-                eprintln!("Error during import: {}", e);
+                eprintln!("❌ 错误（执行过程失败）：导入：{}", e);
                 std::process::exit(1);
             }
         }
