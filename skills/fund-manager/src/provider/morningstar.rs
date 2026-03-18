@@ -1,6 +1,8 @@
 use super::{FundData, Provider};
 use async_trait::async_trait;
+use rust_decimal::Decimal;
 use serde::Deserialize;
+use std::str::FromStr;
 
 #[derive(Debug, Deserialize)]
 struct PerformanceResponse {
@@ -96,6 +98,18 @@ struct FeesData {
     custodian_fee: Option<String>,
     #[serde(rename = "distributionFee")]
     distribution_fee: Option<String>,
+    #[serde(rename = "frontLoadFee", default)]
+    front_load_fee: Option<Vec<FrontLoadFeeTier>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FrontLoadFeeTier {
+    floor: f64,
+    fee: f64,
+    #[serde(rename = "feeUnit")]
+    fee_unit: f64,
+    #[serde(rename = "floorUnit")]
+    floor_unit: f64,
 }
 
 pub struct MorningstarProvider;
@@ -192,6 +206,25 @@ impl Provider for MorningstarProvider {
                     data.mgmt_fee = d.management_fee;
                     data.trust_fee = d.custodian_fee;
                     data.sales_fee = d.distribution_fee;
+
+                    // Extract front load fee (first tier, typically 0-500k)
+                    if let Some(tiers) = d.front_load_fee {
+                        if let Some(first_tier) = tiers.first() {
+                            if first_tier.fee_unit == 2.0 {
+                                // feeUnit = 2.0 means percentage (e.g., 1.5 means 1.5%)
+                                // Store as Decimal (1.5% -> 0.015)
+                                if let Ok(rate) = Decimal::from_str(&first_tier.fee.to_string()) {
+                                    data.fee_rate = Some(rate / Decimal::from_str("100").unwrap());
+                                }
+                            } else {
+                                // feeUnit = 1.0 means fixed amount (e.g., 1000 means 1000元)
+                                // Store fixed amount as Decimal
+                                if let Ok(rate) = Decimal::from_str(&first_tier.fee.to_string()) {
+                                    data.fee_rate = Some(rate);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -258,5 +291,58 @@ mod tests {
         assert_eq!(d.management_fee.unwrap(), "1.2%");
         assert_eq!(d.custodian_fee.unwrap(), "0.2%");
         assert_eq!(d.distribution_fee.unwrap(), "0.4%");
+    }
+
+    #[test]
+    fn test_parse_front_load_fee() {
+        let json = r#"{
+            "data": {
+                "managementFee": "1.2%",
+                "custodianFee": "0.2%",
+                "distributionFee": null,
+                "frontLoadFee": [
+                    {"floor": 0.0, "fee": 1.5, "feeUnit": 2.0, "floorUnit": 1.0},
+                    {"floor": 500000.0, "fee": 1.2, "feeUnit": 2.0, "floorUnit": 1.0},
+                    {"floor": 1000000.0, "fee": 0.6, "feeUnit": 2.0, "floorUnit": 1.0},
+                    {"floor": 5000000.0, "fee": 1000.0, "feeUnit": 1.0, "floorUnit": 1.0}
+                ]
+            }
+        }"#;
+
+        let body: FeesResponse = serde_json::from_str(json).unwrap();
+        let d = body.data;
+
+        // Check front load fee tiers exist
+        assert!(d.front_load_fee.is_some());
+        let tiers = d.front_load_fee.unwrap();
+        assert_eq!(tiers.len(), 4);
+
+        // First tier: 0-500k, 1.5%
+        let first = &tiers[0];
+        assert_eq!(first.floor, 0.0);
+        assert_eq!(first.fee, 1.5);
+        assert_eq!(first.fee_unit, 2.0); // percentage
+
+        // Fourth tier: fixed amount
+        let fourth = &tiers[3];
+        assert_eq!(fourth.fee, 1000.0);
+        assert_eq!(fourth.fee_unit, 1.0); // fixed amount
+    }
+
+    #[test]
+    fn test_parse_front_load_fee_empty() {
+        let json = r#"{
+            "data": {
+                "managementFee": "0.5%",
+                "custodianFee": "0.1%",
+                "distributionFee": null
+            }
+        }"#;
+
+        let body: FeesResponse = serde_json::from_str(json).unwrap();
+        let d = body.data;
+
+        // No frontLoadFee field means None
+        assert!(d.front_load_fee.is_none());
     }
 }
