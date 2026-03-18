@@ -6,6 +6,10 @@ use std::str::FromStr;
 
 pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
     let conn = Connection::open(path)?;
+    setup_schema(&conn)
+}
+
+fn setup_schema(conn: &Connection) -> Result<()> {
     conn.execute("PRAGMA foreign_keys = ON", [])?;
 
     // Create wallet table
@@ -152,6 +156,12 @@ pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+pub fn setup_test_db() -> Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    setup_schema(&conn)?;
+    Ok(conn)
 }
 
 pub fn add_wallet(conn: &Connection, name: &str) -> Result<()> {

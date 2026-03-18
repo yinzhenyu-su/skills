@@ -127,29 +127,7 @@ mod tests {
 
     #[test]
     fn test_parse_morningstar_json() {
-        let json = r#"{
-            "data": {
-                "categoryName": "大盘成长股票",
-                "rating": { "Y3": "5", "Y5": "4" },
-                "risk": {
-                    "Y3": {
-                        "risk": {
-                            "sharpeRatio": 1.25,
-                            "calmarRatio": 0.85,
-                            "maxDrawdown": -22.4,
-                            "returnRankOver": 8.0,
-                            "riskDate": "2024-02-28"
-                        }
-                    }
-                },
-                "investorReturn": {
-                    "Y3": {
-                        "investorReturn": 10.0,
-                        "return": 15.0
-                    }
-                }
-            }
-        }"#;
+        let json = include_str!("../../tests/fixtures/morningstar_sample.json");
 
         let body: MorningstarResponse = serde_json::from_str(json).unwrap();
         let d = body.data;

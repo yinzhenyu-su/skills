@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn test_parse_js_response_valid() {
-        let body = r#"jsonpgz({"fundcode":"160119","name":"南方中证500ETF联接A","jzrq":"2025-03-07","dwjz":"1.3705","gsz":"1.3705","gszzl":"0.00%","gztime":"2025-03-07 15:00"});"#;
+        let body = include_str!("../../tests/fixtures/eastmoney_js_sample.js");
         let data = parse_js_response(body).unwrap();
         assert_eq!(data.code, "160119");
         assert_eq!(data.name.unwrap(), "南方中证500ETF联接A");

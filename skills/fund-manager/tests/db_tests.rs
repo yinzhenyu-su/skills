@@ -1,13 +1,8 @@
-use crate::db;
-use rusqlite::Connection;
-use tempfile::NamedTempFile;
+use fund_manager::db;
 
 #[test]
 fn test_nav_history_idempotency() {
-    let tmp_file = NamedTempFile::new().unwrap();
-    let path = tmp_file.path();
-    db::init_db(path).unwrap();
-    let conn = Connection::open(path).unwrap();
+    let conn = db::setup_test_db().expect("Failed to setup test db");
 
     conn.execute(
         "INSERT INTO fund (code, name) VALUES (?1, ?2)",
@@ -40,10 +35,7 @@ fn test_nav_history_idempotency() {
 
 #[test]
 fn test_search_funds_locally() {
-    let tmp_file = tempfile::NamedTempFile::new().unwrap();
-    let path = tmp_file.path();
-    db::init_db(path).unwrap();
-    let conn = Connection::open(path).unwrap();
+    let conn = db::setup_test_db().expect("Failed to setup test db");
 
     conn.execute(
         "INSERT INTO fund (code, name) VALUES (?1, ?2)",

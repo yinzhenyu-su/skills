@@ -1,4 +1,7 @@
+mod common;
+
 use assert_cmd::Command;
+use common::context::TestContext;
 use predicates::prelude::*;
 use std::env;
 use std::fs;
@@ -7,18 +10,11 @@ const TEST_DATE: &str = "2026-03-09";
 
 #[test]
 fn test_wallet_add() {
-    // Setup a temporary directory for the app
-    let temp_app_dir = env::temp_dir().join("fund-manager-test-wallet-add");
-    if temp_app_dir.exists() {
-        fs::remove_dir_all(&temp_app_dir).unwrap();
-    }
-    fs::create_dir_all(&temp_app_dir).unwrap();
-
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
-    cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
+    let ctx = TestContext::new("wallet-add");
 
     // fund wallet add "Test Wallet"
-    cmd.arg("wallet")
+    ctx.cmd()
+        .arg("wallet")
         .arg("add")
         .arg("Test Wallet")
         .assert()
@@ -28,9 +24,8 @@ fn test_wallet_add() {
         ));
 
     // Verify DB entry
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
-    cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
-    cmd.arg("wallet")
+    ctx.cmd()
+        .arg("wallet")
         .arg("add")
         .arg("Test Wallet")
         .assert()
@@ -40,33 +35,26 @@ fn test_wallet_add() {
 
 #[test]
 fn test_wallet_use() {
-    let temp_app_dir = env::temp_dir().join("fund-manager-test-wallet-use");
-    if temp_app_dir.exists() {
-        fs::remove_dir_all(&temp_app_dir).unwrap();
-    }
-    fs::create_dir_all(&temp_app_dir).unwrap();
+    let ctx = TestContext::new("wallet-use");
 
     // 1. Add two wallets
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
-    cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
-    cmd.arg("wallet")
+    ctx.cmd()
+        .arg("wallet")
         .arg("add")
         .arg("Wallet1")
         .assert()
         .success();
 
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
-    cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
-    cmd.arg("wallet")
+    ctx.cmd()
+        .arg("wallet")
         .arg("add")
         .arg("Wallet2")
         .assert()
         .success();
 
     // 2. Switch to Wallet2
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
-    cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
-    cmd.arg("wallet")
+    ctx.cmd()
+        .arg("wallet")
         .arg("use")
         .arg("Wallet2")
         .assert()
@@ -74,9 +62,8 @@ fn test_wallet_use() {
         .stdout(predicate::str::contains("Now using wallet: Wallet2"));
 
     // 3. Switch to non-existent wallet
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
-    cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
-    cmd.arg("wallet")
+    ctx.cmd()
+        .arg("wallet")
         .arg("use")
         .arg("NoSuchWallet")
         .assert()

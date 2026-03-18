@@ -75,20 +75,7 @@ mod tests {
 
     #[test]
     fn test_parse_detail_response() {
-        let body = r#"{
-            "Datas": {
-                "FCODE": "020988",
-                "SHORTNAME": "南方恒生科技ETF",
-                "FTYPE": "指数型",
-                "RISKLEVEL": "4",
-                "JJGS": "南方基金",
-                "JJJL": "张其思",
-                "ESTABDATE": "2024-05-21",
-                "MGREXP": "0.15%",
-                "TRUSTEXP": "0.05%",
-                "SALESEXP": "0.00%"
-            }
-        }"#;
+        let body = include_str!("../../tests/fixtures/eastmoney_details_sample.json");
         let data = parse_detail_response(body).unwrap();
         assert_eq!(data.code, "020988");
         assert_eq!(data.manager.unwrap(), "张其思");

@@ -1,19 +1,14 @@
-mod cli;
-mod config;
-mod db;
-mod finance;
-mod provider;
-mod resolver;
-mod sync;
-
-#[cfg(test)]
-mod db_tests;
+use fund_manager::cli::{self, Cli, Commands, WalletCommands};
+use fund_manager::config;
+use fund_manager::db;
+use fund_manager::finance;
+use fund_manager::provider::{self, eastmoney_lsjz::EastmoneyLsjzProvider};
+use fund_manager::resolver;
+use fund_manager::sync;
 
 use clap::Parser;
-use cli::{Cli, Commands, WalletCommands};
 use comfy_table::Table;
 use csv::ReaderBuilder;
-use provider::eastmoney_lsjz::EastmoneyLsjzProvider;
 use rusqlite::Connection;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
