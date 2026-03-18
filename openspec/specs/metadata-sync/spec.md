@@ -5,7 +5,8 @@
 
 #### Scenario: 首次添加基金同步详情
 - **WHEN** 用户尝试买入从未记录过的基金 "020988"
-- **THEN** 系统在记录交易前，先调用东方财富详情接口获取详情，并存入数据库 `fund` 表
+- **THEN** 系统在记录交易前，先调用晨星接口获取元数据详情，并调用东财接口获取最新净值
+- **AND** 将混合抓取的结果存入数据库 `fund` 表。
 
 ### Requirement: 基于 TTL 的增量同步
 系统必须根据 `last_sync_at` 字段判断是否需要更新本地详情缓存。
@@ -26,7 +27,8 @@
 
 #### Scenario: 数据库持久化校验
 - **WHEN** 系统完成同步逻辑
-- **THEN** 数据库 `fund` 表中的 `fund_type`, `risk_level`, `manager`, `company`, `last_sync_at` 等列均包含非空值
+- **THEN** 数据库 `fund` 表中的 `fund_type`, `risk_level`, `manager`, `company`, `last_sync_at` 等列均包含非空值。
+- **AND** 优先确保来自晨星的高质量元数据被存入。
 
 ### Requirement: Sync Without Arguments Guide
 当用户执行 `fund fund sync` 命令但未提供具体的基金标识符时，系统 SHALL 引导用户使用全量同步参数，而不是仅仅报错。
