@@ -25,7 +25,26 @@ impl Provider for EastmoneyJsProvider {
         let client = crate::provider::build_http_client()?;
 
         let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
-        let body = resp.text().await.map_err(|e| e.to_string())?;
+        
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("Eastmoney JS API returned error: {}", status));
+        }
+
+        // Handle the problematic "UTF-8,gbk" content type by falling back to UTF-8
+        let body = if let Some(ct) = resp.headers().get(reqwest::header::CONTENT_TYPE) {
+            let ct_str = ct.to_str().unwrap_or("");
+            if ct_str.contains("UTF-8,gbk") {
+                // If it's the problematic combo, manually decode as UTF-8
+                let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+                String::from_utf8_lossy(&bytes).into_owned()
+            } else {
+                resp.text().await.map_err(|e| e.to_string())?
+            }
+        } else {
+            resp.text().await.map_err(|e| e.to_string())?
+        };
+
         parse_js_response(&body)
     }
 }

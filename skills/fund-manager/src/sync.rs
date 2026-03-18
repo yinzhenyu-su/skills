@@ -23,15 +23,11 @@ fn calculate_sync_range(
     start: Option<String>,
     is_all: bool,
 ) -> String {
-    if let Some(s) = start {
-        return s;
-    }
-
-    if let Some(pd) = pending_date {
-        return pd;
-    }
-
-    if is_all {
+    let res = if let Some(s) = start {
+        s
+    } else if let Some(pd) = pending_date {
+        pd
+    } else if is_all {
         // Default for --all is 7 days ago
         (chrono::Local::now() - chrono::Duration::days(7))
             .format("%Y-%m-%d")
@@ -39,7 +35,8 @@ fn calculate_sync_range(
     } else {
         // Default for specific fund is today
         get_today()
-    }
+    };
+    res
 }
 
 pub async fn sync_funds(
@@ -102,46 +99,56 @@ pub async fn sync_funds(
 
         if effective_start <= effective_end {
             let lsjz = EastmoneyLsjzProvider;
-            if let Ok(results) = lsjz
+            match lsjz
                 .fetch_range(&code, &effective_start, &effective_end)
                 .await
             {
-                let count = results.len();
-                if count > 0 {
-                    for data in results {
-                        if let (Some(nav), Some(date)) = (data.nav, data.date) {
-                            db::insert_nav_history_idempotent(conn, &code, &date, &nav.to_string())
-                                .map_err(|e| e.to_string())?;
+                Ok(results) => {
+                    let count = results.len();
+                    if count > 0 {
+                        for data in results {
+                            if let (Some(nav), Some(date)) = (data.nav, data.date) {
+                                db::insert_nav_history_idempotent(conn, &code, &date, &nav.to_string())
+                                    .map_err(|e| e.to_string())?;
+                            }
                         }
+                        println!("  ✓ 已同步 {} 天的历史净值", count);
                     }
-                    println!("  ✓ 已同步 {} 天的历史净值", count);
+                }
+                Err(e) => {
+                    println!("  ⚠️ 同步历史净值失败 ({}): {}", code, e);
                 }
             }
         }
 
         // Always sync latest and metadata
-        if let Ok(data) = aggregator.fetch_all(&code).await {
-            if let (Some(nav), Some(date)) = (data.nav, data.date) {
-                db::insert_nav_history_idempotent(conn, &code, &date, &nav.to_string())
-                    .map_err(|e| e.to_string())?;
+        match aggregator.fetch_all(&code).await {
+            Ok(data) => {
+                if let (Some(nav), Some(date)) = (data.nav, data.date) {
+                    db::insert_nav_history_idempotent(conn, &code, &date, &nav.to_string())
+                        .map_err(|e| e.to_string())?;
+                }
+                
+                // Update metadata (fee, name, etc.)
+                let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                db::add_fund(
+                    conn,
+                    &data.code,
+                    &data.name.unwrap_or(fund_name),
+                    data.fund_type.as_deref(),
+                    data.risk_level.as_deref(),
+                    data.manager.as_deref(),
+                    data.company.as_deref(),
+                    data.establish_date.as_deref(),
+                    data.mgmt_fee.as_deref(),
+                    data.trust_fee.as_deref(),
+                    data.sales_fee.as_deref(),
+                    Some(&now),
+                ).map_err(|e| e.to_string())?;
             }
-            
-            // Update metadata (fee, name, etc.)
-            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-            db::add_fund(
-                conn,
-                &data.code,
-                &data.name.unwrap_or(fund_name),
-                data.fund_type.as_deref(),
-                data.risk_level.as_deref(),
-                data.manager.as_deref(),
-                data.company.as_deref(),
-                data.establish_date.as_deref(),
-                data.mgmt_fee.as_deref(),
-                data.trust_fee.as_deref(),
-                data.sales_fee.as_deref(),
-                Some(&now),
-            ).map_err(|e| e.to_string())?;
+            Err(e) => {
+                println!("  ⚠️ 同步元数据失败 ({}): {}", code, e);
+            }
         }
     }
 

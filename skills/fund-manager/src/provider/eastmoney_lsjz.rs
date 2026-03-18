@@ -15,6 +15,8 @@ pub struct EastmoneyLsjzProvider;
 struct LsjzResponse {
     #[serde(rename = "Data")]
     pub Data: Option<LsjzData>,
+    #[serde(rename = "TotalCount")]
+    pub TotalCount: i32,
 }
 
 #[derive(Deserialize, Debug)]
@@ -36,19 +38,29 @@ struct LsjzItem {
 }
 
 impl EastmoneyLsjzProvider {
-    pub async fn fetch_by_date(&self, code: &str, date: &str) -> Result<FundData, String> {
-        // Use a large pageSize or precise dates to ensure we get the right one
-        let url = format!(
-            "https://api.fund.eastmoney.com/f10/lsjz?fundCode={}&pageIndex=1&pageSize=20&startDate={}&endDate={}",
-            code, date, date
+    async fn fetch_page(
+        &self,
+        code: &str,
+        page_index: i32,
+        page_size: i32,
+        start: Option<&str>,
+        end: Option<&str>,
+    ) -> Result<LsjzResponse, String> {
+        let mut url = format!(
+            "https://api.fund.eastmoney.com/f10/lsjz?fundCode={}&pageIndex={}&pageSize={}",
+            code, page_index, page_size
         );
+        if let Some(s) = start {
+            url.push_str(&format!("&startDate={}", s));
+        }
+        if let Some(e) = end {
+            url.push_str(&format!("&endDate={}", e));
+        }
 
         let client = crate::provider::build_http_client()?;
         let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
         let body = resp.text().await.map_err(|e| e.to_string())?;
 
-        // The API might return JSON directly or JSONP depending on headers/params
-        // If it starts with jQuery, parse as JSONP
         let json_str = if body.starts_with("jQuery") {
             let caps = JSONP_RE
                 .captures(&body)
@@ -63,6 +75,11 @@ impl EastmoneyLsjzProvider {
 
         let res: LsjzResponse =
             serde_json::from_str(&json_str).map_err(|e| format!("{}: {}", e, json_str))?;
+        Ok(res)
+    }
+
+    pub async fn fetch_by_date(&self, code: &str, date: &str) -> Result<FundData, String> {
+        let res = self.fetch_page(code, 1, 20, Some(date), Some(date)).await?;
         let items = res.Data.ok_or("No Data in lsjz response")?.LSJZList;
 
         let item = items
@@ -83,28 +100,7 @@ impl EastmoneyLsjzProvider {
 #[async_trait]
 impl Provider for EastmoneyLsjzProvider {
     async fn fetch(&self, code: &str) -> Result<FundData, String> {
-        // ... (existing implementation)
-        let url = format!(
-            "https://api.fund.eastmoney.com/f10/lsjz?fundCode={}&pageIndex=1&pageSize=1",
-            code
-        );
-        let client = crate::provider::build_http_client()?;
-        let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
-        let body = resp.text().await.map_err(|e| e.to_string())?;
-
-        let json_str = if body.starts_with("jQuery") {
-            let caps = JSONP_RE
-                .captures(&body)
-                .ok_or("Failed to match JSONP pattern in lsjz")?;
-            caps.get(1)
-                .ok_or("Failed to extract JSON from JSONP in lsjz")?
-                .as_str()
-                .to_string()
-        } else {
-            body
-        };
-
-        let res: LsjzResponse = serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
+        let res = self.fetch_page(code, 1, 1, None, None).await?;
         let items = res.Data.ok_or("No Data in lsjz response")?.LSJZList;
         let item = items.first().ok_or("No items in lsjz response")?;
 
@@ -127,32 +123,26 @@ impl Provider for EastmoneyLsjzProvider {
         start: &str,
         end: &str,
     ) -> Result<Vec<FundData>, String> {
-        let url = format!(
-            "https://api.fund.eastmoney.com/f10/lsjz?fundCode={}&pageIndex=1&pageSize=1000&startDate={}&endDate={}",
-            code, start, end
-        );
+        let page_size = 20;
+        let first_page = self.fetch_page(code, 1, page_size, Some(start), Some(end)).await?;
+        
+        let total_count = first_page.TotalCount;
+        let mut all_items = Vec::new();
 
-        let client = crate::provider::build_http_client()?;
-        let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
-        let body = resp.text().await.map_err(|e| e.to_string())?;
+        if let Some(data) = first_page.Data {
+            all_items.extend(data.LSJZList);
+        }
 
-        let json_str = if body.starts_with("jQuery") {
-            let caps = JSONP_RE
-                .captures(&body)
-                .ok_or("Failed to match JSONP pattern in lsjz")?;
-            caps.get(1)
-                .ok_or("Failed to extract JSON from JSONP in lsjz")?
-                .as_str()
-                .to_string()
-        } else {
-            body
-        };
+        let total_pages = (total_count as f64 / page_size as f64).ceil() as i32;
+        
+        for page_index in 2..=total_pages {
+            let page_res = self.fetch_page(code, page_index, page_size, Some(start), Some(end)).await?;
+            if let Some(data) = page_res.Data {
+                all_items.extend(data.LSJZList);
+            }
+        }
 
-        let res: LsjzResponse =
-            serde_json::from_str(&json_str).map_err(|e| format!("{}: {}", e, json_str))?;
-        let items = res.Data.ok_or("No Data in lsjz response")?.LSJZList;
-
-        let results = items
+        let results: Vec<FundData> = all_items
             .into_iter()
             .map(|item| FundData {
                 code: code.to_string(),
@@ -166,3 +156,4 @@ impl Provider for EastmoneyLsjzProvider {
         Ok(results)
     }
 }
+

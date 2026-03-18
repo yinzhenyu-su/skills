@@ -206,25 +206,53 @@ pub fn add_fund(
     sales_fee: Option<&str>,
     last_sync_at: Option<&str>,
 ) -> Result<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO fund (
-            code, name, fund_type, risk_level, manager, company, establish_date, 
-            management_fee, trust_fee, sales_fee, last_sync_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        rusqlite::params![
-            code,
-            name,
-            fund_type,
-            risk_level,
-            manager,
-            company,
-            establish_date,
-            mgmt_fee,
-            trust_fee,
-            sales_fee,
-            last_sync_at
-        ],
-    )?;
+    // We use a manual check and update instead of INSERT OR REPLACE
+    // because REPLACE triggers ON DELETE CASCADE on nav_history.
+    let mut stmt = conn.prepare("SELECT 1 FROM fund WHERE code = ?1")?;
+    let exists = stmt.exists([code])?;
+
+    if exists {
+        conn.execute(
+            "UPDATE fund SET 
+                name = ?2, fund_type = ?3, risk_level = ?4, manager = ?5, 
+                company = ?6, establish_date = ?7, management_fee = ?8, 
+                trust_fee = ?9, sales_fee = ?10, last_sync_at = ?11
+             WHERE code = ?1",
+            rusqlite::params![
+                code,
+                name,
+                fund_type,
+                risk_level,
+                manager,
+                company,
+                establish_date,
+                mgmt_fee,
+                trust_fee,
+                sales_fee,
+                last_sync_at
+            ],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO fund (
+                code, name, fund_type, risk_level, manager, company, establish_date, 
+                management_fee, trust_fee, sales_fee, last_sync_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                code,
+                name,
+                fund_type,
+                risk_level,
+                manager,
+                company,
+                establish_date,
+                mgmt_fee,
+                trust_fee,
+                sales_fee,
+                last_sync_at
+            ],
+        )?;
+    }
     Ok(())
 }
 

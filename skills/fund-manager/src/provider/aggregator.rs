@@ -42,76 +42,95 @@ impl Aggregator {
         .await
         .map_err(|_| "Fetch operation timed out".to_string())?;
 
+        let mut errors = Vec::new();
+        let mut success_count = 0;
+
         for res in results {
-            if let Ok(data) = res {
-                if data.name.is_some() {
-                    final_data.name = data.name;
+            match res {
+                Ok(data) => {
+                    success_count += 1;
+                    if data.name.is_some() {
+                        final_data.name = data.name;
+                    }
+                    if data.nav.is_some() {
+                        final_data.nav = data.nav;
+                    }
+                    if data.acc_nav.is_some() {
+                        final_data.acc_nav = data.acc_nav;
+                    }
+                    if data.fee_rate.is_some() {
+                        final_data.fee_rate = data.fee_rate;
+                    }
+                    if data.date.is_some() {
+                        final_data.date = data.date;
+                    }
+                    if data.fund_type.is_some() {
+                        final_data.fund_type = data.fund_type;
+                    }
+                    if data.risk_level.is_some() {
+                        final_data.risk_level = data.risk_level;
+                    }
+                    if data.manager.is_some() {
+                        final_data.manager = data.manager;
+                    }
+                    if data.company.is_some() {
+                        final_data.company = data.company;
+                    }
+                    if data.establish_date.is_some() {
+                        final_data.establish_date = data.establish_date;
+                    }
+                    if data.mgmt_fee.is_some() {
+                        final_data.mgmt_fee = data.mgmt_fee;
+                    }
+                    if data.trust_fee.is_some() {
+                        final_data.trust_fee = data.trust_fee;
+                    }
+                    if data.sales_fee.is_some() {
+                        final_data.sales_fee = data.sales_fee;
+                    }
+                    if data.snapshot_date.is_some() {
+                        final_data.snapshot_date = data.snapshot_date;
+                    }
+                    if data.rating_3y.is_some() {
+                        final_data.rating_3y = data.rating_3y;
+                    }
+                    if data.rating_5y.is_some() {
+                        final_data.rating_5y = data.rating_5y;
+                    }
+                    if data.rank_pct_3y.is_some() {
+                        final_data.rank_pct_3y = data.rank_pct_3y;
+                    }
+                    if data.sharpe_3y.is_some() {
+                        final_data.sharpe_3y = data.sharpe_3y;
+                    }
+                    if data.calmar_3y.is_some() {
+                        final_data.calmar_3y = data.calmar_3y;
+                    }
+                    if data.max_drawdown_3y.is_some() {
+                        final_data.max_drawdown_3y = data.max_drawdown_3y;
+                    }
+                    if data.investor_gap_3y.is_some() {
+                        final_data.investor_gap_3y = data.investor_gap_3y;
+                    }
                 }
-                if data.nav.is_some() {
-                    final_data.nav = data.nav;
-                }
-                if data.acc_nav.is_some() {
-                    final_data.acc_nav = data.acc_nav;
-                }
-                if data.fee_rate.is_some() {
-                    final_data.fee_rate = data.fee_rate;
-                }
-                if data.date.is_some() {
-                    final_data.date = data.date;
-                }
-                if data.fund_type.is_some() {
-                    final_data.fund_type = data.fund_type;
-                }
-                if data.risk_level.is_some() {
-                    final_data.risk_level = data.risk_level;
-                }
-                if data.manager.is_some() {
-                    final_data.manager = data.manager;
-                }
-                if data.company.is_some() {
-                    final_data.company = data.company;
-                }
-                if data.establish_date.is_some() {
-                    final_data.establish_date = data.establish_date;
-                }
-                if data.mgmt_fee.is_some() {
-                    final_data.mgmt_fee = data.mgmt_fee;
-                }
-                if data.trust_fee.is_some() {
-                    final_data.trust_fee = data.trust_fee;
-                }
-                if data.sales_fee.is_some() {
-                    final_data.sales_fee = data.sales_fee;
-                }
-                if data.snapshot_date.is_some() {
-                    final_data.snapshot_date = data.snapshot_date;
-                }
-                if data.rating_3y.is_some() {
-                    final_data.rating_3y = data.rating_3y;
-                }
-                if data.rating_5y.is_some() {
-                    final_data.rating_5y = data.rating_5y;
-                }
-                if data.rank_pct_3y.is_some() {
-                    final_data.rank_pct_3y = data.rank_pct_3y;
-                }
-                if data.sharpe_3y.is_some() {
-                    final_data.sharpe_3y = data.sharpe_3y;
-                }
-                if data.calmar_3y.is_some() {
-                    final_data.calmar_3y = data.calmar_3y;
-                }
-                if data.max_drawdown_3y.is_some() {
-                    final_data.max_drawdown_3y = data.max_drawdown_3y;
-                }
-                if data.investor_gap_3y.is_some() {
-                    final_data.investor_gap_3y = data.investor_gap_3y;
+                Err(e) => {
+                    errors.push(e);
                 }
             }
         }
 
+        if success_count == 0 {
+            return Err(format!(
+                "所有 Provider 均抓取失败: {}",
+                errors.join("; ")
+            ));
+        }
+
         if final_data.name.is_none() && final_data.nav.is_none() {
-            return Err("Failed to fetch any useful fund data".to_string());
+            return Err(format!(
+                "未能获取到有效的基金数据。Provider 错误摘要: {}",
+                errors.join("; ")
+            ));
         }
 
         Ok(final_data)
