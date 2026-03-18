@@ -27,11 +27,14 @@ pub enum Commands {
     },
     /// 查看当前持仓盈亏状态
     #[command(
-        long_about = "查看当前持仓状态，包括市值、成本和盈亏。\n\n示例：\n    fund status\n    fund status 000300"
+        long_about = "查看当前持仓状态，包括市值、成本和盈亏。\n\n示例：\n    fund status\n    fund status 000300\n    fund status --wallet 我的投资"
     )]
     Status {
         /// 基金代码或名称（可选，省略则显示全部）
         fund: Option<String>,
+        /// 交易使用的特定钱包
+        #[arg(long)]
+        wallet: Option<String>,
     },
     /// 查看交易历史
     #[command(long_about = "查看特定基金的交易历史记录。\n\n示例：\n    fund history 000300")]
@@ -184,7 +187,11 @@ pub enum FundCommands {
         fund: String,
     },
     /// 列出所有追踪中的基金
-    List,
+    List {
+        /// 交易使用的特定钱包
+        #[arg(long)]
+        wallet: Option<String>,
+    },
     /// 从远程同步基金元数据和历史净值
     #[command(
         long_about = "同步基金元数据及历史净值数据。\n\n示例：\n    fund fund sync\n    fund fund sync 000300 --start 2024-01-01\n    fund fund sync --auto-fill"

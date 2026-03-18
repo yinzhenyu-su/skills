@@ -102,6 +102,7 @@ struct FeesData {
     front_load_fee: Option<Vec<FrontLoadFeeTier>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct FrontLoadFeeTier {
     floor: f64,

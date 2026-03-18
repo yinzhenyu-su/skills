@@ -6,6 +6,7 @@ use fund_manager::db;
 use fund_manager::finance;
 use fund_manager::provider::{Provider, eastmoney_lsjz::EastmoneyLsjzProvider};
 use fund_manager::{config, resolver, sync};
+use inquire::Select;
 use rusqlite::Connection;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
@@ -90,7 +91,27 @@ fn resolve_wallet_id(conn: &Connection, wallet_name: Option<String>) -> i64 {
         if let Ok(Some(wallet_id)) = db::get_active_wallet_id(conn) {
             return wallet_id;
         }
-        // 没有活跃钱包，自动创建"默认钱包"
+        // 没有活跃钱包，检查是否有其他钱包
+        let all_wallets = db::get_all_wallets(conn).expect("数据库错误");
+        if !all_wallets.is_empty() {
+            // 有其他钱包，询问用户选择
+            let wallet_names: Vec<String> = all_wallets.iter().map(|w| w.name.clone()).collect();
+            let selected = Select::new(
+                "未设置活跃钱包，请选择要使用的钱包：",
+                wallet_names,
+            )
+            .prompt()
+            .expect("无法获取用户选择");
+            let wallet_id = all_wallets
+                .iter()
+                .find(|w| w.name == selected)
+                .expect("钱包不存在")
+                .id;
+            db::set_active_wallet(conn, wallet_id).expect("无法设置活跃钱包");
+            println!("已切换至钱包：{}", selected);
+            return wallet_id;
+        }
+        // 没有任何钱包，自动创建"默认钱包"
         let default_name = "默认钱包";
         db::add_wallet(conn, default_name).expect("无法创建默认钱包");
         let wallet_id = db::get_wallet_id_by_name(conn, default_name)
@@ -746,17 +767,15 @@ async fn main() {
                     println!("操作已取消。");
                 }
             }
-            FundCommands::List => {
-                let active_wallet_id = db::get_active_wallet_id(&conn).expect("数据库错误");
+            FundCommands::List { wallet } => {
+                let active_wallet_id = Some(resolve_wallet_id(&conn, wallet));
                 let funds =
                     db::get_funds_with_valuations(&conn, active_wallet_id).expect("数据库错误");
 
                 let mut table = Table::new();
                 let mut header = vec!["代码", "名称", "类型", "风险", "经理", "最新净值 (日期)"];
-                if active_wallet_id.is_some() {
-                    header.push("持有份额");
-                    header.push("总价值");
-                }
+                header.push("持有份额");
+                header.push("总价值");
                 header.push("最后同步");
                 table.set_header(header);
 
@@ -782,20 +801,18 @@ async fn main() {
                         row.push("-".to_string());
                     };
 
-                    if active_wallet_id.is_some() {
-                        // 份额
-                        row.push(format!("{:.2}", f_val.total_shares));
+                    // 份额
+                    row.push(format!("{:.2}", f_val.total_shares));
 
-                        // 总价值
-                        let valuation = if let Some(nav_str) = f_val.latest_nav {
-                            let nav = Decimal::from_str(&nav_str).unwrap_or_default();
-                            let shares = Decimal::from_f64(f_val.total_shares).unwrap_or_default();
-                            (nav * shares).round_dp(2)
-                        } else {
-                            Decimal::ZERO
-                        };
-                        row.push(valuation.to_string());
-                    }
+                    // 总价值
+                    let valuation = if let Some(nav_str) = f_val.latest_nav {
+                        let nav = Decimal::from_str(&nav_str).unwrap_or_default();
+                        let shares = Decimal::from_f64(f_val.total_shares).unwrap_or_default();
+                        (nav * shares).round_dp(2)
+                    } else {
+                        Decimal::ZERO
+                    };
+                    row.push(valuation.to_string());
 
                     row.push(
                         f.last_sync_at
@@ -850,15 +867,13 @@ async fn main() {
                 }
             }
         },
-        Commands::Status { fund: _ } => {
+        Commands::Status { fund: _, wallet } => {
             if let Err(e) = sync::sync_funds(&conn, None, None, None, true).await {
                 eprintln!("⚠️ 警告：无法获取最新数据：{}", e);
                 eprintln!("当前显示的是本地数据库中的缓存数据。");
             }
 
-            let wallet_id = db::get_active_wallet_id(&conn)
-                .expect("数据库错误")
-                .expect("未选择活跃钱包。请使用 'fund wallet use <名称>' 或指定 --wallet 参数。");
+            let wallet_id = resolve_wallet_id(&conn, wallet);
 
             let holdings = db::get_holdings(&conn, wallet_id).expect("数据库错误");
 
