@@ -5,6 +5,7 @@ use crate::provider::aggregator::Aggregator;
 use crate::provider::eastmoney_html::EastmoneyHtmlProvider;
 use crate::provider::eastmoney_js::EastmoneyJsProvider;
 use crate::provider::eastmoney_lsjz::EastmoneyLsjzProvider;
+use crate::provider::morningstar::MorningstarProvider;
 use rusqlite::Connection;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -73,6 +74,7 @@ pub async fn sync_funds(
     }
 
     let mut aggregator = Aggregator::new();
+    aggregator.add_provider(Box::new(MorningstarProvider));
     aggregator.add_provider(Box::new(EastmoneyJsProvider));
     aggregator.add_provider(Box::new(EastmoneyHtmlProvider));
     aggregator.add_provider(Box::new(EastmoneyLsjzProvider));
