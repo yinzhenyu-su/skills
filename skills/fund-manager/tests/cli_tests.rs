@@ -1,6 +1,5 @@
 mod common;
 
-use assert_cmd::Command;
 use common::context::TestContext;
 use predicates::prelude::*;
 use std::env;
@@ -78,16 +77,16 @@ fn test_status_sync_failure_warning() {
     fs::create_dir_all(&temp_app_dir).unwrap();
 
     // 1. Setup: Add a wallet and switch to it
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
     cmd.arg("wallet").arg("add").arg("Main").assert().success();
 
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
     cmd.arg("wallet").arg("use").arg("Main").assert().success();
 
     // 2. Run fund status with forced sync failure
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
     cmd.env("FORCE_SYNC_FAILURE", "1");
     cmd.arg("status")
@@ -105,7 +104,7 @@ fn test_buy_auto_calculation() {
     fs::create_dir_all(&temp_app_dir).unwrap();
 
     // 1. Setup: Add wallet, switch to it
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
     cmd.arg("wallet")
         .arg("add")
@@ -113,7 +112,7 @@ fn test_buy_auto_calculation() {
         .assert()
         .success();
 
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
     cmd.arg("wallet")
         .arg("use")
@@ -138,7 +137,7 @@ fn test_buy_auto_calculation() {
     }
 
     // 2. Run fund buy (auto mode is now default, no --auto flag needed)
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
     cmd.env("SKIP_SYNC", "1");
     cmd.arg("buy")
@@ -161,10 +160,10 @@ fn test_status_valuation_and_pl() {
     }
     fs::create_dir_all(&temp_app_dir).unwrap();
 
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
     cmd.arg("wallet").arg("add").arg("Main").assert().success();
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
     cmd.arg("wallet").arg("use").arg("Main").assert().success();
 
@@ -185,7 +184,7 @@ fn test_status_valuation_and_pl() {
     }
 
     // 2. Run fund status with sync disabled
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
     cmd.env("SKIP_SYNC", "1");
     cmd.arg("status")
@@ -206,16 +205,14 @@ fn test_e2e_full_lifecycle() {
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
     // 1. Init & Wallet
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("E2E")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
@@ -224,8 +221,7 @@ fn test_e2e_full_lifecycle() {
         .success();
 
     // 2. Add Fund
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -246,8 +242,7 @@ fn test_e2e_full_lifecycle() {
     }
 
     // 3. Buy 1500 (auto settles because nav exists)
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("buy")
@@ -260,8 +255,7 @@ fn test_e2e_full_lifecycle() {
         .success();
 
     // 4. Sell 400
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("sell")
@@ -277,8 +271,7 @@ fn test_e2e_full_lifecycle() {
         .success();
 
     // 5. Check status
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("status")
@@ -287,8 +280,7 @@ fn test_e2e_full_lifecycle() {
         .stdout(predicate::str::contains("000001"));
 
     // 6. Delete fund
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("delete")
@@ -298,8 +290,7 @@ fn test_e2e_full_lifecycle() {
         .success();
 
     // 7. Verify empty status
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("status")
@@ -318,24 +309,21 @@ fn test_wallet_override_and_auto_discovery() {
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
     // 1. Setup: Two wallets, but use Wallet A
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("WalletA")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("WalletB")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
@@ -360,8 +348,7 @@ fn test_wallet_override_and_auto_discovery() {
     }
 
     // 2. Buy fund 160119 for WalletB
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("buy")
@@ -377,8 +364,7 @@ fn test_wallet_override_and_auto_discovery() {
         .stdout(predicate::str::contains("成功买入 160119"));
 
     // 3. Verify WalletA is empty
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("status") // Uses WalletA by default
@@ -387,8 +373,7 @@ fn test_wallet_override_and_auto_discovery() {
         .stdout(predicate::str::contains("160119").not());
 
     // 4. Verify WalletB has data in wallet list
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("list")
@@ -408,24 +393,21 @@ fn test_fund_delete_cascade() {
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
     // 1. Setup
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("Invest")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
         .arg("Invest")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -434,8 +416,7 @@ fn test_fund_delete_cascade() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("buy")
@@ -450,8 +431,7 @@ fn test_fund_delete_cascade() {
         .success();
 
     // 2. Delete Fund
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("delete")
@@ -480,24 +460,21 @@ fn test_fund_delete_with_yes_flag() {
     fs::create_dir_all(&temp_app_dir).unwrap();
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("Invest")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
         .arg("Invest")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -506,8 +483,7 @@ fn test_fund_delete_with_yes_flag() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("delete")
@@ -526,24 +502,21 @@ fn test_sell_basic_flow() {
     fs::create_dir_all(&temp_app_dir).unwrap();
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("Invest")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
         .arg("Invest")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -552,8 +525,7 @@ fn test_sell_basic_flow() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("buy")
         .arg("000300")
@@ -566,8 +538,7 @@ fn test_sell_basic_flow() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("sell")
@@ -582,8 +553,7 @@ fn test_sell_basic_flow() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("status")
@@ -601,24 +571,21 @@ fn test_sell_auto_calculation() {
     fs::create_dir_all(&temp_app_dir).unwrap();
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("Invest")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
         .arg("Invest")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -638,8 +605,7 @@ fn test_sell_auto_calculation() {
         conn.execute("INSERT OR REPLACE INTO nav_history (fund_code, date, nav) VALUES ('000300', '2026-03-09', '1.2')", []).unwrap();
     }
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("buy")
@@ -655,8 +621,7 @@ fn test_sell_auto_calculation() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("sell")
@@ -679,24 +644,21 @@ fn test_sell_insufficient_shares() {
     fs::create_dir_all(&temp_app_dir).unwrap();
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("Invest")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
         .arg("Invest")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -704,8 +666,7 @@ fn test_sell_insufficient_shares() {
         .arg("沪深300")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("buy")
         .arg("000300")
@@ -718,8 +679,7 @@ fn test_sell_insufficient_shares() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("sell")
@@ -741,24 +701,21 @@ fn test_sell_all_shares() {
     fs::create_dir_all(&temp_app_dir).unwrap();
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("Main")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
         .arg("Main")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -766,8 +723,7 @@ fn test_sell_all_shares() {
         .arg("沪深300")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("buy")
         .arg("000300")
@@ -780,8 +736,7 @@ fn test_sell_all_shares() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("sell")
@@ -796,8 +751,7 @@ fn test_sell_all_shares() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("status")
@@ -815,24 +769,21 @@ fn test_fund_import_arguments() {
     fs::create_dir_all(&temp_app_dir).unwrap();
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("Main")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
         .arg("Main")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -851,8 +802,7 @@ fn test_fund_import_arguments() {
         .unwrap();
     }
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("import")
@@ -863,8 +813,7 @@ fn test_fund_import_arguments() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("status")
@@ -882,24 +831,21 @@ fn test_fund_import_csv() {
     fs::create_dir_all(&temp_app_dir).unwrap();
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("Main")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
         .arg("Main")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -925,8 +871,7 @@ fn test_fund_import_csv() {
     )
     .unwrap();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("import")
@@ -935,8 +880,7 @@ fn test_fund_import_csv() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("status")
@@ -954,24 +898,21 @@ fn test_fund_import_override() {
     fs::create_dir_all(&temp_app_dir).unwrap();
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
         .arg("Main")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
         .arg("Main")
         .assert()
         .success();
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -990,8 +931,7 @@ fn test_fund_import_override() {
         .unwrap();
     }
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("buy")
@@ -1007,8 +947,7 @@ fn test_fund_import_override() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("import")
@@ -1020,8 +959,7 @@ fn test_fund_import_override() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("status")
@@ -1039,7 +977,7 @@ fn test_fund_inspect_not_found() {
     }
     fs::create_dir_all(&temp_app_dir).unwrap();
 
-    let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
 
     // fund fund inspect 999999
@@ -1081,8 +1019,7 @@ fn test_fund_457001_profit_loss_calculation() {
     let app_dir_str = temp_app_dir.to_str().unwrap();
 
     // 1. Setup: 创建钱包并添加基金
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("add")
@@ -1090,8 +1027,7 @@ fn test_fund_457001_profit_loss_calculation() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("wallet")
         .arg("use")
@@ -1099,8 +1035,7 @@ fn test_fund_457001_profit_loss_calculation() {
         .assert()
         .success();
 
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .arg("fund")
         .arg("add")
@@ -1130,8 +1065,7 @@ fn test_fund_457001_profit_loss_calculation() {
     }
 
     // 3. 执行买入操作：投入 10000 元
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("buy")
@@ -1145,8 +1079,7 @@ fn test_fund_457001_profit_loss_calculation() {
         .stdout(predicate::str::contains("4421.48")); // 预期份额
 
     // 4. 验证盈亏状态
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("status")
@@ -1159,8 +1092,7 @@ fn test_fund_457001_profit_loss_calculation() {
         .stdout(predicate::str::contains("-6.50%"));
 
     // 5. 边界测试：执行卖出操作
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("sell")
@@ -1174,8 +1106,7 @@ fn test_fund_457001_profit_loss_calculation() {
         .success();
 
     // 6. 验证卖出后的盈亏状态
-    Command::cargo_bin("fund-manager")
-        .unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
         .arg("status")

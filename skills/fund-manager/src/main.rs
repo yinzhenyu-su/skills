@@ -18,6 +18,7 @@ struct ImportItem {
     raw_input: String,
     money: Decimal,
     date: String,
+    #[allow(dead_code)]
     line_num: Option<usize>,
 }
 
@@ -1011,7 +1012,7 @@ async fn main() {
                 db::get_fund_shares(&conn, wallet_id, &fund_obj.code).expect("数据库错误");
 
             // 1. Resolve NAV (use find_prev_available_nav for sell - need previous day's NAV)
-            let (final_nav, actual_date) = if let Some(n_str) = nav {
+            let (final_nav, _actual_date) = if let Some(n_str) = nav {
                 let n = Decimal::from_str(&n_str).expect("无效的 --nav 参数");
                 (n, tx_date.clone())
             } else {

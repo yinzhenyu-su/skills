@@ -28,12 +28,13 @@ impl TestContext {
         Self { temp_dir, app_dir }
     }
 
+    #[allow(dead_code)]
     pub fn app_dir(&self) -> &PathBuf {
         &self.app_dir
     }
 
     pub fn cmd(&self) -> Command {
-        let mut cmd = Command::cargo_bin("fund-manager").unwrap();
+        let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("fund-manager");
         cmd.env("FUND_MANAGER_APP_DIR", self.app_dir.to_str().unwrap());
         cmd
     }

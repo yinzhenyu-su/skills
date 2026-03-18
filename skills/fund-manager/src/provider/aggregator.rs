@@ -1,5 +1,4 @@
 use super::{FundData, Provider};
-use async_trait::async_trait;
 
 pub struct Aggregator {
     pub providers: Vec<Box<dyn Provider + Send + Sync>>,
@@ -140,6 +139,7 @@ mod tests {
     use mockall::predicate::*;
     use mockall::*;
     use rust_decimal_macros::dec;
+    use async_trait::async_trait;
 
     mock! {
         pub MyProvider {}

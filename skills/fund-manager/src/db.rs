@@ -840,7 +840,7 @@ mod tests {
         let result =
             find_next_available_nav(&conn, "000300", "2026-03-16", 20).expect("Failed to query");
         assert!(result.is_some());
-        let (date, nav) = result.unwrap();
+        let (date, _nav) = result.unwrap();
         assert_eq!(date, "2026-03-16");
     }
 
@@ -876,7 +876,7 @@ mod tests {
         let result =
             find_next_available_nav(&conn, "000300", "2026-03-16", 20).expect("Failed to query");
         assert!(result.is_some());
-        let (date, nav) = result.unwrap();
+        let (date, _nav) = result.unwrap();
         assert_eq!(date, "2026-03-19");
     }
 

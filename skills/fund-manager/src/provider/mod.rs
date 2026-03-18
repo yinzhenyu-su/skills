@@ -32,6 +32,7 @@ pub struct FundData {
 pub trait Provider {
     async fn fetch(&self, code: &str) -> Result<FundData, String>;
     async fn fetch_at_date(&self, code: &str, _date: &str) -> Result<FundData, String> {
+        let _ = code;
         // Default: not supported by this provider
         Err("Date-specific fetch not supported by this provider".to_string())
     }
@@ -42,6 +43,7 @@ pub trait Provider {
         _end: &str,
     ) -> Result<Vec<FundData>, String> {
         // Default: not supported by this provider
+        let _ = code;
         Err("Date-range fetch not supported by this provider".to_string())
     }
 }
