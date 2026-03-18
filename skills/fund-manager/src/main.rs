@@ -4,11 +4,11 @@ use csv::ReaderBuilder;
 use fund_manager::cli::{Cli, Commands, FundCommands, WalletCommands};
 use fund_manager::db;
 use fund_manager::finance;
-use fund_manager::provider::{eastmoney_lsjz::EastmoneyLsjzProvider, Provider};
+use fund_manager::provider::{Provider, eastmoney_lsjz::EastmoneyLsjzProvider};
 use fund_manager::{config, resolver, sync};
 use rusqlite::Connection;
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 use rust_decimal_macros::dec;
 use std::fs;
 use std::io::{self, Write};
@@ -55,7 +55,10 @@ async fn smart_nav_lookup(
     }
 
     // 2. Not in DB, try to fetch from API
-    println!("🔍 正在从天天基金获取 {} 在 {} 的净值...", code, requested_date);
+    println!(
+        "🔍 正在从天天基金获取 {} 在 {} 的净值...",
+        code, requested_date
+    );
     let provider = EastmoneyLsjzProvider;
     if let Ok(data) = provider.fetch_at_date(code, requested_date).await {
         if let Some(nav) = data.nav {
@@ -67,8 +70,8 @@ async fn smart_nav_lookup(
     }
 
     // 3. API also failed, fall back to forward lookup (up to 20 days)
-    let nav_result =
-        db::find_next_available_nav(conn, code, requested_date, 20).map_err(|e: rusqlite::Error| e.to_string())?;
+    let nav_result = db::find_next_available_nav(conn, code, requested_date, 20)
+        .map_err(|e: rusqlite::Error| e.to_string())?;
 
     Ok(nav_result)
 }
@@ -90,10 +93,7 @@ fn resolve_wallet_id(conn: &Connection, wallet_name: Option<String>) -> i64 {
 
 fn confirm_action(prompt: &str, force_yes: bool) -> bool {
     if force_yes {
-        println!(
-            "{} [y/N]: y (由于使用了 -y/--yes，已跳过确认)",
-            prompt
-        );
+        println!("{} [y/N]: y (由于使用了 -y/--yes，已跳过确认)", prompt);
         return true;
     }
 
@@ -101,9 +101,7 @@ fn confirm_action(prompt: &str, force_yes: bool) -> bool {
     io::stdout().flush().unwrap();
 
     let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("读取输入失败");
+    io::stdin().read_line(&mut input).expect("读取输入失败");
 
     input.trim().to_lowercase() == "y"
 }
@@ -144,7 +142,8 @@ async fn handle_inspect(
         true
     } else if let Some(ref a) = analysis_opt {
         // Update if older than 30 days
-        if let Ok(last) = chrono::NaiveDateTime::parse_from_str(&a.last_update, "%Y-%m-%d %H:%M:%S") {
+        if let Ok(last) = chrono::NaiveDateTime::parse_from_str(&a.last_update, "%Y-%m-%d %H:%M:%S")
+        {
             (chrono::Utc::now().naive_utc() - last).num_days() > 30
         } else {
             true
@@ -421,7 +420,8 @@ async fn handle_import(
                 let already_exists = !current_shares.is_zero();
 
                 if already_exists && !merge && !override_flag {
-                    result.reason = "该基金在钱包中已存在。请使用 --merge 或 --override 参数。".to_string();
+                    result.reason =
+                        "该基金在钱包中已存在。请使用 --merge 或 --override 参数。".to_string();
                 } else {
                     if override_flag && already_exists {
                         conn.execute(
@@ -432,8 +432,7 @@ async fn handle_import(
                     }
 
                     // Handle settlement logic with smart NAV lookup (local DB -> API -> forward lookup)
-                    let nav_result = smart_nav_lookup(conn, &fund_obj.code, &item.date)
-                        .await?;
+                    let nav_result = smart_nav_lookup(conn, &fund_obj.code, &item.date).await?;
 
                     if let Some((actual_date, nav)) = nav_result {
                         let fee_rate_dec = if let Some(ref sf) = fund_obj.sales_fee {
@@ -467,7 +466,8 @@ async fn handle_import(
                         } else {
                             dec!(0.0015)
                         };
-                        let fee = (item.money * fee_rate_dec / (dec!(1) + fee_rate_dec)).round_dp(2);
+                        let fee =
+                            (item.money * fee_rate_dec / (dec!(1) + fee_rate_dec)).round_dp(2);
 
                         db::add_transaction(
                             conn,
@@ -494,7 +494,8 @@ async fn handle_import(
                     {
                         reason = format!("{}\n{}", reason, hint);
                     }
-                    if let Some(suggestion) = resolver::AdviceEngine::suggest_spelling(conn, input) {
+                    if let Some(suggestion) = resolver::AdviceEngine::suggest_spelling(conn, input)
+                    {
                         reason = format!("{}\n{}", reason, suggestion);
                     }
                 }
@@ -516,11 +517,7 @@ async fn handle_import(
         let mut table = Table::new();
         table.set_header(vec!["输入内容", "状态", "失败原因"]);
         for r in results.iter().filter(|r| !r.success) {
-            table.add_row(vec![
-                r.input.clone(),
-                "失败".to_string(),
-                r.reason.clone(),
-            ]);
+            table.add_row(vec![r.input.clone(), "失败".to_string(), r.reason.clone()]);
         }
         println!("\n失败详情：");
         println!("{table}");
@@ -594,11 +591,7 @@ async fn main() {
                     };
 
                     table.add_row(vec![
-                        if Some(w.id) == active_id {
-                            "*"
-                        } else {
-                            ""
-                        },
+                        if Some(w.id) == active_id { "*" } else { "" },
                         &w.name,
                         &total_valuation.to_string(),
                         &total_cost.to_string(),
@@ -622,44 +615,45 @@ async fn main() {
                     std::process::exit(1);
                 }
             },
-            WalletCommands::Delete { name } => {
-                match db::get_wallet_id_by_name(&conn, &name) {
-                    Ok(Some(id)) => {
-                        let active_id = db::get_active_wallet_id(&conn).unwrap_or(None);
-                        let is_active = Some(id) == active_id;
+            WalletCommands::Delete { name } => match db::get_wallet_id_by_name(&conn, &name) {
+                Ok(Some(id)) => {
+                    let active_id = db::get_active_wallet_id(&conn).unwrap_or(None);
+                    let is_active = Some(id) == active_id;
 
-                        let prompt = format!(
-                            "确定要删除钱包 '{}' 吗？这将永久删除该钱包及其所有的交易历史记录！",
-                            name
-                        );
-                        if confirm_action(&prompt, cli.yes) {
-                            match db::delete_wallet(&conn, id) {
-                                Ok(_) => {
-                                    if is_active {
-                                        println!("✅ 钱包 '{}' 已成功删除。(由于该钱包原为活跃钱包，当前已重置为未选中任何钱包。)", name);
-                                    } else {
-                                        println!("✅ 钱包 '{}' 已成功删除。", name);
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("❌ 错误：无法删除钱包：{}", e);
-                                    std::process::exit(1);
+                    let prompt = format!(
+                        "确定要删除钱包 '{}' 吗？这将永久删除该钱包及其所有的交易历史记录！",
+                        name
+                    );
+                    if confirm_action(&prompt, cli.yes) {
+                        match db::delete_wallet(&conn, id) {
+                            Ok(_) => {
+                                if is_active {
+                                    println!(
+                                        "✅ 钱包 '{}' 已成功删除。(由于该钱包原为活跃钱包，当前已重置为未选中任何钱包。)",
+                                        name
+                                    );
+                                } else {
+                                    println!("✅ 钱包 '{}' 已成功删除。", name);
                                 }
                             }
-                        } else {
-                            println!("已取消删除操作。");
+                            Err(e) => {
+                                eprintln!("❌ 错误：无法删除钱包：{}", e);
+                                std::process::exit(1);
+                            }
                         }
-                    }
-                    Ok(None) => {
-                        eprintln!("❌ 错误：找不到名为 '{}' 的钱包。", name);
-                        std::process::exit(1);
-                    }
-                    Err(e) => {
-                        eprintln!("❌ 数据库错误：{}", e);
-                        std::process::exit(1);
+                    } else {
+                        println!("已取消删除操作。");
                     }
                 }
-            }
+                Ok(None) => {
+                    eprintln!("❌ 错误：找不到名为 '{}' 的钱包。", name);
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("❌ 数据库错误：{}", e);
+                    std::process::exit(1);
+                }
+            },
         },
         Commands::Fund { command } => match command {
             FundCommands::Add { code, name, fee } => {
@@ -726,7 +720,9 @@ async fn main() {
 
                     // 净值 (日期)
                     if let Some(nav_str) = f_val.latest_nav.as_ref() {
-                        let date_str = f_val.latest_nav_date.as_ref()
+                        let date_str = f_val
+                            .latest_nav_date
+                            .as_ref()
                             .map(|d| if d.len() >= 10 { &d[5..10] } else { d })
                             .unwrap_or("??-??");
                         row.push(format!("{} ({})", nav_str, date_str));
@@ -771,7 +767,9 @@ async fn main() {
             } => {
                 if !all && fund.is_none() {
                     eprintln!("❌ 错误：请指定基金标识符或使用 --all 进行全量同步。");
-                    eprintln!("💡 提示：运行 'fund fund sync --all' 可以同步所有持有基金的元数据。");
+                    eprintln!(
+                        "💡 提示：运行 'fund fund sync --all' 可以同步所有持有基金的元数据。"
+                    );
                     std::process::exit(1);
                 }
 
@@ -891,7 +889,10 @@ async fn main() {
                     // Purchase Fee priority: sales_fee -> 0.15% (default)
                     let (fee_rate_dec, fee_source) = if let Some(ref sf) = fund_obj.sales_fee {
                         if !sf.trim().is_empty() && sf != "0.00%" {
-                            (finance::parse_percentage_rate(sf), format!("申购费率: {}", sf))
+                            (
+                                finance::parse_percentage_rate(sf),
+                                format!("申购费率: {}", sf),
+                            )
                         } else {
                             (dec!(0.0015), "默认费率: 0.15%".to_string())
                         }
@@ -951,9 +952,7 @@ async fn main() {
                         "基金 {} 在 {} 及其前20天内的净值数据均不可用。已创建待确认交易。",
                         fund_obj.code, tx_date
                     );
-                    println!(
-                        "当官方发布净值后，运行 'fund fund sync' 将自动结算此笔交易。"
-                    );
+                    println!("当官方发布净值后，运行 'fund fund sync' 将自动结算此笔交易。");
                 }
             } else {
                 // Manual mode: user provides shares and nav
@@ -1142,5 +1141,90 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_date_valid() {
+        assert_eq!(parse_date("2026-03-09").unwrap(), "2026-03-09");
+        assert_eq!(parse_date("2024-01-01").unwrap(), "2024-01-01");
+        assert_eq!(parse_date("2023-12-31").unwrap(), "2023-12-31");
+    }
+
+    #[test]
+    fn test_parse_date_invalid_length() {
+        assert!(parse_date("2026-3-9").is_err());
+        assert!(parse_date("26-03-09").is_err());
+        assert!(parse_date("").is_err());
+        assert!(parse_date("2026-03-091").is_err());
+    }
+
+    #[test]
+    fn test_parse_date_invalid_format() {
+        // Note: parse_date only does basic validation (length and part count)
+        // It does NOT validate that parts are actual numbers or valid dates
+        // So these pass basic validation but have wrong format
+        assert!(parse_date("2026/03/09").is_err()); // Wrong separator
+        // "03-09-2026" has 10 chars and 3 parts, so it passes basic validation!
+        // This is a limitation of the current implementation
+        assert!(parse_date("20260309").is_err()); // No separator
+    }
+
+    #[test]
+    fn test_parse_date_wrong_number_of_parts() {
+        assert!(parse_date("2026-03").is_err());
+        assert!(parse_date("2026-03-09-extra").is_err());
+    }
+
+    #[test]
+    fn test_confirm_action_force_yes() {
+        // When force_yes is true, should always return true
+        // and print the message (which we can't easily capture here)
+        let result = confirm_action("Test prompt?", true);
+        assert!(result);
+    }
+
+    #[test]
+    fn test_get_today_format() {
+        let today = get_today();
+        // Format should be YYYY-MM-DD (10 characters)
+        assert_eq!(today.len(), 10);
+        // Should be parseable as date
+        assert!(chrono::NaiveDate::parse_from_str(&today, "%Y-%m-%d").is_ok());
+    }
+
+    #[test]
+    fn test_import_item_structure() {
+        let item = ImportItem {
+            raw_input: "000300".to_string(),
+            money: Decimal::new(1000, 2),
+            date: "2026-03-09".to_string(),
+            line_num: Some(1),
+        };
+        assert_eq!(item.raw_input, "000300");
+        assert_eq!(item.date, "2026-03-09");
+    }
+
+    #[test]
+    fn test_import_result_structure() {
+        let result = ImportResult {
+            input: "000300".to_string(),
+            success: true,
+            reason: String::new(),
+        };
+        assert!(result.success);
+        assert!(result.reason.is_empty());
+
+        let result = ImportResult {
+            input: "invalid".to_string(),
+            success: false,
+            reason: "Not found".to_string(),
+        };
+        assert!(!result.success);
+        assert_eq!(result.reason, "Not found");
     }
 }

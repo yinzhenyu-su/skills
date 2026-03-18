@@ -120,10 +120,7 @@ impl Aggregator {
         }
 
         if success_count == 0 {
-            return Err(format!(
-                "所有 Provider 均抓取失败: {}",
-                errors.join("; ")
-            ));
+            return Err(format!("所有 Provider 均抓取失败: {}", errors.join("; ")));
         }
 
         if final_data.name.is_none() && final_data.nav.is_none() {

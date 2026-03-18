@@ -14,9 +14,7 @@ fn test_wallet_add() {
         .arg("Test Wallet")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "成功添加钱包：Test Wallet",
-        ));
+        .stdout(predicate::str::contains("成功添加钱包：Test Wallet"));
 
     // Verify DB entry
     ctx.cmd()
@@ -103,7 +101,9 @@ fn test_wallet_delete() {
         .arg("NoSuchWallet")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("❌ 错误：找不到名为 'NoSuchWallet' 的钱包。"));
+        .stderr(predicate::str::contains(
+            "❌ 错误：找不到名为 'NoSuchWallet' 的钱包。",
+        ));
 }
 
 #[test]

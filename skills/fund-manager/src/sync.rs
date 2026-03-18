@@ -92,9 +92,9 @@ pub async fn sync_funds(
             fund_name
         );
 
-        let pending_date = db::get_earliest_pending_date(conn, Some(&code))
-            .map_err(|e| e.to_string())?;
-        
+        let pending_date =
+            db::get_earliest_pending_date(conn, Some(&code)).map_err(|e| e.to_string())?;
+
         let effective_start = calculate_sync_range(pending_date, start.clone(), is_all);
 
         if effective_start <= effective_end {
@@ -108,8 +108,13 @@ pub async fn sync_funds(
                     if count > 0 {
                         for data in results {
                             if let (Some(nav), Some(date)) = (data.nav, data.date) {
-                                db::insert_nav_history_idempotent(conn, &code, &date, &nav.to_string())
-                                    .map_err(|e| e.to_string())?;
+                                db::insert_nav_history_idempotent(
+                                    conn,
+                                    &code,
+                                    &date,
+                                    &nav.to_string(),
+                                )
+                                .map_err(|e| e.to_string())?;
                             }
                         }
                         println!("  ✓ 已同步 {} 天的历史净值", count);
@@ -128,7 +133,7 @@ pub async fn sync_funds(
                     db::insert_nav_history_idempotent(conn, &code, &date, &nav.to_string())
                         .map_err(|e| e.to_string())?;
                 }
-                
+
                 // Update metadata (fee, name, etc.)
                 let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 db::add_fund(
@@ -144,7 +149,8 @@ pub async fn sync_funds(
                     data.trust_fee.as_deref(),
                     data.sales_fee.as_deref(),
                     Some(&now),
-                ).map_err(|e| e.to_string())?;
+                )
+                .map_err(|e| e.to_string())?;
             }
             Err(e) => {
                 println!("  ⚠️ 同步元数据失败 ({}): {}", code, e);
@@ -164,10 +170,7 @@ pub async fn settle_pending_transactions(conn: &Connection) -> Result<(), String
         return Ok(());
     }
 
-    println!(
-        "正在检查 {} 笔待确认交易以进行结算...",
-        pending.len()
-    );
+    println!("正在检查 {} 笔待确认交易以进行结算...", pending.len());
 
     for p in pending {
         let nav_at_date =
@@ -226,15 +229,188 @@ mod tests {
         let seven_days_ago = (chrono::Local::now() - chrono::Duration::days(7))
             .format("%Y-%m-%d")
             .to_string();
-        assert_eq!(
-            calculate_sync_range(None, None, true),
-            seven_days_ago
-        );
+        assert_eq!(calculate_sync_range(None, None, true), seven_days_ago);
 
         // 4. no start, no pending, NOT is_all -> returns today
+        assert_eq!(calculate_sync_range(None, None, false), get_today());
+    }
+
+    #[test]
+    fn test_calculate_sync_range_priority() {
+        // Start has higher priority than pending date
         assert_eq!(
-            calculate_sync_range(None, None, false),
-            get_today()
+            calculate_sync_range(Some("2024-01-01".into()), Some("2024-06-01".into()), false),
+            "2024-06-01"
         );
+
+        // When start is None, falls back to pending date
+        assert_eq!(
+            calculate_sync_range(Some("2024-03-15".into()), None, true),
+            "2024-03-15"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_funds_empty_codes() {
+        use tempfile::NamedTempFile;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        db::init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).expect("Failed to open DB");
+
+        // Should succeed with empty fund list
+        let result = sync_funds(&conn, None, None, None, false).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_sync_funds_skips_when_env_set() {
+        use tempfile::NamedTempFile;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        db::init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).expect("Failed to open DB");
+
+        // Add a fund
+        db::add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        // Set SKIP_SYNC env
+        unsafe {
+            std::env::set_var("SKIP_SYNC", "1");
+        }
+        let result = sync_funds(&conn, Some("000300".to_string()), None, None, false).await;
+        unsafe {
+            std::env::remove_var("SKIP_SYNC");
+        }
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_sync_funds_returns_error_when_env_set() {
+        use tempfile::NamedTempFile;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        db::init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).expect("Failed to open DB");
+
+        db::add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        // Set FORCE_SYNC_FAILURE env
+        unsafe {
+            std::env::set_var("FORCE_SYNC_FAILURE", "1");
+        }
+        let result = sync_funds(&conn, Some("000300".to_string()), None, None, false).await;
+        unsafe {
+            std::env::remove_var("FORCE_SYNC_FAILURE");
+        }
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "网络不可达");
+    }
+
+    #[tokio::test]
+    async fn test_settle_pending_transactions_empty() {
+        use tempfile::NamedTempFile;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        db::init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).expect("Failed to open DB");
+
+        // No pending transactions - should succeed
+        let result = settle_pending_transactions(&conn).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_settle_pending_transactions_success() {
+        use tempfile::NamedTempFile;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        db::init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).expect("Failed to open DB");
+
+        // Setup: wallet, fund, nav, pending transaction
+        db::add_wallet(&conn, "TestWallet").expect("Failed to add wallet");
+        db::add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            Some("股票型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+        db::insert_nav_history_idempotent(&conn, "000300", "2024-03-01", "1.5000")
+            .expect("Failed to insert nav");
+
+        // Add pending buy transaction
+        db::add_transaction(
+            &conn,
+            1,
+            "000300",
+            "buy",
+            "1500.00",
+            None, // shares not set - pending
+            None, // nav not set - pending
+            "2.25",
+            "2024-03-01",
+            "pending",
+        )
+        .expect("Failed to add pending transaction");
+
+        // Settle
+        let result = settle_pending_transactions(&conn).await;
+        assert!(result.is_ok());
+
+        // Verify transaction is now settled
+        let pending = db::get_pending_transactions(&conn).expect("Failed to get pending");
+        assert!(pending.is_empty());
+
+        // Verify transaction has shares and nav now
+        let conn2 = Connection::open(path).expect("Failed to open DB");
+        let mut stmt = conn2
+            .prepare("SELECT shares, nav, status FROM transaction_log WHERE id = 1")
+            .expect("Failed to prepare");
+        let (shares, nav, status): (String, String, String) = stmt
+            .query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("Failed to query");
+        assert_eq!(status, "settled");
+        assert!(!shares.is_empty());
+        assert!(!nav.is_empty());
     }
 }

@@ -25,7 +25,7 @@ impl Provider for EastmoneyJsProvider {
         let client = crate::provider::build_http_client()?;
 
         let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
-        
+
         let status = resp.status();
         if !status.is_success() {
             return Err(format!("Eastmoney JS API returned error: {}", status));

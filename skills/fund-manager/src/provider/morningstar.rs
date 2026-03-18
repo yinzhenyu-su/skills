@@ -103,16 +103,31 @@ pub struct MorningstarProvider;
 #[async_trait]
 impl Provider for MorningstarProvider {
     async fn fetch(&self, code: &str) -> Result<FundData, String> {
-        let perf_url = format!("https://www.morningstar.cn/cn-api/v2/funds/{}/performance", code);
-        let common_url = format!("https://www.morningstar.cn/cn-api/v2/funds/{}/common-data", code);
+        let perf_url = format!(
+            "https://www.morningstar.cn/cn-api/v2/funds/{}/performance",
+            code
+        );
+        let common_url = format!(
+            "https://www.morningstar.cn/cn-api/v2/funds/{}/common-data",
+            code
+        );
         let fees_url = format!("https://www.morningstar.cn/cn-api/v2/funds/{}/fees", code);
-        
+
         let client = super::build_http_client()?;
-        
+
         // Concurrent fetch
-        let perf_fut = client.get(&perf_url).header("Referer", "https://www.morningstar.cn/").send();
-        let common_fut = client.get(&common_url).header("Referer", "https://www.morningstar.cn/").send();
-        let fees_fut = client.get(&fees_url).header("Referer", "https://www.morningstar.cn/").send();
+        let perf_fut = client
+            .get(&perf_url)
+            .header("Referer", "https://www.morningstar.cn/")
+            .send();
+        let common_fut = client
+            .get(&common_url)
+            .header("Referer", "https://www.morningstar.cn/")
+            .send();
+        let fees_fut = client
+            .get(&fees_url)
+            .header("Referer", "https://www.morningstar.cn/")
+            .send();
 
         let (perf_res, common_res, fees_res) = tokio::join!(perf_fut, common_fut, fees_fut);
 

@@ -34,9 +34,7 @@ pub enum Commands {
         fund: Option<String>,
     },
     /// 查看交易历史
-    #[command(
-        long_about = "查看特定基金的交易历史记录。\n\n示例：\n    fund history 000300"
-    )]
+    #[command(long_about = "查看特定基金的交易历史记录。\n\n示例：\n    fund history 000300")]
     History {
         /// 基金代码或名称
         fund: String,

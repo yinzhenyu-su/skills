@@ -1,7 +1,7 @@
 use assert_cmd::Command;
+use std::fs;
 use std::path::PathBuf;
 use tempfile::{TempDir, tempdir_in};
-use std::fs;
 
 pub struct TestContext {
     #[allow(dead_code)]
@@ -15,7 +15,7 @@ impl TestContext {
         let target_tests_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("tests");
-        
+
         if !target_tests_dir.exists() {
             fs::create_dir_all(&target_tests_dir).unwrap();
         }
@@ -25,10 +25,7 @@ impl TestContext {
         let app_dir = temp_dir.path().join(name);
         fs::create_dir_all(&app_dir).unwrap();
 
-        Self {
-            temp_dir,
-            app_dir,
-        }
+        Self { temp_dir, app_dir }
     }
 
     pub fn app_dir(&self) -> &PathBuf {

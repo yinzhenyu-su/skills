@@ -124,8 +124,10 @@ impl Provider for EastmoneyLsjzProvider {
         end: &str,
     ) -> Result<Vec<FundData>, String> {
         let page_size = 20;
-        let first_page = self.fetch_page(code, 1, page_size, Some(start), Some(end)).await?;
-        
+        let first_page = self
+            .fetch_page(code, 1, page_size, Some(start), Some(end))
+            .await?;
+
         let total_count = first_page.TotalCount;
         let mut all_items = Vec::new();
 
@@ -134,9 +136,11 @@ impl Provider for EastmoneyLsjzProvider {
         }
 
         let total_pages = (total_count as f64 / page_size as f64).ceil() as i32;
-        
+
         for page_index in 2..=total_pages {
-            let page_res = self.fetch_page(code, page_index, page_size, Some(start), Some(end)).await?;
+            let page_res = self
+                .fetch_page(code, page_index, page_size, Some(start), Some(end))
+                .await?;
             if let Some(data) = page_res.Data {
                 all_items.extend(data.LSJZList);
             }
@@ -157,3 +161,71 @@ impl Provider for EastmoneyLsjzProvider {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_jsonp_regex_matches() {
+        let jsonp_body = r#"jQuery1234567890_1234567890({"Data":{"LSJZList":[]},"TotalCount":0})"#;
+        let caps = JSONP_RE.captures(jsonp_body);
+        assert!(caps.is_some());
+        let caps = caps.unwrap();
+        assert!(caps.get(1).is_some());
+    }
+
+    #[test]
+    fn test_jsonp_regex_non_jsonp() {
+        // Plain JSON should not match
+        let json_body = r#"{"Data":{"LSJZList":[]},"TotalCount":0}"#;
+        let caps = JSONP_RE.captures(json_body);
+        // This regex won't match non-JSONP, but our code handles this case
+        // by using body directly if not starting with jQuery
+        assert!(caps.is_none());
+    }
+
+    #[test]
+    fn test_lsjz_response_deserialization() {
+        let json = r#"{
+            "Data": {
+                "LSJZList": [
+                    {"FSRQ": "2026-03-09", "DWJZ": "1.5000", "LJJZ": "1.6500"}
+                ]
+            },
+            "TotalCount": 1
+        }"#;
+
+        let res: LsjzResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(res.TotalCount, 1);
+        let data = res.Data.unwrap();
+        assert_eq!(data.LSJZList.len(), 1);
+        assert_eq!(data.LSJZList[0].FSRQ, "2026-03-09");
+        assert_eq!(data.LSJZList[0].DWJZ, "1.5000");
+        assert_eq!(data.LSJZList[0].LJJZ, "1.6500");
+    }
+
+    #[test]
+    fn test_lsjz_item_deserialization() {
+        let json = r#"{"FSRQ": "2026-03-09", "DWJZ": "1.5000", "LJJZ": "1.6500"}"#;
+        let item: LsjzItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.FSRQ, "2026-03-09");
+        assert_eq!(item.DWJZ, "1.5000");
+        assert_eq!(item.LJJZ, "1.6500");
+    }
+
+    #[test]
+    fn test_lsjz_response_empty_list() {
+        let json = r#"{"Data":{"LSJZList":[]},"TotalCount":0}"#;
+        let res: LsjzResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(res.TotalCount, 0);
+        assert!(res.Data.unwrap().LSJZList.is_empty());
+    }
+
+    #[test]
+    fn test_lsjz_response_no_data() {
+        let json = r#"{"Data":null,"TotalCount":0}"#;
+        let res: LsjzResponse = serde_json::from_str(json).unwrap();
+        assert!(res.Data.is_none());
+        assert_eq!(res.TotalCount, 0);
+    }
+}

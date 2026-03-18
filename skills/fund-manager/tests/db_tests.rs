@@ -77,22 +77,58 @@ fn test_get_funds_with_valuations() {
     let conn = db::setup_test_db().expect("Failed to setup test db");
 
     // 1. Setup Data
-    conn.execute("INSERT INTO fund (code, name) VALUES ('000300', '沪深300')", []).unwrap();
-    conn.execute("INSERT INTO fund (code, name) VALUES ('000513', '富国高端')", []).unwrap();
-    
+    conn.execute(
+        "INSERT INTO fund (code, name) VALUES ('000300', '沪深300')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO fund (code, name) VALUES ('000513', '富国高端')",
+        [],
+    )
+    .unwrap();
+
     // Add Nav
     db::insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.00").unwrap();
     db::insert_nav_history_idempotent(&conn, "000300", "2026-03-02", "1.10").unwrap();
-    
+
     // Add Wallet & Transactions
-    conn.execute("INSERT INTO wallet (id, name) VALUES (1, 'Test Wallet')", []).unwrap();
-    db::add_transaction(&conn, 1, "000300", "buy", "1000", Some("1000"), Some("1.00"), "0", "2026-03-01", "settled").unwrap();
-    db::add_transaction(&conn, 1, "000300", "sell", "550", Some("500"), Some("1.10"), "0", "2026-03-02", "settled").unwrap();
+    conn.execute(
+        "INSERT INTO wallet (id, name) VALUES (1, 'Test Wallet')",
+        [],
+    )
+    .unwrap();
+    db::add_transaction(
+        &conn,
+        1,
+        "000300",
+        "buy",
+        "1000",
+        Some("1000"),
+        Some("1.00"),
+        "0",
+        "2026-03-01",
+        "settled",
+    )
+    .unwrap();
+    db::add_transaction(
+        &conn,
+        1,
+        "000300",
+        "sell",
+        "550",
+        Some("500"),
+        Some("1.10"),
+        "0",
+        "2026-03-02",
+        "settled",
+    )
+    .unwrap();
 
     // 2. Test with active wallet
     let results = db::get_funds_with_valuations(&conn, Some(1)).unwrap();
     assert_eq!(results.len(), 2);
-    
+
     let hs300 = results.iter().find(|r| r.fund.code == "000300").unwrap();
     assert_eq!(hs300.latest_nav, Some("1.10".to_string()));
     assert_eq!(hs300.latest_nav_date, Some("2026-03-02".to_string()));
@@ -104,6 +140,9 @@ fn test_get_funds_with_valuations() {
 
     // 3. Test without active wallet (None)
     let results_no_wallet = db::get_funds_with_valuations(&conn, None).unwrap();
-    let hs300_no_wallet = results_no_wallet.iter().find(|r| r.fund.code == "000300").unwrap();
+    let hs300_no_wallet = results_no_wallet
+        .iter()
+        .find(|r| r.fund.code == "000300")
+        .unwrap();
     assert_eq!(hs300_no_wallet.total_shares, 0.0);
 }

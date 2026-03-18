@@ -19,9 +19,7 @@ fn test_wallet_add() {
         .arg("Test Wallet")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "成功添加钱包：Test Wallet",
-        ));
+        .stdout(predicate::str::contains("成功添加钱包：Test Wallet"));
 
     // Verify DB entry
     ctx.cmd()
@@ -95,9 +93,7 @@ fn test_status_sync_failure_warning() {
     cmd.arg("status")
         .assert()
         .success() // App should not crash
-        .stderr(predicate::str::contains(
-            "⚠️ 警告：无法获取最新数据",
-        ));
+        .stderr(predicate::str::contains("⚠️ 警告：无法获取最新数据"));
 }
 
 #[test]
@@ -1045,7 +1041,7 @@ fn test_fund_inspect_not_found() {
 
     let mut cmd = Command::cargo_bin("fund-manager").unwrap();
     cmd.env("FUND_MANAGER_APP_DIR", temp_app_dir.to_str().unwrap());
-    
+
     // fund fund inspect 999999
     cmd.arg("fund")
         .arg("inspect")
@@ -1053,4 +1049,143 @@ fn test_fund_inspect_not_found() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("拉取基金"));
+}
+
+/// 测试用例 457001：基金盈亏计算验证
+/// 真实数据：
+/// - 基金代码: 457001
+/// - 基金名称: 国富亚洲机会股票(QDII)A
+/// - 申购费率: 0.15%
+/// - 买入日期净值 (2026-03-02): 2.2583
+/// - 当前净值 (2026-03-16): 2.1146
+///
+/// 预期计算：
+/// - 投入 10000 元，手续费 14.99 元，净金额 9985.01 元
+/// - 份额 = 9985.01 / 2.2583 = 4421.46 份
+/// - 当前市值 = 4421.46 × 2.1146 = 9350.04 元
+/// - 盈亏额 = 9350.04 - 10000 = -649.96 元
+/// - 盈亏率 = -6.50%
+///
+/// 边界测试（卖出操作）：
+/// - 卖出 5000 元后，剩余份额约 2056.97 份
+/// - 持仓成本 = 10000 - 5000 = 5000 元
+/// - 当前市值 = 2056.97 × 2.1146 ≈ 4349.67 元
+/// - 盈亏额 ≈ -650.34 元
+#[test]
+fn test_fund_457001_profit_loss_calculation() {
+    let temp_app_dir = env::temp_dir().join("fund-manager-test-457001-pl");
+    if temp_app_dir.exists() {
+        fs::remove_dir_all(&temp_app_dir).unwrap();
+    }
+    fs::create_dir_all(&temp_app_dir).unwrap();
+    let app_dir_str = temp_app_dir.to_str().unwrap();
+
+    // 1. Setup: 创建钱包并添加基金
+    Command::cargo_bin("fund-manager")
+        .unwrap()
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("add")
+        .arg("TestWallet")
+        .assert()
+        .success();
+
+    Command::cargo_bin("fund-manager")
+        .unwrap()
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("use")
+        .arg("TestWallet")
+        .assert()
+        .success();
+
+    Command::cargo_bin("fund-manager")
+        .unwrap()
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("fund")
+        .arg("add")
+        .arg("457001")
+        .arg("国富亚洲机会股票(QDII)A")
+        .arg("--fee")
+        .arg("0.0015")
+        .assert()
+        .success();
+
+    // 2. 手动插入净值数据
+    {
+        let db_path = temp_app_dir.join("fund.db");
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        // 买入日期净值
+        conn.execute(
+            "INSERT INTO nav_history (fund_code, date, nav) VALUES ('457001', '2026-03-02', '2.2583')",
+            [],
+        )
+        .unwrap();
+        // 当前净值
+        conn.execute(
+            "INSERT INTO nav_history (fund_code, date, nav) VALUES ('457001', '2026-03-16', '2.1146')",
+            [],
+        )
+        .unwrap();
+    }
+
+    // 3. 执行买入操作：投入 10000 元
+    Command::cargo_bin("fund-manager")
+        .unwrap()
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .env("SKIP_SYNC", "1")
+        .arg("buy")
+        .arg("457001")
+        .arg("--money")
+        .arg("10000")
+        .arg("--date")
+        .arg("2026-03-02")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("4421.48")); // 预期份额
+
+    // 4. 验证盈亏状态
+    Command::cargo_bin("fund-manager")
+        .unwrap()
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .env("SKIP_SYNC", "1")
+        .arg("status")
+        .arg("457001")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("4421.48"))
+        .stdout(predicate::str::contains("10000"))
+        .stdout(predicate::str::contains("2.1146"))
+        .stdout(predicate::str::contains("-6.50%"));
+
+    // 5. 边界测试：执行卖出操作
+    Command::cargo_bin("fund-manager")
+        .unwrap()
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .env("SKIP_SYNC", "1")
+        .arg("sell")
+        .arg("457001")
+        .arg("--money")
+        .arg("5000")
+        .arg("--date")
+        .arg("2026-03-16")
+        .write_stdin("y\n")
+        .assert()
+        .success();
+
+    // 6. 验证卖出后的盈亏状态
+    Command::cargo_bin("fund-manager")
+        .unwrap()
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .env("SKIP_SYNC", "1")
+        .arg("status")
+        .arg("457001")
+        .assert()
+        .success()
+        // 剩余份额约 2056.97
+        .stdout(predicate::str::contains("2056"))
+        // 持仓成本约 5000
+        .stdout(predicate::str::contains("5000"))
+        // 盈亏率约 -13%
+        .stdout(predicate::str::contains("-13.0"));
 }

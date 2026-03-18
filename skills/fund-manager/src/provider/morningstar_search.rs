@@ -29,21 +29,25 @@ impl MorningstarSearchProvider {
             "https://www.morningstar.cn/cn-api/public/v1/fund-cache/{}",
             urlencoding::encode(text)
         );
-        
+
         let client = crate::provider::build_http_client()?;
         let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
-        
+
         if !resp.status().is_success() {
             return Err(format!("Morningstar Search API error: {}", resp.status()));
         }
 
         let body: MsResponse = resp.json().await.map_err(|e| e.to_string())?;
-        
-        Ok(body.data.into_iter().map(|item| SearchResult {
-            code: item.symbol,
-            name: item.name,
-            fund_type: item.fund_type,
-        }).collect())
+
+        Ok(body
+            .data
+            .into_iter()
+            .map(|item| SearchResult {
+                code: item.symbol,
+                name: item.name,
+                fund_type: item.fund_type,
+            })
+            .collect())
     }
 }
 

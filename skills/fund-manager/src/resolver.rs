@@ -22,7 +22,12 @@ impl std::fmt::Display for ResolveError {
         match self {
             ResolveError::NotFound(input) => write!(f, "未找到基金: '{}'", input),
             ResolveError::Ambiguous(input, matches) => {
-                write!(f, "输入的 '{}' 存在歧义，找到多个匹配项: {}", input, matches.join(", "))
+                write!(
+                    f,
+                    "输入的 '{}' 存在歧义，找到多个匹配项: {}",
+                    input,
+                    matches.join(", ")
+                )
             }
             ResolveError::FetchFailed(input, err) => {
                 write!(f, "拉取基金 '{}' 详情失败: {}", input, err)
@@ -102,10 +107,7 @@ pub async fn resolve_fund(
 
     // 2. Fallback to direct fetch for 6-digit codes (if not local_only)
     if !local_only && is_6_digit_code(input) {
-        println!(
-            "✨ '{}' 看起来像基金代码，正在尝试直接获取详情...",
-            input
-        );
+        println!("✨ '{}' 看起来像基金代码，正在尝试直接获取详情...", input);
         match sync_fund_details(conn, input).await {
             Ok(fund) => return Ok(fund),
             Err(e) => {
@@ -115,8 +117,8 @@ pub async fn resolve_fund(
     }
 
     // 3. Local fuzzy search
-    let local_results =
-        db::search_funds_locally(conn, input).map_err(|e| ResolveError::DatabaseError(e.to_string()))?;
+    let local_results = db::search_funds_locally(conn, input)
+        .map_err(|e| ResolveError::DatabaseError(e.to_string()))?;
     if !local_results.is_empty() {
         if local_results.len() == 1 {
             let f = local_results[0].clone();
@@ -167,10 +169,7 @@ pub async fn resolve_fund(
     }
 
     // 4. Fuzzy search remotely
-    println!(
-        "🔍 本地未找到基金 '{}'，正在尝试远程搜索...",
-        input
-    );
+    println!("🔍 本地未找到基金 '{}'，正在尝试远程搜索...", input);
     let search_provider = MorningstarSearchProvider;
     let results = search_provider
         .search(input)
@@ -206,10 +205,7 @@ pub async fn resolve_fund(
             .collect();
 
         let ans = Select::new(
-            &format!(
-                "针对 '{}' 找到多个远程匹配结果，请选择：",
-                input
-            ),
+            &format!("针对 '{}' 找到多个远程匹配结果，请选择：", input),
             options,
         )
         .prompt()
@@ -241,7 +237,8 @@ async fn maybe_sync_fund(conn: &Connection, fund: Fund) -> ResolveResult<Fund> {
                 if Utc::now().naive_utc() - last_sync > Duration::days(30) {
                     needs_sync = true;
                 }
-            } else if let Ok(last_sync_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+            } else if let Ok(last_sync_date) =
+                chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
             {
                 let last_sync = last_sync_date.and_hms_opt(0, 0, 0).unwrap();
                 if Utc::now().naive_utc() - last_sync > Duration::days(30) {
@@ -331,6 +328,9 @@ mod tests {
         assert!(!is_6_digit_code("12345"));
         assert!(!is_6_digit_code("1234567"));
         assert!(!is_6_digit_code("abcdef"));
+        assert!(!is_6_digit_code(""));
+        assert!(is_6_digit_code("000000")); // All zeros is still 6 digits
+        assert!(!is_6_digit_code("123456a")); // Mixed
     }
 
     #[test]
@@ -338,7 +338,10 @@ mod tests {
         // Case: swapped
         let hint = AdviceEngine::check_param_swap("1000", "520570");
         assert!(hint.is_some());
-        assert!(hint.unwrap().contains("你是不是把[基金代码]和[金额/份额]写反了？"));
+        assert!(
+            hint.unwrap()
+                .contains("你是不是把[基金代码]和[金额/份额]写反了？")
+        );
 
         // Case: not swapped (fund is 6 digits)
         let hint = AdviceEngine::check_param_swap("520570", "1000");
@@ -347,5 +350,208 @@ mod tests {
         // Case: fund is not a number
         let hint = AdviceEngine::check_param_swap("沪深300", "1000");
         assert!(hint.is_none());
+
+        // Case: value is not 6 digits
+        let hint = AdviceEngine::check_param_swap("1000", "520");
+        assert!(hint.is_none());
+
+        // Case: both are numbers but fund is 6 digits and value is not
+        let hint = AdviceEngine::check_param_swap("123456", "999");
+        assert!(hint.is_none());
+
+        // Case: empty strings
+        let hint = AdviceEngine::check_param_swap("", "");
+        assert!(hint.is_none());
+    }
+
+    #[test]
+    fn test_advice_engine_check_param_swap_format() {
+        let hint = AdviceEngine::check_param_swap("500", "000300").unwrap();
+        assert!(hint.contains("500"));
+        assert!(hint.contains("000300"));
+        assert!(hint.contains("fund"));
+        // The format is "fund ... {} {}", which is "fund ... 000300 500"
+        assert!(hint.contains("000300 500"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_fund_local_exact_match_by_code() {
+        use tempfile::NamedTempFile;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        db::init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).expect("Failed to open DB");
+
+        // Setup fund
+        db::add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            Some("股票型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        unsafe {
+            std::env::set_var("SKIP_SYNC", "1");
+        }
+        let result = resolve_fund(&conn, "000300", false, false).await;
+        unsafe {
+            std::env::remove_var("SKIP_SYNC");
+        }
+
+        assert!(result.is_ok());
+        let fund = result.unwrap();
+        assert_eq!(fund.code, "000300");
+        assert_eq!(fund.name, "沪深300");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_fund_local_exact_match_by_name() {
+        use tempfile::NamedTempFile;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        db::init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).expect("Failed to open DB");
+
+        db::add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            Some("股票型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        unsafe {
+            std::env::set_var("SKIP_SYNC", "1");
+        }
+        let result = resolve_fund(&conn, "沪深300", false, false).await;
+        unsafe {
+            std::env::remove_var("SKIP_SYNC");
+        }
+
+        assert!(result.is_ok());
+        let fund = result.unwrap();
+        assert_eq!(fund.code, "000300");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_fund_not_found() {
+        use tempfile::NamedTempFile;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        db::init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).expect("Failed to open DB");
+
+        // No funds in DB, local_only = true
+        unsafe {
+            std::env::set_var("SKIP_SYNC", "1");
+        }
+        let result = resolve_fund(&conn, "999999", false, true).await;
+        unsafe {
+            std::env::remove_var("SKIP_SYNC");
+        }
+
+        assert!(result.is_err());
+        match result {
+            Err(ResolveError::NotFound(_)) => {}
+            _ => panic!("Expected NotFound error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_fund_local_only_no_fetch() {
+        use tempfile::NamedTempFile;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        db::init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).expect("Failed to open DB");
+
+        // 6-digit code but local_only = true (should not try to fetch)
+        unsafe {
+            std::env::set_var("SKIP_SYNC", "1");
+        }
+        let result = resolve_fund(&conn, "000300", false, true).await;
+        unsafe {
+            std::env::remove_var("SKIP_SYNC");
+        }
+
+        // Should not find since fund doesn't exist locally
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_maybe_sync_fund_skips_sync_with_env() {
+        use tempfile::NamedTempFile;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        db::init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).expect("Failed to open DB");
+
+        db::add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        unsafe {
+            std::env::set_var("SKIP_SYNC", "1");
+        }
+        let fund = db::get_fund_by_code_or_name(&conn, "000300")
+            .unwrap()
+            .unwrap();
+        let result = maybe_sync_fund(&conn, fund).await;
+        unsafe {
+            std::env::remove_var("SKIP_SYNC");
+        }
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_error_display() {
+        let err = ResolveError::NotFound("000300".to_string());
+        assert!(err.to_string().contains("未找到基金"));
+        assert!(err.to_string().contains("000300"));
+
+        let err = ResolveError::Ambiguous(
+            "300".to_string(),
+            vec![
+                "沪深300 (000300)".to_string(),
+                "易方达300 (001512)".to_string(),
+            ],
+        );
+        assert!(err.to_string().contains("存在歧义"));
+
+        let err = ResolveError::FetchFailed("000300".to_string(), "网络错误".to_string());
+        assert!(err.to_string().contains("拉取基金"));
+
+        let err = ResolveError::DatabaseError("连接失败".to_string());
+        assert!(err.to_string().contains("数据库错误"));
     }
 }

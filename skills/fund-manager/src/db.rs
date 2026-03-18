@@ -299,9 +299,9 @@ pub fn get_active_wallet_id(conn: &Connection) -> Result<Option<i64>> {
 }
 
 pub fn get_active_wallet(conn: &Connection) -> Result<Wallet> {
-    let wallet_id = get_active_wallet_id(conn)?
-        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
-    
+    let wallet_id =
+        get_active_wallet_id(conn)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+
     let mut stmt = conn.prepare("SELECT id, name, created_at FROM wallet WHERE id = ?1")?;
     stmt.query_row([wallet_id], |row| {
         Ok(Wallet {
@@ -918,21 +918,68 @@ mod tests {
         let conn = Connection::open(path).unwrap();
 
         add_wallet(&conn, "test").unwrap();
-        add_fund(&conn, "000300", "沪深300", None, None, None, None, None, None, None, None, None).unwrap();
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         // No pending -> returns None
         assert_eq!(get_earliest_pending_date(&conn, None).unwrap(), None);
 
         // Add pending transactions
-        add_transaction(&conn, 1, "000300", "buy", "1000", None, None, "1.5", "2024-03-01", "pending").unwrap();
-        add_transaction(&conn, 1, "000300", "buy", "1000", None, None, "1.5", "2024-02-01", "pending").unwrap();
+        add_transaction(
+            &conn,
+            1,
+            "000300",
+            "buy",
+            "1000",
+            None,
+            None,
+            "1.5",
+            "2024-03-01",
+            "pending",
+        )
+        .unwrap();
+        add_transaction(
+            &conn,
+            1,
+            "000300",
+            "buy",
+            "1000",
+            None,
+            None,
+            "1.5",
+            "2024-02-01",
+            "pending",
+        )
+        .unwrap();
 
         // Global check
-        assert_eq!(get_earliest_pending_date(&conn, None).unwrap(), Some("2024-02-01".to_string()));
+        assert_eq!(
+            get_earliest_pending_date(&conn, None).unwrap(),
+            Some("2024-02-01".to_string())
+        );
 
         // Specific fund check
-        assert_eq!(get_earliest_pending_date(&conn, Some("000300")).unwrap(), Some("2024-02-01".to_string()));
-        assert_eq!(get_earliest_pending_date(&conn, Some("999999")).unwrap(), None);
+        assert_eq!(
+            get_earliest_pending_date(&conn, Some("000300")).unwrap(),
+            Some("2024-02-01".to_string())
+        );
+        assert_eq!(
+            get_earliest_pending_date(&conn, Some("999999")).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -949,11 +996,39 @@ mod tests {
         assert_eq!(get_active_wallet_id(&conn).unwrap(), Some(id1));
 
         // 2. 为该钱包添加交易记录
-        add_fund(&conn, "000300", "沪深300", None, None, None, None, None, None, None, None, None).unwrap();
-        add_transaction(&conn, id1, "000300", "buy", "1000", Some("1000"), Some("1.0"), "1.5", "2024-03-01", "settled").unwrap();
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        add_transaction(
+            &conn,
+            id1,
+            "000300",
+            "buy",
+            "1000",
+            Some("1000"),
+            Some("1.0"),
+            "1.5",
+            "2024-03-01",
+            "settled",
+        )
+        .unwrap();
 
         // 验证记录存在
-        let mut stmt = conn.prepare("SELECT count(*) FROM transaction_log WHERE wallet_id = ?1").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT count(*) FROM transaction_log WHERE wallet_id = ?1")
+            .unwrap();
         let count: i64 = stmt.query_row([id1], |row| row.get(0)).unwrap();
         assert_eq!(count, 1);
 
@@ -967,8 +1042,442 @@ mod tests {
         assert_eq!(get_active_wallet_id(&conn).unwrap(), None);
 
         // 验证交易记录已被级联删除
-        let mut stmt = conn.prepare("SELECT count(*) FROM transaction_log WHERE wallet_id = ?1").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT count(*) FROM transaction_log WHERE wallet_id = ?1")
+            .unwrap();
         let count: i64 = stmt.query_row([id1], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_add_wallet() {
+        let conn = setup_test_db().unwrap();
+
+        add_wallet(&conn, "MyWallet").unwrap();
+
+        let id = get_wallet_id_by_name(&conn, "MyWallet").unwrap();
+        assert!(id.is_some());
+        assert_eq!(id.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_add_duplicate_wallet() {
+        let conn = setup_test_db().unwrap();
+
+        add_wallet(&conn, "MyWallet").unwrap();
+        let result = add_wallet(&conn, "MyWallet");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_all_wallets() {
+        let conn = setup_test_db().unwrap();
+
+        add_wallet(&conn, "Wallet1").unwrap();
+        add_wallet(&conn, "Wallet2").unwrap();
+
+        let wallets = get_all_wallets(&conn).unwrap();
+        assert_eq!(wallets.len(), 2);
+        assert!(wallets.iter().any(|w| w.name == "Wallet1"));
+        assert!(wallets.iter().any(|w| w.name == "Wallet2"));
+    }
+
+    #[test]
+    fn test_get_funds_with_valuations() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).unwrap();
+
+        // Setup wallet and fund
+        add_wallet(&conn, "TestWallet").unwrap();
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.5000").unwrap();
+
+        // Buy 1000 shares at 1.0
+        add_transaction(
+            &conn,
+            1,
+            "000300",
+            "buy",
+            "1000",
+            Some("1000"),
+            Some("1.0"),
+            "0",
+            "2026-03-01",
+            "settled",
+        )
+        .unwrap();
+
+        let valuations = get_funds_with_valuations(&conn, Some(1)).unwrap();
+        assert_eq!(valuations.len(), 1);
+        assert_eq!(valuations[0].fund.code, "000300");
+        assert_eq!(valuations[0].latest_nav, Some("1.5000".to_string()));
+        assert!((valuations[0].total_shares - 1000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_funds_with_valuations_no_wallet_shares() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).unwrap();
+
+        add_wallet(&conn, "TestWallet").unwrap();
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.5000").unwrap();
+
+        // No transactions - should still show fund with 0 shares
+        let valuations = get_funds_with_valuations(&conn, Some(1)).unwrap();
+        assert_eq!(valuations.len(), 1);
+        assert_eq!(valuations[0].total_shares, 0.0);
+    }
+
+    #[test]
+    fn test_settle_transaction() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).unwrap();
+
+        add_wallet(&conn, "TestWallet").unwrap();
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Add pending transaction
+        add_transaction(
+            &conn,
+            1,
+            "000300",
+            "buy",
+            "1000",
+            None,
+            None,
+            "1.5",
+            "2026-03-01",
+            "pending",
+        )
+        .unwrap();
+
+        // Settle
+        settle_transaction(&conn, 1, "666.67", "1.5000").unwrap();
+
+        // Verify
+        let mut stmt = conn
+            .prepare("SELECT shares, nav, status FROM transaction_log WHERE id = 1")
+            .unwrap();
+        let (shares, nav, status): (String, String, String) = stmt
+            .query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+
+        assert_eq!(shares, "666.67");
+        assert_eq!(nav, "1.5000");
+        assert_eq!(status, "settled");
+    }
+
+    #[test]
+    fn test_delete_fund() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.5000").unwrap();
+
+        // Verify fund exists
+        assert!(get_fund_by_code_or_name(&conn, "000300").unwrap().is_some());
+
+        // Delete
+        delete_fund(&conn, "000300").unwrap();
+
+        // Verify fund deleted
+        assert!(get_fund_by_code_or_name(&conn, "000300").unwrap().is_none());
+        // Verify NAV also deleted (cascade)
+        let mut stmt = conn
+            .prepare("SELECT count(*) FROM nav_history WHERE fund_code = '000300'")
+            .unwrap();
+        let count: i64 = stmt.query_row([], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_get_fund_by_code_or_name_not_found() {
+        let conn = setup_test_db().unwrap();
+
+        let result = get_fund_by_code_or_name(&conn, "999999").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_search_funds_locally() {
+        let conn = setup_test_db().unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        add_fund(
+            &conn,
+            "001512",
+            "易方达创业板",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let results = search_funds_locally(&conn, "300").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].code, "000300");
+
+        let results = search_funds_locally(&conn, "创业板").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].code, "001512");
+
+        let results = search_funds_locally(&conn, "易方达").unwrap();
+        assert_eq!(results.len(), 1);
+
+        let results = search_funds_locally(&conn, "不存在").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_get_all_funds() {
+        let conn = setup_test_db().unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        add_fund(
+            &conn,
+            "001512",
+            "易方达创业板",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let funds = get_all_funds(&conn).unwrap();
+        assert_eq!(funds.len(), 2);
+    }
+
+    #[test]
+    fn test_get_latest_nav() {
+        let conn = setup_test_db().unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.2000").unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-15", "1.5000").unwrap();
+
+        let nav = get_latest_nav(&conn, "000300").unwrap();
+        assert_eq!(nav, Some("1.5000".to_string()));
+    }
+
+    #[test]
+    fn test_get_nav_at_date() {
+        let conn = setup_test_db().unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.2000").unwrap();
+
+        let nav = get_nav_at_date(&conn, "000300", "2026-03-01").unwrap();
+        assert!(nav.is_some());
+        assert_eq!(nav.unwrap(), Decimal::from_str("1.2000").unwrap());
+    }
+
+    #[test]
+    fn test_add_fund_analysis() {
+        let conn = setup_test_db().unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let analysis = FundAnalysis {
+            fund_code: "000300".to_string(),
+            snapshot_date: Some("2026-03-09".to_string()),
+            rating_3y: Some(4),
+            rating_5y: Some(5),
+            rank_pct_3y: Some(23.5),
+            sharpe_3y: Some(1.2),
+            calmar_3y: Some(0.8),
+            max_drawdown_3y: Some(-15.5),
+            investor_gap_3y: Some(3.2),
+            last_update: "2026-03-09 10:00:00".to_string(),
+        };
+
+        add_fund_analysis(&conn, &analysis).unwrap();
+
+        let retrieved = get_fund_analysis(&conn, "000300").unwrap();
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.rating_3y, Some(4));
+        assert_eq!(retrieved.sharpe_3y, Some(1.2));
+    }
+
+    #[test]
+    fn test_insert_nav_history_idempotent() {
+        let conn = setup_test_db().unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Insert same date twice
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.2000").unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.3000").unwrap();
+
+        // Should still have only 1 record with updated value
+        let mut stmt = conn.prepare("SELECT count(*), nav FROM nav_history WHERE fund_code = '000300' AND date = '2026-03-01'").unwrap();
+        let (count, nav): (i64, String) = stmt
+            .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(nav, "1.3000");
     }
 }
