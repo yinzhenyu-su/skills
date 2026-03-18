@@ -86,7 +86,7 @@ fn test_wallet_delete() {
         .arg("ToDelete")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Successfully deleted wallet: ToDelete"));
+        .stdout(predicate::str::contains("✅ 钱包 'ToDelete' 已成功删除。"));
 
     // 3. Verify it's gone from list
     ctx.cmd()
@@ -103,7 +103,7 @@ fn test_wallet_delete() {
         .arg("NoSuchWallet")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("does not exist"));
+        .stderr(predicate::str::contains("❌ 错误：找不到名为 'NoSuchWallet' 的钱包。"));
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn test_wallet_delete_active() {
         .arg("ActiveWallet")
         .assert()
         .success()
-        .stdout(predicate::str::contains("It was the active wallet, now no active wallet is selected"));
+        .stdout(predicate::str::contains("✅ 钱包 'ActiveWallet' 已成功删除。(由于该钱包原为活跃钱包，当前已重置为未选中任何钱包。)"));
 
     // 4. Verify no wallet is active
     ctx.cmd()

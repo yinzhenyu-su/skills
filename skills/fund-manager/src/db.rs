@@ -238,13 +238,16 @@ pub fn get_wallet_id_by_name(conn: &Connection, name: &str) -> Result<Option<i64
     }
 }
 
-pub fn delete_wallet_by_name(conn: &Connection, name: &str) -> Result<()> {
-    conn.execute("DELETE FROM wallet WHERE name = ?1", [name])?;
-    Ok(())
-}
+pub fn delete_wallet(conn: &Connection, id: i64) -> Result<()> {
+    // 检查是否为当前活跃钱包，如果是则清理配置
+    if let Some(active_id) = get_active_wallet_id(conn)? {
+        if active_id == id {
+            conn.execute("DELETE FROM app_config WHERE key = 'active_wallet_id'", [])?;
+        }
+    }
 
-pub fn clear_active_wallet(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM app_config WHERE key = 'active_wallet_id'", [])?;
+    // 删除钱包（依赖数据库级联删除 transaction_log）
+    conn.execute("DELETE FROM wallet WHERE id = ?1", [id])?;
     Ok(())
 }
 
@@ -846,5 +849,42 @@ mod tests {
         // Specific fund check
         assert_eq!(get_earliest_pending_date(&conn, Some("000300")).unwrap(), Some("2024-02-01".to_string()));
         assert_eq!(get_earliest_pending_date(&conn, Some("999999")).unwrap(), None);
+    }
+
+    #[test]
+    fn test_delete_wallet() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).unwrap();
+
+        // 1. 添加钱包并设置为活跃
+        add_wallet(&conn, "wallet1").unwrap();
+        let id1 = get_wallet_id_by_name(&conn, "wallet1").unwrap().unwrap();
+        set_active_wallet(&conn, id1).unwrap();
+        assert_eq!(get_active_wallet_id(&conn).unwrap(), Some(id1));
+
+        // 2. 为该钱包添加交易记录
+        add_fund(&conn, "000300", "沪深300", None, None, None, None, None, None, None, None, None).unwrap();
+        add_transaction(&conn, id1, "000300", "buy", "1000", Some("1000"), Some("1.0"), "1.5", "2024-03-01", "settled").unwrap();
+
+        // 验证记录存在
+        let mut stmt = conn.prepare("SELECT count(*) FROM transaction_log WHERE wallet_id = ?1").unwrap();
+        let count: i64 = stmt.query_row([id1], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1);
+
+        // 3. 删除该钱包
+        delete_wallet(&conn, id1).unwrap();
+
+        // 验证钱包已删除
+        assert!(get_wallet_id_by_name(&conn, "wallet1").unwrap().is_none());
+
+        // 验证活跃钱包配置已清理
+        assert_eq!(get_active_wallet_id(&conn).unwrap(), None);
+
+        // 验证交易记录已被级联删除
+        let mut stmt = conn.prepare("SELECT count(*) FROM transaction_log WHERE wallet_id = ?1").unwrap();
+        let count: i64 = stmt.query_row([id1], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
     }
 }

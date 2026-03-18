@@ -622,29 +622,41 @@ async fn main() {
                 }
             },
             WalletCommands::Delete { name } => {
-                let wallet_id_opt = db::get_wallet_id_by_name(&conn, &name).expect("DB error");
-                if let Some(id) = wallet_id_opt {
-                    let active_id = db::get_active_wallet_id(&conn).expect("DB error");
-                    let is_active = Some(id) == active_id;
+                match db::get_wallet_id_by_name(&conn, &name) {
+                    Ok(Some(id)) => {
+                        let active_id = db::get_active_wallet_id(&conn).unwrap_or(None);
+                        let is_active = Some(id) == active_id;
 
-                    let prompt = format!(
-                        "Are you sure you want to delete wallet '{}' and ALL its transaction history?",
-                        name
-                    );
-                    if confirm_action(&prompt, cli.yes) {
-                        db::delete_wallet_by_name(&conn, &name).expect("Failed to delete wallet");
-                        if is_active {
-                            db::clear_active_wallet(&conn).expect("Failed to clear active wallet");
-                            println!("Successfully deleted wallet: {}. (It was the active wallet, now no active wallet is selected.)", name);
+                        let prompt = format!(
+                            "确定要删除钱包 '{}' 吗？这将永久删除该钱包及其所有的交易历史记录！",
+                            name
+                        );
+                        if confirm_action(&prompt, cli.yes) {
+                            match db::delete_wallet(&conn, id) {
+                                Ok(_) => {
+                                    if is_active {
+                                        println!("✅ 钱包 '{}' 已成功删除。(由于该钱包原为活跃钱包，当前已重置为未选中任何钱包。)", name);
+                                    } else {
+                                        println!("✅ 钱包 '{}' 已成功删除。", name);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("❌ 错误：无法删除钱包：{}", e);
+                                    std::process::exit(1);
+                                }
+                            }
                         } else {
-                            println!("Successfully deleted wallet: {}", name);
+                            println!("已取消删除操作。");
                         }
-                    } else {
-                        println!("Deletion cancelled.");
                     }
-                } else {
-                    eprintln!("Error: Wallet '{}' does not exist.", name);
-                    std::process::exit(1);
+                    Ok(None) => {
+                        eprintln!("❌ 错误：找不到名为 '{}' 的钱包。", name);
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("❌ 数据库错误：{}", e);
+                        std::process::exit(1);
+                    }
                 }
             }
         },

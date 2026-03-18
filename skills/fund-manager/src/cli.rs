@@ -141,13 +141,13 @@ pub enum WalletCommands {
         /// 要使用的钱包名称
         name: String,
     },
-    /// Delete a wallet and all its data
+    /// 删除一个钱包及其所有数据
     #[command(
         alias = "del",
-        long_about = "Remove a wallet and all its transaction history from local database.\n\nEXAMPLES:\n    fund wallet delete MyInvestments"
+        long_about = "从本地数据库中移除钱包及其所有的交易历史记录。\n\n示例：\n    fund wallet delete 我的投资"
     )]
     Delete {
-        /// Name of the wallet to delete
+        /// 要删除的钱包名称
         name: String,
     },
 }
