@@ -75,3 +75,5 @@ skills/fund-manager/
 - `openspec/specs/` - Reusable specification components
 - `.claude/skills/` - Claude Code skill definitions
 - `.claude/commands/opsx/` - OpenSpec command definitions
+
+## 注意要在项目根目录执行openspec命令，确保正确识别和管理变更

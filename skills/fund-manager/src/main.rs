@@ -86,9 +86,19 @@ fn resolve_wallet_id(conn: &Connection, wallet_name: Option<String>) -> i64 {
                 std::process::exit(1);
             })
     } else {
-        db::get_active_wallet_id(conn)
+        // 尝试获取活跃钱包
+        if let Ok(Some(wallet_id)) = db::get_active_wallet_id(conn) {
+            return wallet_id;
+        }
+        // 没有活跃钱包，自动创建"默认钱包"
+        let default_name = "默认钱包";
+        db::add_wallet(conn, default_name).expect("无法创建默认钱包");
+        let wallet_id = db::get_wallet_id_by_name(conn, default_name)
             .expect("数据库错误")
-            .expect("未选择活跃钱包。请使用 'fund wallet use <名称>' 或指定 --wallet 参数。")
+            .unwrap();
+        db::set_active_wallet(conn, wallet_id).expect("无法设置活跃钱包");
+        println!("🔔 未检测到活跃钱包，已自动创建并激活「默认钱包」。");
+        wallet_id
     }
 }
 
@@ -537,7 +547,7 @@ async fn main() {
     let db_path = config::get_db_path();
     db::init_db(&db_path).expect("数据库初始化失败");
 
-    let conn = Connection::open(&db_path).expect("无法打开数据库");
+    let conn = db::open_conn(&db_path).expect("无法打开数据库");
 
     match cli.command {
         Commands::Wallet { command } => match command {
@@ -655,6 +665,47 @@ async fn main() {
                     std::process::exit(1);
                 }
             },
+            WalletCommands::Rename { old_name, new_name } => {
+                // 检查旧钱包是否存在
+                match db::get_wallet_id_by_name(&conn, &old_name) {
+                    Ok(Some(_)) => {
+                        // 检查新名称是否已存在
+                        match db::get_wallet_id_by_name(&conn, &new_name) {
+                            Ok(Some(_)) => {
+                                eprintln!("❌ 错误：钱包「{}」已存在。", new_name);
+                                std::process::exit(1);
+                            }
+                            Ok(None) => {
+                                // 执行重命名
+                                match db::rename_wallet(&conn, &old_name, &new_name) {
+                                    Ok(_) => {
+                                        println!(
+                                            "✅ 钱包已从「{}」重命名为「{}」。",
+                                            old_name, new_name
+                                        );
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ 错误：重命名失败：{}", e);
+                                        std::process::exit(1);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("❌ 数据库错误：{}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        eprintln!("❌ 错误：找不到名为「{}」的钱包。", old_name);
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("❌ 数据库错误：{}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
         },
         Commands::Fund { command } => match command {
             FundCommands::Add { code, name, fee } => {

@@ -151,3 +151,128 @@ fn test_wallet_delete_active() {
         .success()
         .stdout(predicate::str::contains("*").not());
 }
+
+#[test]
+fn test_wallet_rename() {
+    let ctx = TestContext::new("wallet-rename");
+
+    // 1. Add a wallet
+    ctx.cmd()
+        .arg("wallet")
+        .arg("add")
+        .arg("OldName")
+        .assert()
+        .success();
+
+    // 2. Rename it
+    ctx.cmd()
+        .arg("wallet")
+        .arg("rename")
+        .arg("OldName")
+        .arg("NewName")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✅ 钱包已从「OldName」重命名为「NewName」。",
+        ));
+
+    // 3. Verify the new name exists
+    ctx.cmd()
+        .arg("wallet")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("NewName"));
+
+    // 4. Verify old name is gone
+    ctx.cmd()
+        .arg("wallet")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OldName").not());
+}
+
+#[test]
+fn test_wallet_rename_duplicate() {
+    let ctx = TestContext::new("wallet-rename-duplicate");
+
+    // 1. Add two wallets
+    ctx.cmd()
+        .arg("wallet")
+        .arg("add")
+        .arg("WalletA")
+        .assert()
+        .success();
+
+    ctx.cmd()
+        .arg("wallet")
+        .arg("add")
+        .arg("WalletB")
+        .assert()
+        .success();
+
+    // 2. Try to rename WalletA to WalletB (which already exists)
+    ctx.cmd()
+        .arg("wallet")
+        .arg("rename")
+        .arg("WalletA")
+        .arg("WalletB")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("❌ 错误：钱包「WalletB」已存在。"));
+}
+
+#[test]
+fn test_wallet_rename_nonexistent() {
+    let ctx = TestContext::new("wallet-rename-nonexistent");
+
+    // Try to rename a wallet that doesn't exist
+    ctx.cmd()
+        .arg("wallet")
+        .arg("rename")
+        .arg("NonExistent")
+        .arg("NewName")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "❌ 错误：找不到名为「NonExistent」的钱包。",
+        ));
+}
+
+#[test]
+fn test_wallet_rename_active() {
+    let ctx = TestContext::new("wallet-rename-active");
+
+    // 1. Add and use wallet
+    ctx.cmd()
+        .arg("wallet")
+        .arg("add")
+        .arg("ActiveWallet")
+        .assert()
+        .success();
+
+    ctx.cmd()
+        .arg("wallet")
+        .arg("use")
+        .arg("ActiveWallet")
+        .assert()
+        .success();
+
+    // 2. Rename it
+    ctx.cmd()
+        .arg("wallet")
+        .arg("rename")
+        .arg("ActiveWallet")
+        .arg("RenamedWallet")
+        .assert()
+        .success();
+
+    // 3. Verify it's still the active wallet (has * in list)
+    ctx.cmd()
+        .arg("wallet")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("*").and(predicate::str::contains("RenamedWallet")));
+}

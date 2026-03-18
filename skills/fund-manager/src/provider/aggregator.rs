@@ -136,10 +136,10 @@ impl Aggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use mockall::predicate::*;
     use mockall::*;
     use rust_decimal_macros::dec;
-    use async_trait::async_trait;
 
     mock! {
         pub MyProvider {}

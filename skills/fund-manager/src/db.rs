@@ -4,6 +4,13 @@ use rust_decimal::prelude::FromPrimitive;
 use std::path::Path;
 use std::str::FromStr;
 
+/// 打开数据库连接并启用外键约束
+pub fn open_conn<P: AsRef<Path>>(path: P) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])?;
+    Ok(conn)
+}
+
 pub fn init_db<P: AsRef<Path>>(path: P) -> Result<()> {
     let conn = Connection::open(path)?;
     setup_schema(&conn)
@@ -276,6 +283,26 @@ pub fn delete_wallet(conn: &Connection, id: i64) -> Result<()> {
 
     // 删除钱包（依赖数据库级联删除 transaction_log）
     conn.execute("DELETE FROM wallet WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+pub fn rename_wallet(conn: &Connection, old_name: &str, new_name: &str) -> Result<()> {
+    // 检查旧钱包是否存在
+    let old_id = get_wallet_id_by_name(conn, old_name)?;
+    if old_id.is_none() {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+
+    // 检查新名称是否已存在
+    if let Some(_) = get_wallet_id_by_name(conn, new_name)? {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+
+    // 执行重命名
+    conn.execute(
+        "UPDATE wallet SET name = ?1 WHERE name = ?2",
+        [new_name, old_name],
+    )?;
     Ok(())
 }
 

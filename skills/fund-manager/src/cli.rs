@@ -148,6 +148,16 @@ pub enum WalletCommands {
         /// 要删除的钱包名称
         name: String,
     },
+    /// 重命名钱包
+    #[command(
+        long_about = "将钱包重命名为新名称。\n\n示例：\n    fund wallet rename 我的投资 投资组合"
+    )]
+    Rename {
+        /// 钱包当前名称
+        old_name: String,
+        /// 钱包新名称
+        new_name: String,
+    },
 }
 
 #[derive(Subcommand)]
