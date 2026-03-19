@@ -37,10 +37,21 @@ pub enum Commands {
         wallet: Option<String>,
     },
     /// 查看交易历史
-    #[command(long_about = "查看特定基金的交易历史记录。\n\n示例：\n    fund history 000300")]
+    #[command(
+        long_about = "查看特定基金的交易历史记录。\n\n示例：\n    fund history 000300\n    fund history --wallet 我的投资\n    fund history --type buy --limit 10"
+    )]
     History {
-        /// 基金代码或名称（省略将列出可用基金并提示）
+        /// 基金代码或名称（可选）
         fund: Option<String>,
+        /// 筛选特定钱包
+        #[arg(long)]
+        wallet: Option<String>,
+        /// 筛选交易类型 (buy, sell, dividend, reinvest, import)
+        #[arg(long, name = "type")]
+        t_type: Option<String>,
+        /// 限制显示条数 (默认 0 为不限制)
+        #[arg(long, default_value_t = 0)]
+        limit: i64,
     },
     /// 买入基金
     #[command(
@@ -138,6 +149,43 @@ pub enum Commands {
         /// 导入使用的特定钱包
         #[arg(long)]
         wallet: Option<String>,
+    },
+    /// 记录一笔分红（现金分红）
+    #[command(
+        long_about = "记录一笔基金分红（现金分红，不改变份额，仅降低成本）。\n\n示例：\n    fund dividend 000300 --money 100\n    fund dividend 000300 --money 100 --date 2024-03-15"
+    )]
+    Dividend {
+        /// 基金代码或名称
+        fund: Option<String>,
+        /// 分红金额 (现金)
+        #[arg(long)]
+        money: Decimal,
+        /// 交易使用的特定钱包
+        #[arg(long)]
+        wallet: Option<String>,
+        /// 交易日期 (YYYY-MM-DD)
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// 记录一笔红利再投
+    #[command(
+        long_about = "记录一笔红利再投（不涉及现金流动，仅增加份额）。\n\n示例：\n    fund reinvest 000300 --shares 50 --nav 2.0\n    fund reinvest 000300 --shares 50 --date 2024-03-15"
+    )]
+    Reinvest {
+        /// 基金代码或名称
+        fund: Option<String>,
+        /// 再投份额
+        #[arg(long)]
+        shares: Decimal,
+        /// 成交净值（用于记录，不影响现金流）
+        #[arg(long)]
+        nav: Option<Decimal>,
+        /// 交易使用的特定钱包
+        #[arg(long)]
+        wallet: Option<String>,
+        /// 交易日期 (YYYY-MM-DD)
+        #[arg(long)]
+        date: Option<String>,
     },
     /// 预览交易结果（不执行实际交易）
     #[command(

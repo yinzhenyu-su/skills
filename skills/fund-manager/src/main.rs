@@ -1,5 +1,5 @@
 use clap::Parser;
-use comfy_table::Table;
+use comfy_table::{Cell, CellAlignment, Color, Table};
 use csv::ReaderBuilder;
 use fund_manager::cli::{Cli, Commands, FundCommands, PreviewCommands, WalletCommands};
 use fund_manager::db;
@@ -557,6 +557,8 @@ async fn handle_import(
                             &res.fee.to_string(),
                             &actual_date,
                             "settled",
+                            None,
+                            "import",
                         )
                         .map_err(|e: rusqlite::Error| e.to_string())?;
                     } else {
@@ -580,6 +582,8 @@ async fn handle_import(
                             &fee.to_string(),
                             &item.date,
                             "pending",
+                            None,
+                            "import",
                         )
                         .map_err(|e: rusqlite::Error| e.to_string())?;
                     }
@@ -767,6 +771,8 @@ async fn handle_import_holding(
                             "0",
                             &get_today(),
                             "settled",
+                            None,
+                            "import",
                         )
                         .map_err(|e: rusqlite::Error| e.to_string())?;
 
@@ -1500,10 +1506,163 @@ async fn main() {
             }
             println!("{table}");
         }
-        Commands::History { fund } => {
-            let wallet_id = resolve_wallet_id(&conn, None);
-            let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "history");
-            println!("交易历史记录 (暂未实现，基金: {})", fund_input);
+        Commands::History {
+            fund,
+            wallet,
+            t_type,
+            limit,
+        } => {
+            let wallet_id = if let Some(ref w_name) = wallet {
+                match db::get_wallet_id_by_name(&conn, w_name) {
+                    Ok(Some(id)) => Some(id),
+                    Ok(None) => {
+                        eprintln!("❌ 钱包 '{}' 不存在。", w_name);
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("❌ 数据库错误：{}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                None
+            };
+
+            let fund_code = if let Some(ref f) = fund {
+                match resolver::resolve_fund(&conn, f, true).await {
+                    Ok(f_obj) => Some(f_obj.code),
+                    Err(_) => Some(f.clone()),
+                }
+            } else {
+                None
+            };
+
+            let history = db::get_transaction_history(
+                &conn,
+                fund_code.as_deref(),
+                wallet_id,
+                t_type.as_deref(),
+                limit,
+            )
+            .expect("获取交易历史失败");
+
+            if history.is_empty() {
+                println!("没有找到符合条件的交易记录。");
+                return;
+            }
+
+            let mut table = Table::new();
+            table.load_preset(comfy_table::presets::UTF8_FULL);
+            table.set_header(vec![
+                "日期", "基金", "类型", "金额", "成交价", "份额", "费用", "钱包", "状态",
+            ]);
+
+            for tx in history {
+                let (type_display, type_color) = match tx.t_type.as_str() {
+                    "buy" => ("买入", Color::Green),
+                    "sell" => ("卖出", Color::Red),
+                    "dividend" => ("分红", Color::Yellow),
+                    "reinvest" => ("再投", Color::Cyan),
+                    "import" => ("导入", Color::Blue),
+                    _ => (tx.t_type.as_str(), Color::White),
+                };
+
+                let (status_display, status_color) = if tx.status == "settled" {
+                    ("✅ 已确认", Color::Green)
+                } else {
+                    ("⏳ 确认中", Color::Yellow)
+                };
+
+                table.add_row(vec![
+                    Cell::new(&tx.date),
+                    Cell::new(format!("{} ({})", tx.fund_name, tx.fund_code)),
+                    Cell::new(type_display).fg(type_color),
+                    Cell::new(&tx.money).set_alignment(CellAlignment::Right),
+                    Cell::new(tx.nav.unwrap_or_else(|| "待确认".to_string()))
+                        .set_alignment(CellAlignment::Right),
+                    Cell::new(tx.shares.unwrap_or_else(|| "待确认".to_string()))
+                        .set_alignment(CellAlignment::Right),
+                    Cell::new(&tx.fee).set_alignment(CellAlignment::Right),
+                    Cell::new(&tx.wallet_name),
+                    Cell::new(status_display).fg(status_color),
+                ]);
+            }
+            println!("{table}");
+        }
+        Commands::Dividend {
+            fund,
+            money,
+            wallet,
+            date,
+        } => {
+            let wallet_id = resolve_wallet_id(&conn, wallet);
+            let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "dividend");
+            let fund_obj = resolver::resolve_fund(&conn, &fund_input, true)
+                .await
+                .expect("基金未找到");
+            let tx_date = date.unwrap_or_else(get_today);
+            let money_str = money.to_string();
+
+            db::add_transaction(
+                &conn,
+                wallet_id,
+                &fund_obj.code,
+                "dividend",
+                &money_str,
+                None,
+                None,
+                "0",
+                &tx_date,
+                "settled",
+                Some("现金分红"),
+                "manual",
+            )
+            .expect("数据库错误");
+            println!(
+                "✅ 已记录分红: {} ({}), ￥{}",
+                fund_obj.name, fund_obj.code, money
+            );
+        }
+        Commands::Reinvest {
+            fund,
+            shares,
+            nav,
+            wallet,
+            date,
+        } => {
+            let wallet_id = resolve_wallet_id(&conn, wallet);
+            let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "reinvest");
+            let fund_obj = resolver::resolve_fund(&conn, &fund_input, true)
+                .await
+                .expect("基金未找到");
+            let tx_date = date.unwrap_or_else(get_today);
+            let nav_val = nav.unwrap_or_default();
+            let nav_str = nav_val.to_string();
+            let shares_str = shares.to_string();
+
+            db::add_transaction(
+                &conn,
+                wallet_id,
+                &fund_obj.code,
+                "reinvest",
+                "0",
+                Some(&shares_str),
+                if nav_val.is_zero() {
+                    None
+                } else {
+                    Some(&nav_str)
+                },
+                "0",
+                &tx_date,
+                "settled",
+                Some("红利再投"),
+                "manual",
+            )
+            .expect("数据库错误");
+            println!(
+                "✅ 已记录红利再投: {} ({}), {} 份",
+                fund_obj.name, fund_obj.code, shares
+            );
         }
         Commands::Buy {
             fund,
@@ -1584,6 +1743,8 @@ async fn main() {
                         &res.fee.to_string(),
                         &actual_date,
                         "settled",
+                        None,
+                        "manual",
                     ) {
                         eprintln!("❌ 记录交易失败：{}", e);
                         std::process::exit(1);
@@ -1619,6 +1780,8 @@ async fn main() {
                         &fee.to_string(),
                         &tx_date,
                         "pending",
+                        None,
+                        "manual",
                     ) {
                         eprintln!("❌ 记录交易失败：{}", e);
                         std::process::exit(1);
@@ -1656,6 +1819,8 @@ async fn main() {
                     "0",
                     &tx_date,
                     "settled",
+                    None,
+                    "manual",
                 ) {
                     eprintln!("❌ 记录交易失败：{}", e);
                     std::process::exit(1);
@@ -1818,6 +1983,8 @@ async fn main() {
                     &final_fee.to_string(),
                     &tx_date,
                     "settled",
+                    None,
+                    "manual",
                 )
                 .unwrap_or_else(|e| {
                     eprintln!("❌ 记录交易失败：{}", e);

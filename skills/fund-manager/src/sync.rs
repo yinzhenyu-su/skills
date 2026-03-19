@@ -16,6 +16,87 @@ fn get_today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
+pub async fn settle_pending_transactions(conn: &Connection) -> Result<usize, String> {
+    let pending = db::get_pending_transactions(conn).map_err(|e| e.to_string())?;
+    let mut settled_count = 0;
+
+    for tx in pending {
+        if let Ok(Some(nav)) = db::get_nav_at_date(conn, &tx.fund_code, &tx.date) {
+            settle_tx(conn, &tx, nav).map_err(|e| e.to_string())?;
+            settled_count += 1;
+            continue;
+        }
+
+        // Try to fetch from API for that specific date
+        let provider = EastmoneyLsjzProvider;
+        if let Ok(data) = provider.fetch_at_date(&tx.fund_code, &tx.date).await {
+            if let Some(nav) = data.nav {
+                db::insert_nav_history_idempotent(conn, &tx.fund_code, &tx.date, &nav.to_string())
+                    .map_err(|e| e.to_string())?;
+                settle_tx(conn, &tx, nav).map_err(|e| e.to_string())?;
+                settled_count += 1;
+            }
+        }
+    }
+
+    Ok(settled_count)
+}
+
+fn settle_tx(conn: &Connection, tx: &db::Transaction, nav: Decimal) -> Result<(), String> {
+    match tx.t_type.as_str() {
+        "buy" => {
+            let money = Decimal::from_str(&tx.money).unwrap_or_default();
+            let fund = db::get_fund_by_code_or_name(conn, &tx.fund_code)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "Fund not found".to_string())?;
+
+            let fee_rate_str = fund.sales_fee.as_deref().unwrap_or("0.15%");
+            let fee_rate = finance::parse_percentage_rate(fee_rate_str);
+
+            let res = finance::calculate_purchase(money, nav, fee_rate);
+
+            db::update_transaction_settlement(
+                conn,
+                tx.id,
+                &res.shares.to_string(),
+                &nav.to_string(),
+                &res.fee.to_string(),
+                &money.to_string(),
+                "settled",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        "sell" => {
+            let shares = tx
+                .shares
+                .as_ref()
+                .and_then(|s| Decimal::from_str(s).ok())
+                .unwrap_or_default();
+            if shares.is_zero() {
+                return Ok(()); // Keep pending if shares is 0
+            }
+
+            // Default sell fee 0.5% if not known
+            let fee_rate = dec!(0.005);
+
+            let res = finance::calculate_sell(shares, nav, fee_rate);
+
+            db::update_transaction_settlement(
+                conn,
+                tx.id,
+                &shares.to_string(),
+                &nav.to_string(),
+                &res.fee.to_string(),
+                &res.money.to_string(),
+                "settled",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Calculate the start date for syncing.
 /// Priority: User Provided Start > Earliest Pending Date > Mode-specific Default
 fn calculate_sync_range(
@@ -159,49 +240,14 @@ pub async fn sync_funds(
     }
 
     // Auto-settle pending transactions
-    settle_pending_transactions(conn).await?;
-
-    Ok(())
-}
-
-pub async fn settle_pending_transactions(conn: &Connection) -> Result<(), String> {
-    let pending = db::get_pending_transactions(conn).map_err(|e| e.to_string())?;
-    if pending.is_empty() {
-        return Ok(());
-    }
-
-    println!("正在检查 {} 笔待确认交易以进行结算...", pending.len());
-
-    for p in pending {
-        let nav_at_date =
-            db::get_nav_at_date(conn, &p.fund_code, &p.date).map_err(|e| e.to_string())?;
-
-        if let Some(nav) = nav_at_date {
-            let money = Decimal::from_str(&p.money).map_err(|e| e.to_string())?;
-            let fund_obj = db::get_fund_by_code_or_name(conn, &p.fund_code)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("数据库中未找到基金 {}", p.fund_code))?;
-
-            // Use prioritized fee logic (same as main.rs buy branch)
-            let fee_rate_dec = if let Some(ref sf) = fund_obj.sales_fee {
-                if !sf.trim().is_empty() && sf != "0.00%" {
-                    finance::parse_percentage_rate(sf)
-                } else {
-                    dec!(0.0015)
-                }
-            } else {
-                dec!(0.0015)
-            };
-
-            let res = finance::calculate_purchase(money, nav, fee_rate_dec);
-
-            db::settle_transaction(conn, p.id, &res.shares.to_string(), &nav.to_string())
-                .map_err(|e| e.to_string())?;
-            println!(
-                "✅ 已结算交易 - 基金: {}, 日期: {}, 份额: {}, 成交净值: {}",
-                p.fund_code, p.date, res.shares, nav
-            );
+    match settle_pending_transactions(conn).await {
+        Ok(count) if count > 0 => {
+            println!("✨ 成功自动结算 {} 笔交易记录。", count);
         }
+        Err(e) => {
+            println!("⚠️ 自动结算失败: {}", e);
+        }
+        _ => {}
     }
 
     Ok(())
@@ -390,6 +436,8 @@ mod tests {
             "2.25",
             "2024-03-01",
             "pending",
+            None,
+            "manual",
         )
         .expect("Failed to add pending transaction");
 

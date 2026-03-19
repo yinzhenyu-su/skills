@@ -109,6 +109,8 @@ fn test_get_funds_with_valuations() {
         "0",
         "2026-03-01",
         "settled",
+        None,
+        "manual",
     )
     .unwrap();
     db::add_transaction(
@@ -122,6 +124,8 @@ fn test_get_funds_with_valuations() {
         "0",
         "2026-03-02",
         "settled",
+        None,
+        "manual",
     )
     .unwrap();
 

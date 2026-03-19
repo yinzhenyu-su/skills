@@ -7,6 +7,11 @@ pub struct PurchaseResult {
     pub fee: Decimal,
 }
 
+pub struct SellResult {
+    pub money: Decimal,
+    pub fee: Decimal,
+}
+
 pub fn calculate_purchase(money: Decimal, nav: Decimal, fee_rate: Decimal) -> PurchaseResult {
     // Net Amount = Money / (1 + Fee Rate)
     let one = dec!(1);
@@ -22,6 +27,14 @@ pub fn calculate_purchase(money: Decimal, nav: Decimal, fee_rate: Decimal) -> Pu
     let shares = shares.round_dp(2);
 
     PurchaseResult { shares, fee }
+}
+
+pub fn calculate_sell(shares: Decimal, nav: Decimal, fee_rate: Decimal) -> SellResult {
+    let total_money = shares * nav;
+    let fee = (total_money * fee_rate).round_dp(2);
+    let money = (total_money - fee).round_dp(2);
+
+    SellResult { money, fee }
 }
 
 /// Parses a percentage rate string (e.g. "0.15%") into a Decimal (e.g. 0.0015).
