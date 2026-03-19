@@ -29,6 +29,20 @@ struct ImportResult {
     reason: String,
 }
 
+/// Holds parsed data from a holdings CSV row
+struct HoldingImportItem {
+    fund_name: String,
+    holding_amount: Decimal,
+    holding_profit: Decimal,
+    line_num: Option<usize>,
+}
+
+struct HoldingImportResult {
+    fund_name: String,
+    success: bool,
+    reason: String,
+}
+
 fn get_today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
@@ -96,12 +110,9 @@ fn resolve_wallet_id(conn: &Connection, wallet_name: Option<String>) -> i64 {
         if !all_wallets.is_empty() {
             // 有其他钱包，询问用户选择
             let wallet_names: Vec<String> = all_wallets.iter().map(|w| w.name.clone()).collect();
-            let selected = Select::new(
-                "未设置活跃钱包，请选择要使用的钱包：",
-                wallet_names,
-            )
-            .prompt()
-            .expect("无法获取用户选择");
+            let selected = Select::new("未设置活跃钱包，请选择要使用的钱包：", wallet_names)
+                .prompt()
+                .expect("无法获取用户选择");
             let wallet_id = all_wallets
                 .iter()
                 .find(|w| w.name == selected)
@@ -556,6 +567,477 @@ async fn handle_import(
     }
 
     Ok(())
+}
+
+async fn handle_import_holding(
+    conn: &Connection,
+    wallet_id: i64,
+    file: &std::path::Path,
+    merge: bool,
+    override_flag: bool,
+) -> Result<(), String> {
+    let mut items = Vec::new();
+    let mut results = Vec::new();
+
+    // Parse CSV
+    let mut rdr = ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(file)
+        .map_err(|e| format!("无法打开 CSV 文件：{}", e))?;
+
+    for (i, result) in rdr.records().enumerate() {
+        let line_num = i + 2;
+        match result {
+            Ok(record) => {
+                if record.len() < 3 {
+                    results.push(HoldingImportResult {
+                        fund_name: format!("CSV 第 {} 行", line_num),
+                        success: false,
+                        reason: "该行少于 3 列数据".to_string(),
+                    });
+                    continue;
+                }
+                let fund_name = record.get(0).unwrap().trim().to_string();
+                let amount_str = record.get(1).unwrap();
+                let profit_str = record.get(2).unwrap();
+
+                match Decimal::from_str(amount_str) {
+                    Ok(amount) => {
+                        if amount <= Decimal::ZERO {
+                            results.push(HoldingImportResult {
+                                fund_name: fund_name.clone(),
+                                success: false,
+                                reason: format!("持有金额必须为正数：{}", amount_str),
+                            });
+                            continue;
+                        }
+
+                        match Decimal::from_str(profit_str) {
+                            Ok(profit) => {
+                                items.push(HoldingImportItem {
+                                    fund_name,
+                                    holding_amount: amount,
+                                    holding_profit: profit,
+                                    line_num: Some(line_num),
+                                });
+                            }
+                            Err(e) => {
+                                results.push(HoldingImportResult {
+                                    fund_name: fund_name.clone(),
+                                    success: false,
+                                    reason: format!("无效的持有收益格式：{} ({})", profit_str, e),
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        results.push(HoldingImportResult {
+                            fund_name: fund_name.clone(),
+                            success: false,
+                            reason: format!("无效的持有金额格式：{} ({})", amount_str, e),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                results.push(HoldingImportResult {
+                    fund_name: format!("CSV 第 {} 行", line_num),
+                    success: false,
+                    reason: format!("CSV 错误：{}", e),
+                });
+            }
+        }
+    }
+
+    if items.is_empty() && results.is_empty() {
+        println!("未发现可导入的项目。");
+        return Ok(());
+    }
+
+    // Process each item
+    for item in items {
+        let mut result = HoldingImportResult {
+            fund_name: item.fund_name.clone(),
+            success: false,
+            reason: String::new(),
+        };
+
+        // Delay to avoid rate limiting
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        // Resolve fund name to code
+        match resolver::resolve_fund(conn, &item.fund_name, false, false).await {
+            Ok(fund_obj) => {
+                // Check existing import record
+                let current_shares =
+                    db::get_fund_shares(conn, wallet_id, &fund_obj.code).unwrap_or(Decimal::ZERO);
+                let already_exists = !current_shares.is_zero();
+
+                if already_exists && !merge && !override_flag {
+                    result.reason =
+                        "该基金在钱包中已存在导入记录。请使用 --override 参数覆盖。".to_string();
+                } else {
+                    if override_flag && already_exists {
+                        // Delete existing import records for this fund/wallet
+                        conn.execute(
+                            "DELETE FROM transaction_log WHERE wallet_id = ?1 AND fund_code = ?2 AND type = 'import'",
+                            rusqlite::params![wallet_id, fund_obj.code],
+                        )
+                        .map_err(|e: rusqlite::Error| e.to_string())?;
+                    }
+
+                    // Get current NAV
+                    let nav_result = smart_nav_lookup(conn, &fund_obj.code, &get_today()).await?;
+
+                    if let Some((_, nav)) = nav_result {
+                        // Calculate shares and cost
+                        let (shares, cost_basis, _cost_per_share) =
+                            finance::calculate_holding_from_profit(
+                                item.holding_amount,
+                                item.holding_profit,
+                                nav,
+                            );
+
+                        // Write to transaction_log
+                        db::add_transaction(
+                            conn,
+                            wallet_id,
+                            &fund_obj.code,
+                            "import",
+                            &cost_basis.to_string(),
+                            Some(&shares.to_string()),
+                            Some(&nav.to_string()),
+                            "0",
+                            &get_today(),
+                            "settled",
+                        )
+                        .map_err(|e: rusqlite::Error| e.to_string())?;
+
+                        result.success = true;
+                    } else {
+                        result.reason = "无法获取基金净值".to_string();
+                    }
+                }
+            }
+            Err(e) => {
+                result.reason = e.to_string();
+            }
+        }
+        results.push(result);
+    }
+
+    // Print Report
+    let success_count = results.iter().filter(|r| r.success).count();
+    let fail_count = results.iter().filter(|r| !r.success).count();
+
+    println!("\n🚀 导入流程已完成！");
+    println!("✅ 成功：{}", success_count);
+    println!("❌ 失败：{}", fail_count);
+
+    if fail_count > 0 {
+        let mut table = Table::new();
+        table.set_header(vec!["基金名称", "状态", "失败原因"]);
+        for r in results.iter().filter(|r| !r.success) {
+            table.add_row(vec![
+                r.fund_name.clone(),
+                "失败".to_string(),
+                r.reason.clone(),
+            ]);
+        }
+        println!("\n失败详情：");
+        println!("{table}");
+    }
+
+    Ok(())
+}
+
+async fn handle_preview_buy(
+    conn: &Connection,
+    wallet_id: i64,
+    fund: &str,
+    money: Option<Decimal>,
+    shares: Option<Decimal>,
+    nav: Option<Decimal>,
+    date: Option<&str>,
+) {
+    let fund_obj = match resolver::resolve_fund(conn, fund, true, false).await {
+        Ok(f) => f,
+        Err(e) => {
+            print_resolve_error(&conn, e, None);
+            std::process::exit(1);
+        }
+    };
+
+    // Resolve NAV
+    let (nav_date, nav_value) = if let Some(nav_val) = nav {
+        (get_today(), nav_val)
+    } else if let Some(d) = date {
+        let parsed_date = parse_date(d).unwrap_or_else(|e| {
+            eprintln!("❌ 错误：{}", e);
+            std::process::exit(1);
+        });
+        let nav_result = smart_nav_lookup(conn, &fund_obj.code, &parsed_date)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("❌ 错误：净值查询失败：{}", e);
+                std::process::exit(1);
+            });
+        match nav_result {
+            Some((d, n)) => (d, n),
+            None => {
+                eprintln!("❌ 错误：未找到 {} 的净值数据", fund_obj.code);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        let nav_result = smart_nav_lookup(conn, &fund_obj.code, &get_today())
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("❌ 错误：净值查询失败：{}", e);
+                std::process::exit(1);
+            });
+        match nav_result {
+            Some((d, n)) => (d, n),
+            None => {
+                eprintln!("❌ 错误：未找到 {} 的净值数据", fund_obj.code);
+                std::process::exit(1);
+            }
+        }
+    };
+
+    // Calculate fee rate
+    let fee_rate = if let Some(ref sf) = fund_obj.sales_fee {
+        if !sf.trim().is_empty() && sf != "0.00%" {
+            finance::parse_percentage_rate(sf)
+        } else {
+            dec!(0.0015)
+        }
+    } else {
+        dec!(0.0015)
+    };
+
+    // Calculate based on money or shares input
+    let (input_money, input_shares, fee, net_shares) = if let Some(m) = money {
+        let purchase_result = finance::calculate_purchase(m, nav_value, fee_rate);
+        (
+            m,
+            purchase_result.shares,
+            purchase_result.fee,
+            purchase_result.shares,
+        )
+    } else if let Some(s) = shares {
+        let total_money = s * nav_value;
+        let fee = (total_money * fee_rate / (dec!(1) + fee_rate)).round_dp(2);
+        (total_money.round_dp(2), s, fee, s)
+    } else {
+        eprintln!("❌ 错误：请提供 --money 或 --shares 参数");
+        std::process::exit(1);
+    };
+
+    // Get current holdings
+    let current_shares =
+        db::get_fund_shares(conn, wallet_id, &fund_obj.code).unwrap_or(Decimal::ZERO);
+    let current_cost = if current_shares.is_zero() {
+        Decimal::ZERO
+    } else {
+        // Get the cost from holdings
+        let holdings = db::get_holdings(conn, wallet_id).unwrap_or_default();
+        holdings
+            .iter()
+            .find(|h| h.fund_code == fund_obj.code)
+            .map(|h| Decimal::from_str(&h.net_cost).unwrap_or_default())
+            .unwrap_or(Decimal::ZERO)
+    };
+
+    // Calculate post-buy values
+    let new_total_shares = current_shares + net_shares;
+    let new_total_cost = current_cost + input_money - fee;
+    let new_avg_cost = if new_total_shares.is_zero() {
+        Decimal::ZERO
+    } else {
+        (new_total_cost / new_total_shares).round_dp(4)
+    };
+    let current_avg_cost = if current_shares.is_zero() {
+        Decimal::ZERO
+    } else {
+        (current_cost / current_shares).round_dp(4)
+    };
+
+    // Display preview
+    println!("┌─────────────────────────────────────────────────────────┐");
+    println!("│ 基金: {} ({})", fund_obj.name, fund_obj.code);
+    println!("│ 净值: {} (日期: {})", nav_value, nav_date);
+    println!("├─────────────────────────────────────────────────────────┤");
+    if money.is_some() {
+        println!("│ 投入金额: {} 元", input_money);
+    } else {
+        println!("│ 买入份额: {} 份", input_shares);
+    }
+    println!("│ 申购费率: {}%", (fee_rate * dec!(100)).round_dp(2));
+    println!("│ 手续费: {} 元", fee);
+    if money.is_some() {
+        println!("│ 获得份额: {} 份", net_shares);
+    } else {
+        println!("│ 投入金额: {} 元", input_money);
+    }
+    println!("├─────────────────────────────────────────────────────────┤");
+    println!("│ 买入后持仓变化:                                        │");
+    println!("│   份额: {} → {}", current_shares, new_total_shares);
+    println!("│   成本: {} → {}", current_cost, new_total_cost);
+    println!("│   均价: {} → {}", current_avg_cost, new_avg_cost);
+    println!("└─────────────────────────────────────────────────────────┘");
+}
+
+async fn handle_preview_sell(
+    conn: &Connection,
+    wallet_id: i64,
+    fund: &str,
+    money: Option<String>,
+    shares: Option<String>,
+    nav: Option<String>,
+    date: Option<&str>,
+) {
+    let fund_obj = match resolver::resolve_fund(conn, fund, true, false).await {
+        Ok(f) => f,
+        Err(e) => {
+            print_resolve_error(&conn, e, None);
+            std::process::exit(1);
+        }
+    };
+
+    // Get current holdings
+    let current_shares =
+        db::get_fund_shares(conn, wallet_id, &fund_obj.code).unwrap_or(Decimal::ZERO);
+    if current_shares.is_zero() {
+        eprintln!("❌ 错误：你在当前钱包中未持有该基金");
+        std::process::exit(1);
+    }
+
+    let current_cost = if current_shares.is_zero() {
+        Decimal::ZERO
+    } else {
+        let holdings = db::get_holdings(conn, wallet_id).unwrap_or_default();
+        holdings
+            .iter()
+            .find(|h| h.fund_code == fund_obj.code)
+            .map(|h| Decimal::from_str(&h.net_cost).unwrap_or_default())
+            .unwrap_or(Decimal::ZERO)
+    };
+
+    // Resolve NAV
+    let (nav_date, nav_value) = if let Some(ref nav_val_str) = nav {
+        let nav_val = Decimal::from_str(nav_val_str).unwrap_or_else(|e| {
+            eprintln!("❌ 错误：无效的净值格式：{}", e);
+            std::process::exit(1);
+        });
+        (get_today(), nav_val)
+    } else if let Some(d) = date {
+        let parsed_date = parse_date(d).unwrap_or_else(|e| {
+            eprintln!("❌ 错误：{}", e);
+            std::process::exit(1);
+        });
+        let nav_result = smart_nav_lookup(conn, &fund_obj.code, &parsed_date)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("❌ 错误：净值查询失败：{}", e);
+                std::process::exit(1);
+            });
+        match nav_result {
+            Some((d, n)) => (d, n),
+            None => {
+                eprintln!("❌ 错误：未找到 {} 的净值数据", fund_obj.code);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        let nav_result = smart_nav_lookup(conn, &fund_obj.code, &get_today())
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("❌ 错误：净值查询失败：{}", e);
+                std::process::exit(1);
+            });
+        match nav_result {
+            Some((d, n)) => (d, n),
+            None => {
+                eprintln!("❌ 错误：未找到 {} 的净值数据", fund_obj.code);
+                std::process::exit(1);
+            }
+        }
+    };
+
+    // Calculate shares to sell based on money or shares input
+    let (sell_shares, sell_money, fee) = if let Some(ref s) = shares {
+        let parsed_shares = finance::resolve_shares(s, current_shares).unwrap_or_else(|e| {
+            eprintln!("❌ 错误：{}", e);
+            std::process::exit(1);
+        });
+
+        if parsed_shares > current_shares {
+            eprintln!(
+                "⚠️ 警告：卖出份额 {} 超出当前持仓 {} 份",
+                parsed_shares, current_shares
+            );
+        }
+
+        let total_money = parsed_shares * nav_value;
+        let sell_fee = (total_money * dec!(0)).round_dp(2); // Assume 0 fee for now
+        (parsed_shares, total_money.round_dp(2), sell_fee)
+    } else if let Some(ref m_str) = money {
+        let parsed_money = Decimal::from_str(m_str).unwrap_or_else(|e| {
+            eprintln!("❌ 错误：无效的金额格式：{}", e);
+            std::process::exit(1);
+        });
+        let sell_shares = (parsed_money / nav_value).round_dp(2);
+        let sell_fee = (parsed_money * dec!(0)).round_dp(2);
+        (sell_shares, parsed_money, sell_fee)
+    } else {
+        eprintln!("❌ 错误：请提供 --money 或 --shares 参数");
+        std::process::exit(1);
+    };
+
+    let net_received = (sell_money - fee).round_dp(2);
+    let sell_ratio = if current_shares.is_zero() {
+        dec!(0)
+    } else {
+        ((sell_shares / current_shares) * dec!(100)).round_dp(2)
+    };
+
+    // Calculate post-sell values
+    let new_total_shares = (current_shares - sell_shares).max(Decimal::ZERO);
+    // Proportional cost reduction
+    let cost_reduction = if current_shares.is_zero() {
+        Decimal::ZERO
+    } else {
+        (current_cost * sell_shares / current_shares).round_dp(2)
+    };
+    let new_total_cost = (current_cost - cost_reduction).max(Decimal::ZERO);
+    let new_avg_cost = if new_total_shares.is_zero() {
+        Decimal::ZERO
+    } else {
+        (new_total_cost / new_total_shares).round_dp(4)
+    };
+    let current_avg_cost = if current_shares.is_zero() {
+        Decimal::ZERO
+    } else {
+        (current_cost / current_shares).round_dp(4)
+    };
+
+    // Display preview
+    println!("┌─────────────────────────────────────────────────────────┐");
+    println!("│ 基金: {} ({})", fund_obj.name, fund_obj.code);
+    println!("│ 净值: {} (日期: {})", nav_value, nav_date);
+    println!("├─────────────────────────────────────────────────────────┤");
+    println!("│ 卖出份额: {} 份 ({}%)", sell_shares, sell_ratio);
+    println!("│ 卖出金额: {} 元", sell_money);
+    println!("│ 赎回费率: 0.00%");
+    println!("│ 手续费: {} 元", fee);
+    println!("│ 实际到账: {} 元", net_received);
+    println!("├─────────────────────────────────────────────────────────┤");
+    println!("│ 卖出后持仓变化:                                        │");
+    println!("│   份额: {} → {}", current_shares, new_total_shares);
+    println!("│   成本: {} → {}", current_cost, new_total_cost);
+    println!("│   均价: {} → {}", current_avg_cost, new_avg_cost);
+    println!("└─────────────────────────────────────────────────────────┘");
 }
 
 #[tokio::main]
@@ -1207,6 +1689,42 @@ async fn main() {
                 eprintln!("❌ 错误（执行过程失败）：导入：{}", e);
                 std::process::exit(1);
             }
+        }
+        Commands::ImportHolding {
+            file,
+            merge,
+            override_flag,
+            wallet,
+        } => {
+            let wallet_id = resolve_wallet_id(&conn, wallet);
+            if let Err(e) =
+                handle_import_holding(&conn, wallet_id, &file, merge, override_flag).await
+            {
+                eprintln!("❌ 错误（执行过程失败）：导入持仓：{}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::PreviewBuy {
+            fund,
+            money,
+            shares,
+            nav,
+            date,
+            wallet,
+        } => {
+            let wallet_id = resolve_wallet_id(&conn, wallet);
+            handle_preview_buy(&conn, wallet_id, &fund, money, shares, nav, date.as_deref()).await;
+        }
+        Commands::PreviewSell {
+            fund,
+            money,
+            shares,
+            nav,
+            date,
+            wallet,
+        } => {
+            let wallet_id = resolve_wallet_id(&conn, wallet);
+            handle_preview_sell(&conn, wallet_id, &fund, money, shares, nav, date.as_deref()).await;
         }
     }
 }

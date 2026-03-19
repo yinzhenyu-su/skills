@@ -120,6 +120,73 @@ pub enum Commands {
         #[arg(long)]
         date: Option<String>,
     },
+    /// 从其他平台导入基金持仓（CSV 格式：基金名称,持有金额,持有收益）
+    #[command(
+        name = "import-holding",
+        long_about = "从 CSV 文件批量导入基金持仓数据。\n\n示例：\n    fund import-holding --file holdings.csv\n    fund import-holding --file holdings.csv --override\n    fund import-holding --file holdings.csv --wallet 我的钱包\n\nCSV 格式说明：\n    基金名称,持有金额,持有收益\n    中欧医疗健康混合A,11000,1000\n    注意：持有收益包含现金分红"
+    )]
+    ImportHolding {
+        /// 要导入的 CSV 文件路径
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// 与现有导入记录合并（默认行为，已存在则跳过）
+        #[arg(long, conflicts_with = "override_flag")]
+        merge: bool,
+        /// 完全覆盖现有导入记录
+        #[arg(long)]
+        override_flag: bool,
+        /// 导入使用的特定钱包
+        #[arg(long)]
+        wallet: Option<String>,
+    },
+    /// 预览买入结果（不执行实际买入）
+    #[command(
+        name = "preview",
+        long_about = "预览买入交易结果，不执行实际买入。\n\n示例：\n    fund preview buy 000312 --money 5000\n    fund preview buy 000312 --shares 4538.65\n    fund preview buy 000312 --money 5000 --nav 1.05\n    fund preview buy 000312 --money 5000 --date 2024-01-01"
+    )]
+    PreviewBuy {
+        /// 基金代码或名称
+        fund: String,
+        /// 投入金额
+        #[arg(long)]
+        money: Option<Decimal>,
+        /// 显式指定份额
+        #[arg(long)]
+        shares: Option<Decimal>,
+        /// 显式指定成交净值
+        #[arg(long)]
+        nav: Option<Decimal>,
+        /// 指定日期（查询该日期之前的最近净值）
+        #[arg(long)]
+        date: Option<String>,
+        /// 交易使用的特定钱包
+        #[arg(long)]
+        wallet: Option<String>,
+    },
+    /// 预览卖出结果（不执行实际卖出）
+    #[command(
+        name = "preview-sell",
+        long_about = "预览卖出交易结果，不执行实际卖出。\n\n示例：\n    fund preview-sell 000312 --shares 5000\n    fund preview-sell 000312 --money 5500\n    fund preview-sell 000312 --shares 5000 --nav 1.05\n    fund preview-sell 000312 --shares 5000 --date 2024-01-01"
+    )]
+    PreviewSell {
+        /// 基金代码或名称
+        fund: String,
+        /// 预期收回金额 (例如 "1000")
+        #[arg(long)]
+        money: Option<String>,
+        /// 显式卖出份额 (例如 "500", "1/2", "all")
+        #[arg(long)]
+        shares: Option<String>,
+        /// 显式指定成交净值 (例如 "1.23")
+        #[arg(long)]
+        nav: Option<String>,
+        /// 指定日期（查询该日期之前的最近净值）
+        #[arg(long)]
+        date: Option<String>,
+        /// 交易使用的特定钱包
+        #[arg(long)]
+        wallet: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

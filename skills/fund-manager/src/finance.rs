@@ -75,6 +75,26 @@ pub fn resolve_fee(input: &str, total_money: Decimal) -> Result<Decimal, String>
     }
 }
 
+/// Calculate holding info from holding amount, profit, and NAV.
+/// Returns (shares, cost_basis, cost_per_share)
+pub fn calculate_holding_from_profit(
+    holding_amount: Decimal,
+    holding_profit: Decimal,
+    nav: Decimal,
+) -> (Decimal, Decimal, Decimal) {
+    // shares = holding_amount / nav
+    let shares = (holding_amount / nav).round_dp(2);
+    // cost_basis = holding_amount - holding_profit
+    let cost_basis = (holding_amount - holding_profit).round_dp(2);
+    // cost_per_share = cost_basis / shares
+    let cost_per_share = if shares.is_zero() {
+        Decimal::ZERO
+    } else {
+        (cost_basis / shares).round_dp(4)
+    };
+    (shares, cost_basis, cost_per_share)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +182,44 @@ mod tests {
         let total_money = dec!(1000.00);
         assert!(resolve_fee("invalid", total_money).is_err());
         assert!(resolve_fee("%", total_money).is_err());
+    }
+
+    #[test]
+    fn test_calculate_holding_from_profit_normal() {
+        // holding_amount = 11000, holding_profit = 1000, nav = 1.1
+        // shares = 11000 / 1.1 = 10000
+        // cost_basis = 11000 - 1000 = 10000
+        // cost_per_share = 10000 / 10000 = 1.0
+        let (shares, cost_basis, cost_per_share) =
+            calculate_holding_from_profit(dec!(11000), dec!(1000), dec!(1.1));
+        assert_eq!(shares, dec!(10000.00));
+        assert_eq!(cost_basis, dec!(10000.00));
+        assert_eq!(cost_per_share, dec!(1.0000));
+    }
+
+    #[test]
+    fn test_calculate_holding_from_profit_loss() {
+        // holding_amount = 9000, holding_profit = -1000, nav = 0.9
+        // shares = 9000 / 0.9 = 10000
+        // cost_basis = 9000 - (-1000) = 10000
+        // cost_per_share = 10000 / 10000 = 1.0
+        let (shares, cost_basis, cost_per_share) =
+            calculate_holding_from_profit(dec!(9000), dec!(-1000), dec!(0.9));
+        assert_eq!(shares, dec!(10000.00));
+        assert_eq!(cost_basis, dec!(10000.00));
+        assert_eq!(cost_per_share, dec!(1.0000));
+    }
+
+    #[test]
+    fn test_calculate_holding_from_profit_zero_profit() {
+        // holding_amount = 10000, holding_profit = 0, nav = 1.0
+        // shares = 10000 / 1.0 = 10000
+        // cost_basis = 10000 - 0 = 10000
+        // cost_per_share = 10000 / 10000 = 1.0
+        let (shares, cost_basis, cost_per_share) =
+            calculate_holding_from_profit(dec!(10000), dec!(0), dec!(1.0));
+        assert_eq!(shares, dec!(10000.00));
+        assert_eq!(cost_basis, dec!(10000.00));
+        assert_eq!(cost_per_share, dec!(1.0000));
     }
 }
