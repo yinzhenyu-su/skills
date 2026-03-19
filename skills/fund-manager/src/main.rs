@@ -1,7 +1,7 @@
 use clap::Parser;
 use comfy_table::Table;
 use csv::ReaderBuilder;
-use fund_manager::cli::{Cli, Commands, FundCommands, WalletCommands};
+use fund_manager::cli::{Cli, Commands, FundCommands, PreviewCommands, WalletCommands};
 use fund_manager::db;
 use fund_manager::finance;
 use fund_manager::provider::{Provider, eastmoney_lsjz::EastmoneyLsjzProvider};
@@ -34,6 +34,7 @@ struct HoldingImportItem {
     fund_name: String,
     holding_amount: Decimal,
     holding_profit: Decimal,
+    #[allow(dead_code)]
     line_num: Option<usize>,
 }
 
@@ -85,7 +86,15 @@ async fn smart_nav_lookup(
         }
     }
 
-    // 3. API also failed, fall back to forward lookup (up to 20 days)
+    // 3. API also failed, fall back to backward lookup first (up to 30 days)
+    // This handles cases like QDII funds where today's NAV isn't published yet
+    let nav_result = db::find_prev_available_nav(conn, code, requested_date, 30)
+        .map_err(|e: rusqlite::Error| e.to_string())?;
+    if nav_result.is_some() {
+        return Ok(nav_result);
+    }
+
+    // 4. Nothing backward, try forward (up to 20 days) as last resort
     let nav_result = db::find_next_available_nav(conn, code, requested_date, 20)
         .map_err(|e: rusqlite::Error| e.to_string())?;
 
@@ -132,6 +141,31 @@ fn resolve_wallet_id(conn: &Connection, wallet_name: Option<String>) -> i64 {
         println!("🔔 未检测到活跃钱包，已自动创建并激活「默认钱包」。");
         wallet_id
     }
+}
+
+fn resolve_fund_interactively(
+    conn: &Connection,
+    fund: Option<String>,
+    wallet_id: i64,
+    subcommand: &str,
+) -> String {
+    if let Some(f) = fund {
+        return f;
+    }
+    // 没有提供基金，列出已追踪基金作为提示
+    let funds = db::get_funds_with_valuations(conn, Some(wallet_id)).expect("数据库错误");
+    if funds.is_empty() {
+        eprintln!("❌ 缺少参数 <FUND>：请提供基金代码或名称");
+        eprintln!("当前钱包中没有追踪任何基金，请先用 `fund fund add` 添加基金");
+    } else {
+        eprintln!("❌ 缺少参数 <FUND>：请提供基金代码或名称");
+        eprintln!("当前追踪的基金：");
+        for fv in &funds {
+            eprintln!("  {} ({})", fv.fund.name, fv.fund.code);
+        }
+        eprintln!("用法示例：fund-manager preview {} {} --money 5000", subcommand, funds[0].fund.code);
+    }
+    std::process::exit(1);
 }
 
 fn confirm_action(prompt: &str, force_yes: bool) -> bool {
@@ -830,7 +864,9 @@ async fn handle_preview_buy(
         let fee = (total_money * fee_rate / (dec!(1) + fee_rate)).round_dp(2);
         (total_money.round_dp(2), s, fee, s)
     } else {
-        eprintln!("❌ 错误：请提供 --money 或 --shares 参数");
+        eprintln!("❌ 缺少参数：请提供 --money 或 --shares 之一");
+        eprintln!("   --money <金额>   按投入金额买入，例如：--money 5000");
+        eprintln!("   --shares <份额>  按指定份额买入，例如：--shares 4538.65");
         std::process::exit(1);
     };
 
@@ -991,7 +1027,11 @@ async fn handle_preview_sell(
         let sell_fee = (parsed_money * dec!(0)).round_dp(2);
         (sell_shares, parsed_money, sell_fee)
     } else {
-        eprintln!("❌ 错误：请提供 --money 或 --shares 参数");
+        eprintln!("❌ 缺少参数：请提供 --money 或 --shares 之一");
+        eprintln!("   --shares <份额>  按指定份额卖出，例如：--shares 500");
+        eprintln!("   --shares all     全部卖出");
+        eprintln!("   --shares 1/2     卖出一半份额");
+        eprintln!("   --money <金额>   按预期收回金额卖出，例如：--money 5000");
         std::process::exit(1);
     };
 
@@ -1704,27 +1744,33 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::PreviewBuy {
-            fund,
-            money,
-            shares,
-            nav,
-            date,
-            wallet,
-        } => {
-            let wallet_id = resolve_wallet_id(&conn, wallet);
-            handle_preview_buy(&conn, wallet_id, &fund, money, shares, nav, date.as_deref()).await;
-        }
-        Commands::PreviewSell {
-            fund,
-            money,
-            shares,
-            nav,
-            date,
-            wallet,
-        } => {
-            let wallet_id = resolve_wallet_id(&conn, wallet);
-            handle_preview_sell(&conn, wallet_id, &fund, money, shares, nav, date.as_deref()).await;
+        Commands::Preview { command } => match command {
+            PreviewCommands::Buy {
+                fund,
+                money,
+                shares,
+                nav,
+                date,
+                wallet,
+            } => {
+                let wallet_id = resolve_wallet_id(&conn, wallet);
+                let fund_input = resolve_fund_interactively(&conn, fund, wallet_id, "buy");
+                handle_preview_buy(&conn, wallet_id, &fund_input, money, shares, nav, date.as_deref())
+                    .await;
+            }
+            PreviewCommands::Sell {
+                fund,
+                money,
+                shares,
+                nav,
+                date,
+                wallet,
+            } => {
+                let wallet_id = resolve_wallet_id(&conn, wallet);
+                let fund_input = resolve_fund_interactively(&conn, fund, wallet_id, "sell");
+                handle_preview_sell(&conn, wallet_id, &fund_input, money, shares, nav, date.as_deref())
+                    .await;
+            }
         }
     }
 }

@@ -139,14 +139,25 @@ pub enum Commands {
         #[arg(long)]
         wallet: Option<String>,
     },
+    /// 预览交易结果（不执行实际交易）
+    #[command(
+        long_about = "预览买入或卖出交易结果，不执行实际操作。\n\n示例：\n    fund-manager preview buy 000312 --money 5000\n    fund-manager preview sell 000312 --shares 500"
+    )]
+    Preview {
+        #[command(subcommand)]
+        command: PreviewCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PreviewCommands {
     /// 预览买入结果（不执行实际买入）
     #[command(
-        name = "preview",
-        long_about = "预览买入交易结果，不执行实际买入。\n\n示例：\n    fund preview buy 000312 --money 5000\n    fund preview buy 000312 --shares 4538.65\n    fund preview buy 000312 --money 5000 --nav 1.05\n    fund preview buy 000312 --money 5000 --date 2024-01-01"
+        long_about = "预览买入交易结果，不执行实际买入。\n\n示例：\n    fund-manager preview buy 000312 --money 5000\n    fund-manager preview buy 000312 --shares 4538.65\n    fund-manager preview buy 000312 --money 5000 --nav 1.05\n    fund-manager preview buy 000312 --money 5000 --date 2024-01-01"
     )]
-    PreviewBuy {
-        /// 基金代码或名称
-        fund: String,
+    Buy {
+        /// 基金代码或名称（省略则交互式选择）
+        fund: Option<String>,
         /// 投入金额
         #[arg(long)]
         money: Option<Decimal>,
@@ -165,12 +176,11 @@ pub enum Commands {
     },
     /// 预览卖出结果（不执行实际卖出）
     #[command(
-        name = "preview-sell",
-        long_about = "预览卖出交易结果，不执行实际卖出。\n\n示例：\n    fund preview-sell 000312 --shares 5000\n    fund preview-sell 000312 --money 5500\n    fund preview-sell 000312 --shares 5000 --nav 1.05\n    fund preview-sell 000312 --shares 5000 --date 2024-01-01"
+        long_about = "预览卖出交易结果，不执行实际卖出。\n\n示例：\n    fund-manager preview sell 000312 --shares 500\n    fund-manager preview sell 000312 --money 5500\n    fund-manager preview sell 000312 --shares 500 --nav 1.05\n    fund-manager preview sell 000312 --shares 500 --date 2024-01-01"
     )]
-    PreviewSell {
-        /// 基金代码或名称
-        fund: String,
+    Sell {
+        /// 基金代码或名称（省略则交互式选择）
+        fund: Option<String>,
         /// 预期收回金额 (例如 "1000")
         #[arg(long)]
         money: Option<String>,
