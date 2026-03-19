@@ -1087,3 +1087,40 @@ fn test_fund_457001_profit_loss_calculation() {
         // 盈亏率约 -13%
         .stdout(predicate::str::contains("-13.0"));
 }
+
+#[test]
+fn test_misplaced_subcommand_hint() {
+    let ctx = TestContext::new("misplaced-subcommand");
+
+    // fund wallet list use
+    ctx.cmd()
+        .arg("wallet")
+        .arg("list")
+        .arg("use")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("❌ 未识别的参数或子命令 'use'"))
+        .stderr(predicate::str::contains("💡 Hint: 你是不是想找：'fund wallet use'？"));
+
+    // fund walllet list (typo)
+    ctx.cmd()
+        .arg("walllet")
+        .arg("list")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("❌ 未识别的参数或子命令 'walllet'"))
+        .stderr(predicate::str::contains("❓ 未识别的子命令 'walllet'。你是不是想找：'wallet'？"));
+}
+
+#[test]
+fn test_missing_required_argument_format() {
+    let ctx = TestContext::new("missing-args");
+
+    // fund buy (missing fund and money)
+    ctx.cmd()
+        .arg("buy")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("❌ 缺少基金标识符参数"))
+        .stderr(predicate::str::contains("用法示例：fund buy"));
+}

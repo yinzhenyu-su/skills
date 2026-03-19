@@ -666,6 +666,7 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
+ "strsim",
  "tempfile",
  "tokio",
  "urlencoding",

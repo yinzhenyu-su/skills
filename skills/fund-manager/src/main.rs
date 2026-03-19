@@ -158,17 +158,20 @@ fn require_fund_or_exit(
     };
 
     if funds.is_empty() {
-        eprintln!("❌ 缺少基金参数：请提供基金代码或名称");
+        eprintln!("❌ 缺少基金标识符参数");
         if is_sell {
-            eprintln!("   当前钱包中没有持有任何基金，无法卖出");
+            eprintln!("💡 Hint: 当前钱包中没有持有任何基金，无法卖出");
         } else {
-            eprintln!("   当前钱包中没有追踪任何基金，请先用 'fund fund add' 添加基金");
+            eprintln!("💡 Hint: 当前钱包中没有追踪任何基金，请先用 'fund fund add' 添加基金");
+            eprintln!("   用法示例：fund {} 000300 --money 5000", subcommand);
         }
     } else {
-        eprintln!("❌ 缺少基金参数：请提供基金代码或名称");
+        eprintln!("❌ 缺少基金标识符参数");
         if is_sell {
+            eprintln!("💡 Hint: 请提供要卖出的基金代码或名称");
             eprintln!("   当前持有的基金：");
         } else {
+            eprintln!("💡 Hint: 请提供基金代码或名称");
             eprintln!("   当前追踪的基金：");
         }
         for fv in &funds {
@@ -183,7 +186,7 @@ fn require_fund_or_exit(
             ""
         };
         let space = if example_args.is_empty() { "" } else { " " };
-        eprintln!("   用法示例：fund-manager {} {}{}{}", subcommand, funds[0].fund.code, space, example_args);
+        eprintln!("   用法示例：fund {} {}{}{}", subcommand, funds[0].fund.code, space, example_args);
     }
     std::process::exit(1);
 }
@@ -1100,9 +1103,26 @@ async fn handle_preview_sell(
     println!("└─────────────────────────────────────────────────────────┘");
 }
 
+fn handle_clap_error(err: clap::Error) {
+    if err.kind() == clap::error::ErrorKind::DisplayHelp || err.kind() == clap::error::ErrorKind::DisplayVersion {
+        err.exit();
+    }
+
+    let formatted = resolver::AdviceEngine::format_clap_error(err);
+    eprintln!("{}", formatted);
+    std::process::exit(1);
+}
+
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli_res = Cli::try_parse();
+    let cli = match cli_res {
+        Ok(c) => c,
+        Err(e) => {
+            handle_clap_error(e);
+            return;
+        }
+    };
 
     let app_dir = config::get_app_dir();
     fs::create_dir_all(&app_dir).expect("无法创建应用目录");

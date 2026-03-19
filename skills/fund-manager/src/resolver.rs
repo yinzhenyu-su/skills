@@ -2,6 +2,7 @@ use crate::db::{self, Fund};
 use crate::provider::aggregator::Aggregator;
 use crate::provider::morningstar_search::MorningstarSearchProvider;
 use chrono::{Duration, NaiveDateTime, Utc};
+use clap::{Command, CommandFactory};
 use rusqlite::Connection;
 
 fn is_6_digit_code(input: &str) -> bool {
@@ -38,9 +39,174 @@ impl std::fmt::Display for ResolveError {
 
 pub type ResolveResult<T> = Result<T, ResolveError>;
 
+pub struct CommandSuggestion {
+    pub hint: String,
+    pub path: Option<Vec<String>>,
+}
+
 pub struct AdviceEngine;
 
 impl AdviceEngine {
+    pub fn format_clap_error(err: clap::Error) -> String {
+        use clap::error::ErrorKind;
+        use crate::cli::Cli;
+
+        let mut output = String::new();
+        let mut suggestion_path = None;
+
+        match err.kind() {
+            ErrorKind::UnknownArgument | ErrorKind::InvalidSubcommand => {
+                let arg_str = err.context().find_map(|(k, v)| {
+                    if let clap::error::ContextKind::InvalidArg | clap::error::ContextKind::InvalidSubcommand = k {
+                        if let clap::error::ContextValue::String(s) = v {
+                            return Some(s.to_string());
+                        }
+                    }
+                    None
+                }).unwrap_or_else(|| "未知参数".to_string());
+                let arg = &arg_str;
+
+                output.push_str(&format!("❌ 未识别的参数或子命令 '{}'\n", arg));
+
+                // Try to find intent
+                if let Some(suggestion) = Self::check_unexpected_arg_intent(arg) {
+                    output.push_str(&format!("{}\n", suggestion.hint));
+                    suggestion_path = suggestion.path;
+                }
+            }
+            ErrorKind::MissingRequiredArgument => {
+                let missing = err.context().find_map(|(k, v)| {
+                    if let clap::error::ContextKind::InvalidArg = k {
+                        if let clap::error::ContextValue::Strings(s) = v {
+                            return Some(s.join(", "));
+                        }
+                    }
+                    None
+                }).unwrap_or_else(|| "必要参数".to_string());
+
+                let chinese_missing = match missing.as_str() {
+                    "<FUND>" => "基金标识符",
+                    "<WALLET>" => "钱包名称",
+                    "<NAME>" => "名称",
+                    _ => &missing,
+                };
+                output.push_str(&format!("❌ 缺少{}参数\n", chinese_missing));
+            }
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                output.push_str("❌ 请提供一个子命令\n");
+                output.push_str("💡 Hint: 运行 'fund --help' 查看可用命令列表。\n");
+            }
+            _ => {
+                output.push_str(&format!("❌ 错误：{}\n", err));
+            }
+        }
+
+        // Try to get usage from suggestion if available
+        let mut usage_found = false;
+        if let Some(path) = suggestion_path {
+            let cmd = Cli::command();
+            if let Some(target_cmd) = Self::find_command_by_path(&cmd, &path[1..]) {
+                let mut target_cmd_clone = target_cmd.clone();
+                let usage = target_cmd_clone.render_usage().to_string();
+                let simplified = usage.replace("Usage:", "   用法示例：").replace("fund-manager", "fund");
+                output.push_str(&simplified);
+                usage_found = true;
+            }
+        }
+
+        if !usage_found {
+            // Add usage example from error if available
+            let usage = err.context().find_map(|(k, v)| {
+                if let clap::error::ContextKind::Usage = k {
+                    if let clap::error::ContextValue::StyledStr(s) = v {
+                        return Some(s.to_string());
+                    }
+                }
+                None
+            });
+
+            if let Some(u) = usage {
+                // Simplified usage string to just "用法示例: ..."
+                let u_str: &str = &u;
+                let simplified = u_str.replace("Usage:", "   用法示例：").replace("fund-manager", "fund");
+                output.push_str(&simplified);
+            } else {
+                // Default usage based on command if possible
+                output.push_str("   用法示例：fund --help");
+            }
+        }
+
+        output
+    }
+
+    fn check_unexpected_arg_intent(input: &str) -> Option<CommandSuggestion> {
+        use crate::cli::Cli;
+        let cmd = Cli::command();
+        
+        // 1. Check if it's a misplaced subcommand (e.g., 'use' instead of 'wallet use')
+        if let Some(path) = Self::find_subcommand_path(&cmd, input, vec!["fund".to_string()]) {
+            // Only suggest if it's not just the input itself at the root
+            if path.len() > 1 && path.last().unwrap() == input {
+                return Some(CommandSuggestion {
+                    hint: format!("💡 Hint: 你是不是想找：'{}'？", path.join(" ")),
+                    path: Some(path),
+                });
+            }
+        }
+
+        // 2. Fuzzy match
+        if let Some(suggestion) = Self::suggest_command_spelling(&cmd, input) {
+            return Some(CommandSuggestion {
+                hint: format!("❓ 未识别的子命令 '{}'。你是不是想找：'{}'？", input, suggestion),
+                path: None, // Path not easily available for fuzzy match without deep search
+            });
+        }
+
+        None
+    }
+
+    fn find_command_by_path<'a>(cmd: &'a Command, path: &[String]) -> Option<&'a Command> {
+        if path.is_empty() {
+            return Some(cmd);
+        }
+        for sub in cmd.get_subcommands() {
+            if sub.get_name() == path[0] {
+                return Self::find_command_by_path(sub, &path[1..]);
+            }
+        }
+        None
+    }
+
+    fn find_subcommand_path(cmd: &Command, target: &str, current_path: Vec<String>) -> Option<Vec<String>> {
+        for sub in cmd.get_subcommands() {
+            let mut path = current_path.clone();
+            path.push(sub.get_name().to_string());
+            if sub.get_name() == target {
+                return Some(path);
+            }
+            if let Some(found_path) = Self::find_subcommand_path(sub, target, path) {
+                return Some(found_path);
+            }
+        }
+        None
+    }
+
+    fn suggest_command_spelling(cmd: &Command, input: &str) -> Option<String> {
+        let mut best_match: Option<String> = None;
+        let mut min_dist = 3; // Max distance of 2
+
+        for sub in cmd.get_subcommands() {
+            let name = sub.get_name();
+            let dist = strsim::levenshtein(input, name);
+            if dist < min_dist {
+                min_dist = dist;
+                best_match = Some(name.to_string());
+            }
+        }
+
+        best_match
+    }
+
     pub fn check_param_swap(fund_input: &str, value_input: &str) -> Option<String> {
         // If fund_input is a number but not 6 digits, and value_input is exactly 6 digits
         let is_fund_num = fund_input.chars().all(|c| c.is_ascii_digit());
@@ -335,7 +501,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(&Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()),
         )
         .expect("Failed to add fund");
 
@@ -373,7 +539,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(&Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()),
         )
         .expect("Failed to add fund");
 
@@ -455,7 +621,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(&Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()),
         )
         .expect("Failed to add fund");
 
