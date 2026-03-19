@@ -2,78 +2,62 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## 项目概览
 
-This is a monorepo called "skills" containing AI skills and CLI tools. It uses **OpenSpec** (规范驱动开发) workflow for managing feature development.
+skills 是一个 AI 技能和工具的 monorepo，采用 **OpenSpec**（规范驱动开发）流程管理功能变更。
 
-### Core Components
+核心组件：
 
-1. **Fund Manager** (`skills/fund-manager/`): A Rust CLI tool for tracking and analyzing personal fund investments
-2. **Trending Skill** (`skills/trending.md`): Gets trending topics from major Chinese platforms
+- `skills/fund-manager/` — Rust CLI 基金管理工具（详见其 [CLAUDE.md](skills/fund-manager/CLAUDE.md)）
+- `skills/trending.md` — 热搜技能定义（微博、知乎、头条、抖音、百度）
+- `openspec/` — OpenSpec 规范和变更记录
 
-## Building and Running
+## 常用命令
 
-### Fund Manager
+### Fund Manager（在 `skills/fund-manager/` 下运行）
 
 ```bash
-cd skills/fund-manager
-cargo build          # Build the project
-cargo run -- [args]  # Run with arguments
-cargo test           # Run all tests
-cargo test <name>    # Run a specific test
-cargo fmt            # Format code
-cargo clippy         # Lint code
+cargo build            # 构建
+cargo run -- [args]    # 运行
+cargo test             # 测试
 ```
 
-### OpenSpec Workflow
+### OpenSpec 工作流
 
-Use these slash commands for the OpenSpec development process:
+通过 Claude Code skills 或 `.claude/commands/opsx/` 中的命令使用：
 
-- `/opsx:propose` - Propose a new change with all artifacts
-- `/opsx:explore` - Explore and design a change
-- `/opsx:apply` - Implement tasks from a change
-- `/opsx:archive` - Archive a completed change
+- `opsx-propose` — 创建变更提案（proposal.md + design.md + tasks.md）
+- `opsx-explore` — 探索模式，思考和调查问题
+- `opsx-apply` — 实施变更任务
+- `opsx-archive` — 完成后归档变更
 
-## Architecture
+变更生命周期：propose → explore → apply → archive
 
-### Fund Manager Structure
+归档变更位于 `openspec/changes/archive/`，活跃变更位于 `openspec/changes/`。
+
+## 目录结构
 
 ```
-skills/fund-manager/
-├── src/
-│   ├── main.rs       # Entry point, command dispatch
-│   ├── cli.rs        # CLI command definitions (clap)
-│   ├── db.rs         # SQLite database operations
-│   ├── config.rs     # Configuration management
-│   ├── sync.rs       # Data synchronization logic
-│   ├── resolver.rs   # Smart input resolution
-│   ├── finance.rs    # Financial calculations
-│   ├── provider/     # Data providers (implement traits)
-│   └── db_tests.rs   # Unit tests for database
-└── tests/
-    └── cli_tests.rs  # Integration tests
+.
+├── openspec/
+│   ├── config.yaml           # OpenSpec 配置（schema: spec-driven）
+│   ├── specs/                # 活跃规范（各含 spec.md）
+│   └── changes/
+│       ├── archive/          # 已归档变更（各含 proposal.md, design.md, tasks.md）
+│       └── <active-changes>/ # 进行中的变更
+├── skills/
+│   ├── fund-manager/         # Rust CLI 基金管理工具
+│   └── trending.md           # 热搜技能定义
+├── .claude/                  # Claude Code 配置
+│   ├── commands/opsx/        # opsx 命令定义
+│   └── skills/               # 技能定义
+├── .gemini/                  # Gemini CLI 配置
+└── .github/prompts/          # GitHub Copilot 提示词
 ```
 
-### Key Patterns
+## 开发规范
 
-- **Data Providers**: Implement `DataProvider` trait in `src/provider/` to add new fund data sources
-- **Database**: SQLite via rusqlite, schema defined in `db.rs`
-- **Async**: Use tokio for async operations
-- **CLI**: Uses clap derive macros, interactive prompts via inquire
-
-## Development Conventions
-
-1. All major features must go through OpenSpec workflow (proposal → design → tasks)
-2. Changes are documented in `openspec/changes/<change-name>/`
-3. Use `cargo fmt` before committing
-4. Write tests for new functionality in `tests/` directory
-5. Provider pattern: add new data sources by implementing traits in `src/provider/`
-
-## Important Files
-
-- `skills/fund-manager/Cargo.toml` - Project dependencies
-- `openspec/specs/` - Reusable specification components
-- `.claude/skills/` - Claude Code skill definitions
-- `.claude/commands/opsx/` - OpenSpec command definitions
-
-## 注意要在项目根目录执行openspec命令，确保正确识别和管理变更
+1. **规范驱动** — 重大功能变更先通过 OpenSpec 流程定义，再实施
+2. **Rust 代码风格** — 使用 `cargo fmt` 格式化，遵循标准惯例
+3. **提交信息** — 使用 feat/fix/docs 等标准类型，归档变更用 `docs(openspec): archive change <name>`
+4. **归档文件需提交** — `openspec/changes/archive/` 下的文件也要提交到仓库
