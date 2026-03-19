@@ -2,7 +2,6 @@ use crate::db::{self, Fund};
 use crate::provider::aggregator::Aggregator;
 use crate::provider::morningstar_search::MorningstarSearchProvider;
 use chrono::{Duration, NaiveDateTime, Utc};
-use inquire::Select;
 use rusqlite::Connection;
 
 fn is_6_digit_code(input: &str) -> bool {
@@ -95,7 +94,6 @@ impl AdviceEngine {
 pub async fn resolve_fund(
     conn: &Connection,
     input: &str,
-    interactive: bool,
     local_only: bool,
 ) -> ResolveResult<Fund> {
     // 1. Precise match locally (by code or exact name)
@@ -126,42 +124,11 @@ pub async fn resolve_fund(
             return maybe_sync_fund(conn, f).await;
         }
 
-        if interactive {
-            let options: Vec<String> = local_results
-                .iter()
-                .map(|f| format!("[{}] {}", f.code, f.name))
-                .collect();
-
-            let ans = Select::new(
-                &format!(
-                    "在本地数据库中找到多个与 '{}' 相关的匹配项，请选择：",
-                    input
-                ),
-                options,
-            )
-            .prompt()
-            .map_err(|e| ResolveError::DatabaseError(e.to_string()))?;
-
-            let selected_code = ans
-                .split(']')
-                .next()
-                .unwrap()
-                .trim_start_matches('[')
-                .to_string();
-
-            let f = local_results
-                .iter()
-                .find(|r| r.code == selected_code)
-                .unwrap()
-                .clone();
-            return maybe_sync_fund(conn, f).await;
-        } else {
-            let matches: Vec<String> = local_results
-                .iter()
-                .map(|f| format!("{} ({})", f.name, f.code))
-                .collect();
-            return Err(ResolveError::Ambiguous(input.to_string(), matches));
-        }
+        let matches: Vec<String> = local_results
+            .iter()
+            .map(|f| format!("{} ({})", f.name, f.code))
+            .collect();
+        return Err(ResolveError::Ambiguous(input.to_string(), matches));
     }
 
     if local_only {
@@ -185,38 +152,11 @@ pub async fn resolve_fund(
         println!("✨ 发现匹配基金：{} ({})", r.name, r.code);
         r.code.clone()
     } else {
-        if !interactive {
-            let matches: Vec<String> = results
-                .iter()
-                .map(|r| format!("{} ({})", r.name, r.code))
-                .collect();
-            return Err(ResolveError::Ambiguous(input.to_string(), matches));
-        }
-
-        let options: Vec<String> = results
+        let matches: Vec<String> = results
             .iter()
-            .map(|r| {
-                if let Some(t) = &r.fund_type {
-                    format!("[{}] {} ({})", r.code, r.name, t)
-                } else {
-                    format!("[{}] {}", r.code, r.name)
-                }
-            })
+            .map(|r| format!("{} ({})", r.name, r.code))
             .collect();
-
-        let ans = Select::new(
-            &format!("针对 '{}' 找到多个远程匹配结果，请选择：", input),
-            options,
-        )
-        .prompt()
-        .map_err(|e| ResolveError::DatabaseError(e.to_string()))?;
-
-        // Extract code from "[code] name"
-        ans.split(']')
-            .next()
-            .unwrap()
-            .trim_start_matches('[')
-            .to_string()
+        return Err(ResolveError::Ambiguous(input.to_string(), matches));
     };
 
     // 5. Sync details and return
@@ -402,7 +342,7 @@ mod tests {
         unsafe {
             std::env::set_var("SKIP_SYNC", "1");
         }
-        let result = resolve_fund(&conn, "000300", false, false).await;
+        let result = resolve_fund(&conn, "000300", false).await;
         unsafe {
             std::env::remove_var("SKIP_SYNC");
         }
@@ -440,7 +380,7 @@ mod tests {
         unsafe {
             std::env::set_var("SKIP_SYNC", "1");
         }
-        let result = resolve_fund(&conn, "沪深300", false, false).await;
+        let result = resolve_fund(&conn, "沪深300", false).await;
         unsafe {
             std::env::remove_var("SKIP_SYNC");
         }
@@ -462,7 +402,7 @@ mod tests {
         unsafe {
             std::env::set_var("SKIP_SYNC", "1");
         }
-        let result = resolve_fund(&conn, "999999", false, true).await;
+        let result = resolve_fund(&conn, "999999", true).await;
         unsafe {
             std::env::remove_var("SKIP_SYNC");
         }
@@ -486,7 +426,7 @@ mod tests {
         unsafe {
             std::env::set_var("SKIP_SYNC", "1");
         }
-        let result = resolve_fund(&conn, "000300", false, true).await;
+        let result = resolve_fund(&conn, "000300", true).await;
         unsafe {
             std::env::remove_var("SKIP_SYNC");
         }

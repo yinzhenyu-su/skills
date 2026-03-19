@@ -39,19 +39,19 @@ pub enum Commands {
     /// 查看交易历史
     #[command(long_about = "查看特定基金的交易历史记录。\n\n示例：\n    fund history 000300")]
     History {
-        /// 基金代码或名称
-        fund: String,
+        /// 基金代码或名称（省略将列出可用基金并提示）
+        fund: Option<String>,
     },
     /// 买入基金
     #[command(
         long_about = "记录一笔买入交易。\n\n示例：\n    fund buy 000300 --money 1000\n    fund buy 000300 --money 1000 --date 2024-01-01\n    fund buy 000300 --shares 800 --nav 1.25 --date 2024-01-01"
     )]
     Buy {
-        /// 基金代码或名称
-        fund: String,
+        /// 基金代码或名称（省略将列出可用基金并提示）
+        fund: Option<String>,
         /// 投入金额
         #[arg(long)]
-        money: Decimal,
+        money: Option<Decimal>,
         /// 显式指定份额（如果不使用自动计算模式）
         #[arg(long)]
         shares: Option<Decimal>,
@@ -70,8 +70,8 @@ pub enum Commands {
         long_about = "记录一笔卖出交易。\n\n示例：\n    fund sell 000300 --shares 500\n    fund sell 000300 --money 1000 --date 2024-01-01\n    fund sell 000300 --shares 1/2 --nav 1.25 --date 2024-01-01"
     )]
     Sell {
-        /// 基金代码或名称
-        fund: String,
+        /// 基金代码或名称（省略将列出可用基金并提示）
+        fund: Option<String>,
         /// 预期收回金额 (例如 "1000")
         #[arg(long)]
         money: Option<String>,
@@ -156,7 +156,7 @@ pub enum PreviewCommands {
         long_about = "预览买入交易结果，不执行实际买入。\n\n示例：\n    fund-manager preview buy 000312 --money 5000\n    fund-manager preview buy 000312 --shares 4538.65\n    fund-manager preview buy 000312 --money 5000 --nav 1.05\n    fund-manager preview buy 000312 --money 5000 --date 2024-01-01"
     )]
     Buy {
-        /// 基金代码或名称（省略则交互式选择）
+        /// 基金代码或名称（省略将列出可用基金并提示）
         fund: Option<String>,
         /// 投入金额
         #[arg(long)]
@@ -179,7 +179,7 @@ pub enum PreviewCommands {
         long_about = "预览卖出交易结果，不执行实际卖出。\n\n示例：\n    fund-manager preview sell 000312 --shares 500\n    fund-manager preview sell 000312 --money 5500\n    fund-manager preview sell 000312 --shares 500 --nav 1.05\n    fund-manager preview sell 000312 --shares 500 --date 2024-01-01"
     )]
     Sell {
-        /// 基金代码或名称（省略则交互式选择）
+        /// 基金代码或名称（省略将列出可用基金并提示）
         fund: Option<String>,
         /// 预期收回金额 (例如 "1000")
         #[arg(long)]
@@ -244,24 +244,22 @@ pub enum WalletCommands {
 pub enum FundCommands {
     /// 手动添加一个基金到追踪列表
     #[command(
-        long_about = "手动将基金添加到本地追踪列表。\n\n示例：\n    fund fund add 000300 沪深300 --fee 0.0015"
+        long_about = "手动将基金添加到本地追踪列表。\n\n示例：\n    fund fund add 000300\n    fund fund add 000300 --fee 0.0015"
     )]
     Add {
-        /// 基金代码
-        code: String,
-        /// 基金名称
-        name: String,
+        /// 基金代码或名称（省略将列出可用基金并提示）
+        fund: Option<String>,
         /// 初始申购费率（例如 0.0015 表示 0.15%）
-        #[arg(long, default_value = "0.00")]
-        fee: String,
+        #[arg(long)]
+        fee: Option<String>,
     },
     /// 删除基金及其所有数据
     #[command(
         long_about = "从本地数据库中移除基金及其所有的交易历史记录。\n\n示例：\n    fund fund delete 000300"
     )]
     Delete {
-        /// 基金代码或名称
-        fund: String,
+        /// 基金代码或名称（省略将列出可用基金并提示）
+        fund: Option<String>,
     },
     /// 列出所有追踪中的基金
     List {
@@ -297,8 +295,8 @@ pub enum FundCommands {
         long_about = "显示基于晨星分析的基金深度健康报告。\n\n示例：\n    fund fund inspect 000513\n    fund fund inspect \"汇添富全球医疗\""
     )]
     Inspect {
-        /// 基金代码或名称
-        fund: String,
+        /// 基金代码或名称（省略将列出可用基金并提示）
+        fund: Option<String>,
         /// 强制刷新分析数据
         #[arg(short, long, default_value_t = false)]
         force: bool,

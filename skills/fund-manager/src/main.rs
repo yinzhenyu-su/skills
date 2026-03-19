@@ -6,7 +6,6 @@ use fund_manager::db;
 use fund_manager::finance;
 use fund_manager::provider::{Provider, eastmoney_lsjz::EastmoneyLsjzProvider};
 use fund_manager::{config, resolver, sync};
-use inquire::Select;
 use rusqlite::Connection;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
@@ -106,7 +105,7 @@ fn resolve_wallet_id(conn: &Connection, wallet_name: Option<String>) -> i64 {
         db::get_wallet_id_by_name(conn, &name)
             .expect("数据库错误")
             .unwrap_or_else(|| {
-                eprintln!("❌ 错误：未找到名为 '{}' 的钱包。", name);
+                eprintln!("❌ 未找到名为 '{}' 的钱包。", name);
                 std::process::exit(1);
             })
     } else {
@@ -117,19 +116,14 @@ fn resolve_wallet_id(conn: &Connection, wallet_name: Option<String>) -> i64 {
         // 没有活跃钱包，检查是否有其他钱包
         let all_wallets = db::get_all_wallets(conn).expect("数据库错误");
         if !all_wallets.is_empty() {
-            // 有其他钱包，询问用户选择
             let wallet_names: Vec<String> = all_wallets.iter().map(|w| w.name.clone()).collect();
-            let selected = Select::new("未设置活跃钱包，请选择要使用的钱包：", wallet_names)
-                .prompt()
-                .expect("无法获取用户选择");
-            let wallet_id = all_wallets
-                .iter()
-                .find(|w| w.name == selected)
-                .expect("钱包不存在")
-                .id;
-            db::set_active_wallet(conn, wallet_id).expect("无法设置活跃钱包");
-            println!("已切换至钱包：{}", selected);
-            return wallet_id;
+            eprintln!("❌ 未设置活跃钱包，请先用 'fund wallet use <名称>' 选择");
+            eprintln!("   可用的钱包：");
+            for name in &wallet_names {
+                eprintln!("   - {}", name);
+            }
+            eprintln!("   用法示例：fund wallet use {}", wallet_names[0]);
+            std::process::exit(1);
         }
         // 没有任何钱包，自动创建"默认钱包"
         let default_name = "默认钱包";
@@ -143,7 +137,7 @@ fn resolve_wallet_id(conn: &Connection, wallet_name: Option<String>) -> i64 {
     }
 }
 
-fn resolve_fund_interactively(
+fn require_fund_or_exit(
     conn: &Connection,
     fund: Option<String>,
     wallet_id: i64,
@@ -152,18 +146,44 @@ fn resolve_fund_interactively(
     if let Some(f) = fund {
         return f;
     }
+    
     // 没有提供基金，列出已追踪基金作为提示
-    let funds = db::get_funds_with_valuations(conn, Some(wallet_id)).expect("数据库错误");
-    if funds.is_empty() {
-        eprintln!("❌ 缺少参数 <FUND>：请提供基金代码或名称");
-        eprintln!("当前钱包中没有追踪任何基金，请先用 `fund fund add` 添加基金");
+    let all_funds = db::get_funds_with_valuations(conn, Some(wallet_id)).unwrap_or_default();
+    
+    let is_sell = subcommand == "sell" || subcommand == "preview sell";
+    let funds: Vec<_> = if is_sell {
+        all_funds.into_iter().filter(|fv| fv.total_shares > 0.0).collect()
     } else {
-        eprintln!("❌ 缺少参数 <FUND>：请提供基金代码或名称");
-        eprintln!("当前追踪的基金：");
-        for fv in &funds {
-            eprintln!("  {} ({})", fv.fund.name, fv.fund.code);
+        all_funds
+    };
+
+    if funds.is_empty() {
+        eprintln!("❌ 缺少基金参数：请提供基金代码或名称");
+        if is_sell {
+            eprintln!("   当前钱包中没有持有任何基金，无法卖出");
+        } else {
+            eprintln!("   当前钱包中没有追踪任何基金，请先用 'fund fund add' 添加基金");
         }
-        eprintln!("用法示例：fund-manager preview {} {} --money 5000", subcommand, funds[0].fund.code);
+    } else {
+        eprintln!("❌ 缺少基金参数：请提供基金代码或名称");
+        if is_sell {
+            eprintln!("   当前持有的基金：");
+        } else {
+            eprintln!("   当前追踪的基金：");
+        }
+        for fv in &funds {
+            eprintln!("   - {} ({})", fv.fund.name, fv.fund.code);
+        }
+        
+        let example_args = if is_sell {
+            "--shares 500"
+        } else if subcommand.contains("buy") {
+            "--money 5000"
+        } else {
+            ""
+        };
+        let space = if example_args.is_empty() { "" } else { " " };
+        eprintln!("   用法示例：fund-manager {} {}{}{}", subcommand, funds[0].fund.code, space, example_args);
     }
     std::process::exit(1);
 }
@@ -184,7 +204,7 @@ fn confirm_action(prompt: &str, force_yes: bool) -> bool {
 }
 
 fn print_resolve_error(conn: &Connection, err: resolver::ResolveError, context_val: Option<&str>) {
-    eprintln!("❌ 错误：{}", err);
+    eprintln!("❌ {}", err);
 
     if let Some(val) = context_val {
         if let resolver::ResolveError::NotFound(ref input) = err {
@@ -210,7 +230,7 @@ async fn handle_inspect(
     identifier: &str,
     force: bool,
 ) -> resolver::ResolveResult<()> {
-    let fund = resolver::resolve_fund(conn, identifier, true, false).await?;
+    let fund = resolver::resolve_fund(conn, identifier, true).await?;
 
     let analysis_opt = db::get_fund_analysis(conn, &fund.code)
         .map_err(|e| resolver::ResolveError::DatabaseError(e.to_string()))?;
@@ -489,7 +509,7 @@ async fn handle_import(
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Resolve fund (non-interactive)
-        match resolver::resolve_fund(conn, &item.raw_input, false, false).await {
+        match resolver::resolve_fund(conn, &item.raw_input, false).await {
             Ok(fund_obj) => {
                 // Check existing holdings
                 let current_shares =
@@ -700,7 +720,7 @@ async fn handle_import_holding(
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Resolve fund name to code
-        match resolver::resolve_fund(conn, &item.fund_name, false, false).await {
+        match resolver::resolve_fund(conn, &item.fund_name, false).await {
             Ok(fund_obj) => {
                 // Check existing import record
                 let current_shares =
@@ -794,7 +814,7 @@ async fn handle_preview_buy(
     nav: Option<Decimal>,
     date: Option<&str>,
 ) {
-    let fund_obj = match resolver::resolve_fund(conn, fund, true, false).await {
+    let fund_obj = match resolver::resolve_fund(conn, fund, true).await {
         Ok(f) => f,
         Err(e) => {
             print_resolve_error(&conn, e, None);
@@ -807,19 +827,19 @@ async fn handle_preview_buy(
         (get_today(), nav_val)
     } else if let Some(d) = date {
         let parsed_date = parse_date(d).unwrap_or_else(|e| {
-            eprintln!("❌ 错误：{}", e);
+            eprintln!("❌ {}", e);
             std::process::exit(1);
         });
         let nav_result = smart_nav_lookup(conn, &fund_obj.code, &parsed_date)
             .await
             .unwrap_or_else(|e| {
-                eprintln!("❌ 错误：净值查询失败：{}", e);
+                eprintln!("❌ 净值查询失败：{}", e);
                 std::process::exit(1);
             });
         match nav_result {
             Some((d, n)) => (d, n),
             None => {
-                eprintln!("❌ 错误：未找到 {} 的净值数据", fund_obj.code);
+                eprintln!("❌ 未找到 {} 的净值数据", fund_obj.code);
                 std::process::exit(1);
             }
         }
@@ -827,13 +847,13 @@ async fn handle_preview_buy(
         let nav_result = smart_nav_lookup(conn, &fund_obj.code, &get_today())
             .await
             .unwrap_or_else(|e| {
-                eprintln!("❌ 错误：净值查询失败：{}", e);
+                eprintln!("❌ 净值查询失败：{}", e);
                 std::process::exit(1);
             });
         match nav_result {
             Some((d, n)) => (d, n),
             None => {
-                eprintln!("❌ 错误：未找到 {} 的净值数据", fund_obj.code);
+                eprintln!("❌ 未找到 {} 的净值数据", fund_obj.code);
                 std::process::exit(1);
             }
         }
@@ -933,7 +953,7 @@ async fn handle_preview_sell(
     nav: Option<String>,
     date: Option<&str>,
 ) {
-    let fund_obj = match resolver::resolve_fund(conn, fund, true, false).await {
+    let fund_obj = match resolver::resolve_fund(conn, fund, true).await {
         Ok(f) => f,
         Err(e) => {
             print_resolve_error(&conn, e, None);
@@ -945,7 +965,7 @@ async fn handle_preview_sell(
     let current_shares =
         db::get_fund_shares(conn, wallet_id, &fund_obj.code).unwrap_or(Decimal::ZERO);
     if current_shares.is_zero() {
-        eprintln!("❌ 错误：你在当前钱包中未持有该基金");
+        eprintln!("❌ 你在当前钱包中未持有该基金");
         std::process::exit(1);
     }
 
@@ -963,25 +983,25 @@ async fn handle_preview_sell(
     // Resolve NAV
     let (nav_date, nav_value) = if let Some(ref nav_val_str) = nav {
         let nav_val = Decimal::from_str(nav_val_str).unwrap_or_else(|e| {
-            eprintln!("❌ 错误：无效的净值格式：{}", e);
+            eprintln!("❌ 无效的净值格式：{}", e);
             std::process::exit(1);
         });
         (get_today(), nav_val)
     } else if let Some(d) = date {
         let parsed_date = parse_date(d).unwrap_or_else(|e| {
-            eprintln!("❌ 错误：{}", e);
+            eprintln!("❌ {}", e);
             std::process::exit(1);
         });
         let nav_result = smart_nav_lookup(conn, &fund_obj.code, &parsed_date)
             .await
             .unwrap_or_else(|e| {
-                eprintln!("❌ 错误：净值查询失败：{}", e);
+                eprintln!("❌ 净值查询失败：{}", e);
                 std::process::exit(1);
             });
         match nav_result {
             Some((d, n)) => (d, n),
             None => {
-                eprintln!("❌ 错误：未找到 {} 的净值数据", fund_obj.code);
+                eprintln!("❌ 未找到 {} 的净值数据", fund_obj.code);
                 std::process::exit(1);
             }
         }
@@ -989,13 +1009,13 @@ async fn handle_preview_sell(
         let nav_result = smart_nav_lookup(conn, &fund_obj.code, &get_today())
             .await
             .unwrap_or_else(|e| {
-                eprintln!("❌ 错误：净值查询失败：{}", e);
+                eprintln!("❌ 净值查询失败：{}", e);
                 std::process::exit(1);
             });
         match nav_result {
             Some((d, n)) => (d, n),
             None => {
-                eprintln!("❌ 错误：未找到 {} 的净值数据", fund_obj.code);
+                eprintln!("❌ 未找到 {} 的净值数据", fund_obj.code);
                 std::process::exit(1);
             }
         }
@@ -1004,7 +1024,7 @@ async fn handle_preview_sell(
     // Calculate shares to sell based on money or shares input
     let (sell_shares, sell_money, fee) = if let Some(ref s) = shares {
         let parsed_shares = finance::resolve_shares(s, current_shares).unwrap_or_else(|e| {
-            eprintln!("❌ 错误：{}", e);
+            eprintln!("❌ {}", e);
             std::process::exit(1);
         });
 
@@ -1020,7 +1040,7 @@ async fn handle_preview_sell(
         (parsed_shares, total_money.round_dp(2), sell_fee)
     } else if let Some(ref m_str) = money {
         let parsed_money = Decimal::from_str(m_str).unwrap_or_else(|e| {
-            eprintln!("❌ 错误：无效的金额格式：{}", e);
+            eprintln!("❌ 无效的金额格式：{}", e);
             std::process::exit(1);
         });
         let sell_shares = (parsed_money / nav_value).round_dp(2);
@@ -1098,10 +1118,10 @@ async fn main() {
                 Ok(_) => println!("成功添加钱包：{}", name),
                 Err(e) => {
                     if e.to_string().contains("UNIQUE constraint failed") {
-                        eprintln!("❌ 错误：钱包 '{}' 已存在。", name);
+                        eprintln!("❌ 钱包 '{}' 已存在。", name);
                         std::process::exit(1);
                     } else {
-                        eprintln!("❌ 错误（执行过程失败）：添加钱包：{}", e);
+                        eprintln!("❌ 添加钱包：{}", e);
                         std::process::exit(1);
                     }
                 }
@@ -1161,11 +1181,11 @@ async fn main() {
                     println!("当前已切换至钱包：{}", name);
                 }
                 Ok(None) => {
-                    eprintln!("❌ 错误：钱包 '{}' 不存在。", name);
+                    eprintln!("❌ 钱包 '{}' 不存在。", name);
                     std::process::exit(1);
                 }
                 Err(e) => {
-                    eprintln!("❌ 错误（查找失败）：wallet: {}", e);
+                    eprintln!("❌ wallet: {}", e);
                     std::process::exit(1);
                 }
             },
@@ -1191,7 +1211,7 @@ async fn main() {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("❌ 错误：无法删除钱包：{}", e);
+                                eprintln!("❌ 无法删除钱包：{}", e);
                                 std::process::exit(1);
                             }
                         }
@@ -1200,7 +1220,7 @@ async fn main() {
                     }
                 }
                 Ok(None) => {
-                    eprintln!("❌ 错误：找不到名为 '{}' 的钱包。", name);
+                    eprintln!("❌ 找不到名为 '{}' 的钱包。", name);
                     std::process::exit(1);
                 }
                 Err(e) => {
@@ -1215,7 +1235,7 @@ async fn main() {
                         // 检查新名称是否已存在
                         match db::get_wallet_id_by_name(&conn, &new_name) {
                             Ok(Some(_)) => {
-                                eprintln!("❌ 错误：钱包「{}」已存在。", new_name);
+                                eprintln!("❌ 钱包'{}'已存在。", new_name);
                                 std::process::exit(1);
                             }
                             Ok(None) => {
@@ -1223,12 +1243,12 @@ async fn main() {
                                 match db::rename_wallet(&conn, &old_name, &new_name) {
                                     Ok(_) => {
                                         println!(
-                                            "✅ 钱包已从「{}」重命名为「{}」。",
+                                            "✅ 钱包已从'{}'重命名为'{}'。",
                                             old_name, new_name
                                         );
                                     }
                                     Err(e) => {
-                                        eprintln!("❌ 错误：重命名失败：{}", e);
+                                        eprintln!("❌ 重命名失败：{}", e);
                                         std::process::exit(1);
                                     }
                                 }
@@ -1240,7 +1260,7 @@ async fn main() {
                         }
                     }
                     Ok(None) => {
-                        eprintln!("❌ 错误：找不到名为「{}」的钱包。", old_name);
+                        eprintln!("❌ 找不到名为'{}'的钱包。", old_name);
                         std::process::exit(1);
                     }
                     Err(e) => {
@@ -1251,26 +1271,42 @@ async fn main() {
             }
         },
         Commands::Fund { command } => match command {
-            FundCommands::Add { code, name, fee } => {
+            FundCommands::Add { fund, fee } => {
+                let wallet_id = resolve_wallet_id(&conn, None);
+                let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "fund add");
+                
+                let fund_obj = match resolver::resolve_fund(&conn, &fund_input, false).await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        print_resolve_error(&conn, e, None);
+                        std::process::exit(1);
+                    }
+                };
+
                 db::add_fund(
                     &conn,
-                    &code,
-                    &name,
+                    &fund_obj.code,
+                    &fund_obj.name,
                     None,
                     None,
                     None,
                     None,
                     None,
-                    Some(&fee),
+                    fee.as_deref(),
                     None,
                     None,
                     None,
                 )
-                .expect("无法添加基金");
-                println!("成功添加基金：{} ({})", name, code);
+                .unwrap_or_else(|e| {
+                    eprintln!("❌ 无法添加基金：{}", e);
+                    std::process::exit(1);
+                });
+                println!("成功添加基金：{} ({})", fund_obj.name, fund_obj.code);
             }
             FundCommands::Delete { fund } => {
-                let fund_obj = match resolver::resolve_fund(&conn, &fund, true, true).await {
+                let wallet_id = resolve_wallet_id(&conn, None);
+                let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "fund delete");
+                let fund_obj = match resolver::resolve_fund(&conn, &fund_input, true).await {
                     Ok(f) => f,
                     Err(e) => {
                         print_resolve_error(&conn, e, None);
@@ -1283,7 +1319,10 @@ async fn main() {
                     fund_obj.code
                 );
                 if confirm_action(&prompt, cli.yes) {
-                    db::delete_fund(&conn, &fund_obj.code).expect("无法删除基金");
+                    if let Err(e) = db::delete_fund(&conn, &fund_obj.code) {
+                        eprintln!("❌ 无法删除基金：{}", e);
+                        std::process::exit(1);
+                    }
                     println!("成功删除基金：{}", fund_obj.code);
                 } else {
                     println!("操作已取消。");
@@ -1357,7 +1396,7 @@ async fn main() {
                 fund,
             } => {
                 if !all && fund.is_none() {
-                    eprintln!("❌ 错误：请指定基金标识符或使用 --all 进行全量同步。");
+                    eprintln!("❌ 请指定基金标识符或使用 --all 进行全量同步。");
                     eprintln!(
                         "💡 提示：运行 'fund fund sync --all' 可以同步所有持有基金的元数据。"
                     );
@@ -1365,7 +1404,7 @@ async fn main() {
                 }
 
                 let fund_code = if let Some(ref identifier) = fund {
-                    match resolver::resolve_fund(&conn, identifier, true, false).await {
+                    match resolver::resolve_fund(&conn, identifier, true).await {
                         Ok(f) => Some(f.code),
                         Err(e) => {
                             print_resolve_error(&conn, e, None);
@@ -1377,13 +1416,15 @@ async fn main() {
                 };
 
                 if let Err(e) = sync::sync_funds(&conn, fund_code, start, end, auto_fill).await {
-                    eprintln!("❌ 错误（执行过程失败）：同步：{}", e);
+                    eprintln!("❌ 同步：{}", e);
                     std::process::exit(1);
                 }
                 println!("✅ 同步已完成。");
             }
             FundCommands::Inspect { fund, force } => {
-                if let Err(e) = handle_inspect(&conn, &fund, force).await {
+                let wallet_id = resolve_wallet_id(&conn, None);
+                let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "fund inspect");
+                if let Err(e) = handle_inspect(&conn, &fund_input, force).await {
                     print_resolve_error(&conn, e, None);
                     std::process::exit(1);
                 }
@@ -1439,8 +1480,10 @@ async fn main() {
             }
             println!("{table}");
         }
-        Commands::History { fund: _ } => {
-            println!("交易历史记录 (暂未实现)");
+        Commands::History { fund } => {
+            let wallet_id = resolve_wallet_id(&conn, None);
+            let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "history");
+            println!("交易历史记录 (暂未实现，基金: {})", fund_input);
         }
         Commands::Buy {
             fund,
@@ -1450,18 +1493,34 @@ async fn main() {
             wallet,
             date,
         } => {
-            let wallet_id = resolve_wallet_id(&conn, wallet);
-            let fund_obj = match resolver::resolve_fund(&conn, &fund, true, false).await {
+            let wallet_id = resolve_wallet_id(&conn, wallet.clone());
+            let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "buy");
+
+            // Check for money parameter (auto mode requires it)
+            let money_val = if let Some(m) = money {
+                m
+            } else if shares.is_some() && nav.is_some() {
+                // Manual mode with shares+nav, money not required
+                // We'll handle this below
+                Decimal::ZERO // placeholder, will be recalculated
+            } else {
+                eprintln!("❌ 缺少参数：请提供 --money 或 --shares 之一");
+                eprintln!("   --money <金额>   按投入金额买入，例如：--money 5000");
+                eprintln!("   --shares <份额>  按指定份额买入，例如：--shares 4538.65");
+                std::process::exit(1);
+            };
+
+            let fund_obj = match resolver::resolve_fund(&conn, &fund_input, true).await {
                 Ok(f) => f,
                 Err(e) => {
-                    print_resolve_error(&conn, e, Some(&money.to_string()));
+                    print_resolve_error(&conn, e, Some(&money_val.to_string()));
                     std::process::exit(1);
                 }
             };
 
             let tx_date = if let Some(d) = date {
                 parse_date(&d).unwrap_or_else(|e| {
-                    eprintln!("❌ 错误：{}", e);
+                    eprintln!("❌ {}", e);
                     std::process::exit(1);
                 })
             } else {
@@ -1470,9 +1529,13 @@ async fn main() {
 
             // Auto mode: use smart NAV lookup (local DB -> API -> forward lookup)
             if shares.is_none() && nav.is_none() {
-                let nav_result = smart_nav_lookup(&conn, &fund_obj.code, &tx_date)
-                    .await
-                    .expect("无法查询净值");
+                let nav_result = match smart_nav_lookup(&conn, &fund_obj.code, &tx_date).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("❌ 净值查询失败：{}", e);
+                        std::process::exit(1);
+                    }
+                };
 
                 if let Some((actual_date, nav_val)) = nav_result {
                     // Purchase Fee priority: sales_fee -> 0.15% (default)
@@ -1489,20 +1552,22 @@ async fn main() {
                         (dec!(0.0015), "默认费率: 0.15%".to_string())
                     };
 
-                    let res = finance::calculate_purchase(money, nav_val, fee_rate_dec);
-                    db::add_transaction(
+                    let res = finance::calculate_purchase(money_val, nav_val, fee_rate_dec);
+                    if let Err(e) = db::add_transaction(
                         &conn,
                         wallet_id,
                         &fund_obj.code,
                         "buy",
-                        &money.to_string(),
+                        &money_val.to_string(),
                         Some(&res.shares.to_string()),
                         Some(&nav_val.to_string()),
                         &res.fee.to_string(),
                         &actual_date,
                         "settled",
-                    )
-                    .expect("记录交易失败");
+                    ) {
+                        eprintln!("❌ 记录交易失败：{}", e);
+                        std::process::exit(1);
+                    }
 
                     if actual_date != tx_date {
                         println!(
@@ -1521,21 +1586,23 @@ async fn main() {
                     } else {
                         dec!(0.0015)
                     };
-                    let fee = (money * fee_rate_dec / (dec!(1) + fee_rate_dec)).round_dp(2);
+                    let fee = (money_val * fee_rate_dec / (dec!(1) + fee_rate_dec)).round_dp(2);
 
-                    db::add_transaction(
+                    if let Err(e) = db::add_transaction(
                         &conn,
                         wallet_id,
                         &fund_obj.code,
                         "buy",
-                        &money.to_string(),
+                        &money_val.to_string(),
                         None,
                         None,
                         &fee.to_string(),
                         &tx_date,
                         "pending",
-                    )
-                    .expect("记录交易失败");
+                    ) {
+                        eprintln!("❌ 记录交易失败：{}", e);
+                        std::process::exit(1);
+                    }
 
                     println!(
                         "基金 {} 在 {} 及其前20天内的净值数据均不可用。已创建待确认交易。",
@@ -1545,21 +1612,34 @@ async fn main() {
                 }
             } else {
                 // Manual mode: user provides shares and nav
-                let s = shares.expect("手动买入模式必须提供 --shares");
-                let n = nav.expect("手动买入模式必须提供 --nav");
-                db::add_transaction(
+                let s = shares.unwrap_or_else(|| {
+                    eprintln!("❌ 手动买入模式必须提供 --shares 参数");
+                    std::process::exit(1);
+                });
+                let n = nav.unwrap_or_else(|| {
+                    eprintln!("❌ 手动买入模式必须提供 --nav 参数");
+                    std::process::exit(1);
+                });
+                let manual_money = if money.is_some() {
+                    money_val.to_string()
+                } else {
+                    (s * n).round_dp(2).to_string()
+                };
+                if let Err(e) = db::add_transaction(
                     &conn,
                     wallet_id,
                     &fund_obj.code,
                     "buy",
-                    &money.to_string(),
+                    &manual_money,
                     Some(&s.to_string()),
                     Some(&n.to_string()),
                     "0",
                     &tx_date,
                     "settled",
-                )
-                .expect("记录交易失败");
+                ) {
+                    eprintln!("❌ 记录交易失败：{}", e);
+                    std::process::exit(1);
+                }
 
                 println!(
                     "成功买入 {}: {} 份额 (净值: {})，交易日期: {}",
@@ -1577,8 +1657,9 @@ async fn main() {
             date,
         } => {
             let wallet_id = resolve_wallet_id(&conn, wallet);
+            let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "sell");
 
-            let fund_obj = match resolver::resolve_fund(&conn, &fund, true, false).await {
+            let fund_obj = match resolver::resolve_fund(&conn, &fund_input, true).await {
                 Ok(f) => f,
                 Err(e) => {
                     let context = money.as_deref().or(shares.as_deref());
@@ -1589,7 +1670,7 @@ async fn main() {
 
             let tx_date = if let Some(d) = date {
                 parse_date(&d).unwrap_or_else(|e| {
-                    eprintln!("❌ 错误：{}", e);
+                    eprintln!("❌ {}", e);
                     std::process::exit(1);
                 })
             } else {
@@ -1597,16 +1678,26 @@ async fn main() {
             };
 
             let current_shares =
-                db::get_fund_shares(&conn, wallet_id, &fund_obj.code).expect("数据库错误");
+                db::get_fund_shares(&conn, wallet_id, &fund_obj.code).unwrap_or_else(|e| {
+                    eprintln!("❌ 数据库操作失败：{}", e);
+                    std::process::exit(1);
+                });
 
             // 1. Resolve NAV (use find_prev_available_nav for sell - need previous day's NAV)
             let (final_nav, _actual_date) = if let Some(n_str) = nav {
-                let n = Decimal::from_str(&n_str).expect("无效的 --nav 参数");
+                let n = Decimal::from_str(&n_str).unwrap_or_else(|_| {
+                    eprintln!("❌ 无效的净值格式 '{}'：请输入有效数字", n_str);
+                    eprintln!("   用法示例：fund-manager sell {} --shares 500 --nav 1.25", fund_obj.code);
+                    std::process::exit(1);
+                });
                 (n, tx_date.clone())
             } else {
                 // Auto mode: use smart NAV lookup (find previous available NAV for sell)
                 let nav_result = db::find_prev_available_nav(&conn, &fund_obj.code, &tx_date, 20)
-                    .expect("数据库错误");
+                    .unwrap_or_else(|e| {
+                        eprintln!("❌ 数据库操作失败：{}", e);
+                        std::process::exit(1);
+                    });
                 if let Some((actual_date, n)) = nav_result {
                     if actual_date != tx_date {
                         println!(
@@ -1618,9 +1709,20 @@ async fn main() {
                 } else {
                     // Fall back to latest NAV
                     let latest_nav_str = db::get_latest_nav(&conn, &fund_obj.code)
-                        .expect("数据库错误")
-                        .expect("未找到该基金的净值数据。请使用 --nav 手动指定。");
-                    let n = Decimal::from_str(&latest_nav_str).expect("数据库中的净值数据无效");
+                        .unwrap_or_else(|e| {
+                            eprintln!("❌ 数据库操作失败：{}", e);
+                            std::process::exit(1);
+                        })
+                        .unwrap_or_else(|| {
+                            eprintln!("❌ 未找到基金 '{}' 的净值数据", fund_obj.code);
+                            eprintln!("   请使用 --nav 手动指定净值");
+                            eprintln!("   用法示例：fund-manager sell {} --shares 500 --nav 1.25", fund_obj.code);
+                            std::process::exit(1);
+                        });
+                    let n = Decimal::from_str(&latest_nav_str).unwrap_or_else(|e| {
+                        eprintln!("❌ 数据库中的净值数据无效：{}", e);
+                        std::process::exit(1);
+                    });
                     println!("💡 提示：无历史净值数据可用，已使用最新净值: {}", n);
                     (n, tx_date.clone())
                 }
@@ -1628,9 +1730,15 @@ async fn main() {
 
             // 2. Resolve Shares
             let final_shares = if let Some(s_input) = shares {
-                finance::resolve_shares(&s_input, current_shares).expect("无效的 --shares 参数")
+                finance::resolve_shares(&s_input, current_shares).unwrap_or_else(|e| {
+                    eprintln!("❌ 无效的 --shares 参数：{}", e);
+                    std::process::exit(1);
+                })
             } else if let Some(m_str) = money {
-                let m = Decimal::from_str(&m_str).expect("无效的 --money 参数");
+                let m = Decimal::from_str(&m_str).unwrap_or_else(|_| {
+                    eprintln!("❌ 无效的金额格式 '{}'：请输入有效数字", m_str);
+                    std::process::exit(1);
+                });
                 (m / final_nav).round_dp(2)
             } else {
                 panic!("请为卖出命令提供 --shares 或 --money 参数。");
@@ -1650,7 +1758,10 @@ async fn main() {
             // 3. Resolve Fee
             let total_money = final_shares * final_nav;
             let final_fee = if let Some(f_input) = fee {
-                finance::resolve_fee(&f_input, total_money).expect("无效的 --fee 参数")
+                finance::resolve_fee(&f_input, total_money).unwrap_or_else(|e| {
+                    eprintln!("❌ 无效的 --fee 参数：{}", e);
+                    std::process::exit(1);
+                })
             } else {
                 Decimal::ZERO
             };
@@ -1688,7 +1799,10 @@ async fn main() {
                     &tx_date,
                     "settled",
                 )
-                .expect("记录交易失败");
+                .unwrap_or_else(|e| {
+                    eprintln!("❌ 记录交易失败：{}", e);
+                    std::process::exit(1);
+                });
 
                 println!(
                     "成功卖出 {}: {} 份额，交易日期: {}",
@@ -1709,7 +1823,7 @@ async fn main() {
             let wallet_id = resolve_wallet_id(&conn, wallet);
             let validated_date = if let Some(d) = date {
                 Some(parse_date(&d).unwrap_or_else(|e| {
-                    eprintln!("❌ 错误：{}", e);
+                    eprintln!("❌ {}", e);
                     std::process::exit(1);
                 }))
             } else {
@@ -1726,7 +1840,7 @@ async fn main() {
             )
             .await
             {
-                eprintln!("❌ 错误（执行过程失败）：导入：{}", e);
+                eprintln!("❌ 导入：{}", e);
                 std::process::exit(1);
             }
         }
@@ -1740,7 +1854,7 @@ async fn main() {
             if let Err(e) =
                 handle_import_holding(&conn, wallet_id, &file, merge, override_flag).await
             {
-                eprintln!("❌ 错误（执行过程失败）：导入持仓：{}", e);
+                eprintln!("❌ 导入持仓：{}", e);
                 std::process::exit(1);
             }
         }
@@ -1754,7 +1868,7 @@ async fn main() {
                 wallet,
             } => {
                 let wallet_id = resolve_wallet_id(&conn, wallet);
-                let fund_input = resolve_fund_interactively(&conn, fund, wallet_id, "buy");
+                let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "buy");
                 handle_preview_buy(&conn, wallet_id, &fund_input, money, shares, nav, date.as_deref())
                     .await;
             }
@@ -1767,7 +1881,7 @@ async fn main() {
                 wallet,
             } => {
                 let wallet_id = resolve_wallet_id(&conn, wallet);
-                let fund_input = resolve_fund_interactively(&conn, fund, wallet_id, "sell");
+                let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "sell");
                 handle_preview_sell(&conn, wallet_id, &fund_input, money, shares, nav, date.as_deref())
                     .await;
             }

@@ -223,10 +223,7 @@ fn test_e2e_full_lifecycle() {
     // 2. Add Fund
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("000001")
-        .arg("Fund1")
+        .arg("fund").arg("add").arg("000001")
         .assert()
         .success();
 
@@ -266,7 +263,7 @@ fn test_e2e_full_lifecycle() {
         .arg("1.50")
         .arg("--date")
         .arg(TEST_DATE)
-        .write_stdin("y\n")
+        .arg("-y")
         .assert()
         .success();
 
@@ -285,7 +282,7 @@ fn test_e2e_full_lifecycle() {
         .arg("fund")
         .arg("delete")
         .arg("000001")
-        .write_stdin("y\n")
+        .arg("-y")
         .assert()
         .success();
 
@@ -409,10 +406,7 @@ fn test_fund_delete_cascade() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("000300")
-        .arg("沪深300")
+        .arg("fund").arg("add").arg("000300")
         .assert()
         .success();
 
@@ -436,7 +430,7 @@ fn test_fund_delete_cascade() {
         .arg("fund")
         .arg("delete")
         .arg("000300")
-        .write_stdin("y\n")
+        .arg("-y")
         .assert()
         .success();
 
@@ -476,10 +470,7 @@ fn test_fund_delete_with_yes_flag() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("000300")
-        .arg("沪深300")
+        .arg("fund").arg("add").arg("000300")
         .assert()
         .success();
 
@@ -518,10 +509,7 @@ fn test_sell_basic_flow() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("000300")
-        .arg("沪深300")
+        .arg("fund").arg("add").arg("000300")
         .assert()
         .success();
 
@@ -549,7 +537,7 @@ fn test_sell_basic_flow() {
         .arg("1.2")
         .arg("--date")
         .arg(TEST_DATE)
-        .write_stdin("y\n")
+        .arg("-y")
         .assert()
         .success();
 
@@ -587,10 +575,7 @@ fn test_sell_auto_calculation() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("000300")
-        .arg("沪深300")
+        .arg("fund").arg("add").arg("000300")
         .assert()
         .success();
 
@@ -630,7 +615,7 @@ fn test_sell_auto_calculation() {
         .arg("600")
         .arg("--date")
         .arg("2026-03-09")
-        .write_stdin("y\n")
+        .arg("-y")
         .assert()
         .success();
 }
@@ -660,10 +645,7 @@ fn test_sell_insufficient_shares() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("000300")
-        .arg("沪深300")
+        .arg("fund").arg("add").arg("000300")
         .assert()
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
@@ -717,10 +699,7 @@ fn test_sell_all_shares() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("000300")
-        .arg("沪深300")
+        .arg("fund").arg("add").arg("000300")
         .assert()
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
@@ -747,7 +726,7 @@ fn test_sell_all_shares() {
         .arg("1.2")
         .arg("--date")
         .arg(TEST_DATE)
-        .write_stdin("y\n")
+        .arg("-y")
         .assert()
         .success();
 
@@ -785,10 +764,7 @@ fn test_fund_import_arguments() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("000300")
-        .arg("沪深300")
+        .arg("fund").arg("add").arg("000300")
         .assert()
         .success();
 
@@ -847,10 +823,7 @@ fn test_fund_import_csv() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("000300")
-        .arg("沪深300")
+        .arg("fund").arg("add").arg("000300")
         .assert()
         .success();
 
@@ -914,10 +887,7 @@ fn test_fund_import_override() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("000300")
-        .arg("沪深300")
+        .arg("fund").arg("add").arg("000300")
         .assert()
         .success();
 
@@ -986,7 +956,7 @@ fn test_fund_inspect_not_found() {
         .arg("999999")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("拉取基金"));
+        .stderr(predicate::str::contains("未找到基金"));
 }
 
 /// 测试用例 457001：基金盈亏计算验证
@@ -1037,10 +1007,7 @@ fn test_fund_457001_profit_loss_calculation() {
 
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
-        .arg("add")
-        .arg("457001")
-        .arg("国富亚洲机会股票(QDII)A")
+        .arg("fund").arg("add").arg("457001")
         .arg("--fee")
         .arg("0.0015")
         .assert()
@@ -1101,7 +1068,7 @@ fn test_fund_457001_profit_loss_calculation() {
         .arg("5000")
         .arg("--date")
         .arg("2026-03-16")
-        .write_stdin("y\n")
+        .arg("-y")
         .assert()
         .success();
 

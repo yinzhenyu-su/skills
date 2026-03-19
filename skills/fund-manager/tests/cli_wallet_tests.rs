@@ -102,7 +102,7 @@ fn test_wallet_delete() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "❌ 错误：找不到名为 'NoSuchWallet' 的钱包。",
+            "❌ 找不到名为 'NoSuchWallet' 的钱包。",
         ));
 }
 
@@ -173,7 +173,7 @@ fn test_wallet_rename() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "✅ 钱包已从「OldName」重命名为「NewName」。",
+            "✅ 钱包已从'OldName'重命名为'NewName'。",
         ));
 
     // 3. Verify the new name exists
@@ -220,7 +220,7 @@ fn test_wallet_rename_duplicate() {
         .arg("WalletB")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("❌ 错误：钱包「WalletB」已存在。"));
+        .stderr(predicate::str::contains("❌ 钱包'WalletB'已存在。"));
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn test_wallet_rename_nonexistent() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "❌ 错误：找不到名为「NonExistent」的钱包。",
+            "❌ 找不到名为'NonExistent'的钱包。",
         ));
 }
 

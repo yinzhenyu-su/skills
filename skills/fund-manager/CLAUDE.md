@@ -83,6 +83,8 @@ SQLite，路径 `~/.config/fund-manager/fund.db`（可通过 `FUND_MANAGER_APP_D
 - **待确认交易**：买入时若净值不可用，交易状态为 `pending`，净值同步后自动结算
 - **用户界面**：所有面向用户的输出使用中文
 - **全局 `-y` 参数**：跳过交互确认
+- **退出码**：`0` 成功、`1` 一般错误、`3` 需要确认（`confirm_action`）
+- **错误信息格式**：`❌ 错误描述` → 换行缩进列出可用选项 → 换行缩进给出用法示例
 - **环境变量**：`FUND_MANAGER_APP_DIR`、`FUND_MANAGER_UA`、`SKIP_SYNC`、`FORCE_SYNC_FAILURE`
 
 ## 测试模式
