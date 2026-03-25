@@ -108,9 +108,62 @@ pub fn calculate_holding_from_profit(
     (shares, cost_basis, cost_per_share)
 }
 
+/// Detects dividend per share by comparing changes in NAV and AccNAV.
+/// D = (AccNAV_t - AccNAV_{t-1}) - (NAV_t - NAV_{t-1})
+pub fn detect_dividend(
+    nav_t: Decimal,
+    acc_nav_t: Decimal,
+    nav_prev: Decimal,
+    acc_nav_prev: Decimal,
+) -> Decimal {
+    let d_acc = acc_nav_t - acc_nav_prev;
+    let d_nav = nav_t - nav_prev;
+    let dividend = d_acc - d_nav;
+    if dividend > dec!(0.0001) {
+        dividend.round_dp(4)
+    } else {
+        Decimal::ZERO
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_detect_dividend() {
+        // No dividend: AccNAV and NAV move together
+        // Day 1: NAV=1.0, AccNAV=1.0
+        // Day 2: NAV=1.1, AccNAV=1.1
+        assert_eq!(
+            detect_dividend(dec!(1.1), dec!(1.1), dec!(1.0), dec!(1.0)),
+            dec!(0)
+        );
+
+        // Dividend of 0.1: AccNAV stays at 1.1, but NAV drops to 1.0
+        // Day 1: NAV=1.1, AccNAV=1.1
+        // Day 2: NAV=1.0, AccNAV=1.1
+        // (1.1 - 1.1) - (1.0 - 1.1) = 0 - (-0.1) = 0.1
+        assert_eq!(
+            detect_dividend(dec!(1.0), dec!(1.1), dec!(1.1), dec!(1.1)),
+            dec!(0.1)
+        );
+
+        // Dividend of 0.05: AccNAV increases more than NAV
+        // Day 1: NAV=1.0, AccNAV=1.0
+        // Day 2: NAV=1.05, AccNAV=1.10
+        // (1.10 - 1.0) - (1.05 - 1.0) = 0.1 - 0.05 = 0.05
+        assert_eq!(
+            detect_dividend(dec!(1.05), dec!(1.10), dec!(1.0), dec!(1.0)),
+            dec!(0.05)
+        );
+
+        // Minor precision difference should be ignored
+        assert_eq!(
+            detect_dividend(dec!(1.00001), dec!(1.00002), dec!(1.0), dec!(1.0)),
+            dec!(0)
+        );
+    }
 
     #[test]
     fn test_parse_percentage_rate() {

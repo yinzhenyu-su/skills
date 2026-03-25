@@ -65,8 +65,14 @@ async fn smart_nav_lookup(
     if let Ok(data) = provider.fetch_at_date(code, requested_date).await {
         if let Some(nav) = data.nav {
             // Save to DB for future use
-            db::insert_nav_history_idempotent(conn, code, requested_date, &nav.to_string())
-                .map_err(|e: rusqlite::Error| e.to_string())?;
+            db::insert_nav_history_idempotent(
+                conn,
+                code,
+                requested_date,
+                &nav.to_string(),
+                data.acc_nav.as_ref().map(|d| d.to_string()).as_deref(),
+            )
+            .map_err(|e: rusqlite::Error| e.to_string())?;
             return Ok(Some((requested_date.to_string(), nav)));
         }
     }
@@ -627,11 +633,11 @@ async fn handle_preview_buy(
         Decimal::ZERO
     } else {
         // Get the cost from holdings
-        let holdings = db::get_holdings(conn, wallet_id).unwrap_or_default();
+        let holdings = db::get_holdings(conn, Some(wallet_id), None).unwrap_or_default();
         holdings
             .iter()
             .find(|h| h.fund_code == fund_obj.code)
-            .map(|h| Decimal::from_str(&h.net_cost).unwrap_or_default())
+            .map(|h| h.net_cost)
             .unwrap_or(Decimal::ZERO)
     };
 
@@ -785,11 +791,11 @@ async fn handle_preview_sell(
     let current_cost = if current_shares.is_zero() {
         Decimal::ZERO
     } else {
-        let holdings = db::get_holdings(conn, wallet_id).unwrap_or_default();
+        let holdings = db::get_holdings(conn, Some(wallet_id), None).unwrap_or_default();
         holdings
             .iter()
             .find(|h| h.fund_code == fund_obj.code)
-            .map(|h| Decimal::from_str(&h.net_cost).unwrap_or_default())
+            .map(|h| h.net_cost)
             .unwrap_or(Decimal::ZERO)
     };
 
@@ -967,24 +973,23 @@ async fn main() {
                     "当前市值",
                     "持仓成本",
                     "累计盈亏",
+                    "累计分红",
                     "收益率",
                 ]);
 
                 for w in wallets {
-                    let holdings = db::get_holdings(&conn, w.id).expect("数据库错误");
+                    let holdings = db::get_holdings(&conn, Some(w.id), None).expect("数据库错误");
                     let mut total_valuation = Decimal::ZERO;
                     let mut total_cost = Decimal::ZERO;
+                    let mut total_dividend = Decimal::ZERO;
 
                     for h in holdings {
-                        let shares = Decimal::from_str(&h.total_shares).unwrap_or_default();
-                        let cost = Decimal::from_str(&h.net_cost).unwrap_or_default();
-                        let nav = h
-                            .latest_nav
-                            .as_deref()
-                            .and_then(|s| Decimal::from_str(s).ok())
-                            .unwrap_or_default();
+                        let shares = h.shares;
+                        let cost = h.net_cost;
+                        let nav = h.latest_nav.unwrap_or_default();
                         total_valuation += (shares * nav).round_dp(2);
                         total_cost += cost;
+                        total_dividend += h.cumulative_dividend;
                     }
 
                     let pl = (total_valuation - total_cost).round_dp(2);
@@ -1000,6 +1005,7 @@ async fn main() {
                         &total_valuation.to_string(),
                         &total_cost.to_string(),
                         &pl.to_string(),
+                        &total_dividend.to_string(),
                         &format!("{:.2}%", pl_pct),
                     ]);
                 }
@@ -1164,7 +1170,7 @@ async fn main() {
                     db::get_funds_with_valuations(&conn, active_wallet_id).expect("数据库错误");
 
                 let mut table = Table::new();
-                let mut header = vec!["代码", "名称", "类型", "风险", "经理", "最新净值 (日期)"];
+                let mut header = vec!["代码", "名称", "类型", "风险", "分红", "最新净值 (日期)"];
                 header.push("持有份额");
                 header.push("总价值");
                 header.push("最后同步");
@@ -1177,7 +1183,12 @@ async fn main() {
                         f.name.clone(),
                         f.fund_type.unwrap_or_else(|| "-".to_string()),
                         f.risk_level.unwrap_or_else(|| "-".to_string()),
-                        f.manager.unwrap_or_else(|| "-".to_string()),
+                        (if f.dividend_mode.as_deref() == Some("reinvest") {
+                            "再投"
+                        } else {
+                            "现金"
+                        })
+                        .to_string(),
                     ];
 
                     // 净值 (日期)
@@ -1259,6 +1270,36 @@ async fn main() {
                     std::process::exit(1);
                 }
             }
+            FundCommands::Config {
+                fund,
+                dividend_mode,
+            } => {
+                let wallet_id = resolve_wallet_id(&conn, None);
+                let fund_input = require_fund_or_exit(&conn, Some(fund), wallet_id, "fund config");
+                let fund_obj = match resolver::resolve_fund(&conn, &fund_input, true).await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        print_resolve_error(&conn, e, None);
+                        std::process::exit(1);
+                    }
+                };
+
+                db::update_fund_dividend_mode(&conn, &fund_obj.code, &dividend_mode).unwrap_or_else(
+                    |e| {
+                        eprintln!("❌ 无法更新基金配置：{}", e);
+                        std::process::exit(1);
+                    },
+                );
+                let mode_zh = if dividend_mode == "cash" {
+                    "现金分红"
+                } else {
+                    "红利再投"
+                };
+                println!(
+                    "✅ 成功将基金 {} ({}) 的分红方式设置为：{}",
+                    fund_obj.name, fund_obj.code, mode_zh
+                );
+            }
         },
         Commands::Status { fund: _, wallet } => {
             if let Err(e) = sync::sync_funds(&conn, None, None, None, true).await {
@@ -1268,13 +1309,14 @@ async fn main() {
 
             let wallet_id = resolve_wallet_id(&conn, wallet);
 
-            let holdings = db::get_holdings(&conn, wallet_id).expect("数据库错误");
+            let holdings = db::get_holdings(&conn, Some(wallet_id), None).expect("数据库错误");
 
             let mut table = Table::new();
             table.set_header(vec![
                 "基金",
                 "份额",
                 "持仓成本",
+                "累计分红",
                 "当前净值",
                 "当前市值",
                 "盈亏额",
@@ -1282,13 +1324,10 @@ async fn main() {
             ]);
 
             for h in holdings {
-                let shares = Decimal::from_str(&h.total_shares).unwrap_or_default();
-                let cost = Decimal::from_str(&h.net_cost).unwrap_or_default();
-                let nav = h
-                    .latest_nav
-                    .as_deref()
-                    .and_then(|s| Decimal::from_str(s).ok())
-                    .unwrap_or_default();
+                let shares = h.shares;
+                let cost = h.net_cost;
+                let dividend = h.cumulative_dividend;
+                let nav = h.latest_nav.unwrap_or_default();
 
                 let valuation = (shares * nav).round_dp(2);
                 let pl = (valuation - cost).round_dp(2);
@@ -1302,6 +1341,7 @@ async fn main() {
                     format!("{} ({})", h.fund_name, h.fund_code),
                     shares.to_string(),
                     cost.to_string(),
+                    dividend.to_string(),
                     nav.to_string(),
                     valuation.to_string(),
                     pl.to_string(),

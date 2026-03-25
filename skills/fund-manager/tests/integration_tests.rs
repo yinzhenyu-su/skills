@@ -96,7 +96,7 @@ async fn test_transaction_lifecycle_with_auto_settlement() {
     assert_eq!(pending[0].status, "pending");
 
     // 4. Add NAV for that date
-    db::insert_nav_history_idempotent(&conn, "000300", "2026-03-10", "2.00").unwrap();
+    db::insert_nav_history_idempotent(&conn, "000300", "2026-03-10", "2.00", None).unwrap();
 
     // 5. Run Settlement
     let settled = fund_manager::sync::settle_pending_transactions(&conn)
@@ -159,9 +159,9 @@ fn test_dividend_impact_on_net_cost() {
     )
     .unwrap();
 
-    let holdings = db::get_holdings(&conn, 1).unwrap();
+    let holdings = db::get_holdings(&conn, Some(1), None).unwrap();
     assert_eq!(holdings.len(), 1);
     // net_cost = 1000 - 100 = 900
-    assert_eq!(holdings[0].net_cost, "900");
-    assert_eq!(holdings[0].total_shares, "500");
+    assert_eq!(holdings[0].net_cost, dec!(900.00));
+    assert_eq!(holdings[0].shares, dec!(500.00));
 }

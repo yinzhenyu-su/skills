@@ -329,4 +329,15 @@ pub enum FundCommands {
         #[arg(short, long, default_value_t = false)]
         force: bool,
     },
+    /// 配置基金属性（例如分红方式）
+    #[command(
+        long_about = "更新基金的配置属性，如分红方式（现金分红 vs 红利再投）。\n\n示例：\n    fund fund config 000300 --dividend-mode reinvest"
+    )]
+    Config {
+        /// 基金代码或名称
+        fund: String,
+        /// 设置分红方式 (cash: 现金分红, reinvest: 红利再投)
+        #[arg(long, value_parser = ["cash", "reinvest"])]
+        dividend_mode: String,
+    },
 }

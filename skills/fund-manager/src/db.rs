@@ -42,6 +42,7 @@ fn setup_schema(conn: &Connection) -> Result<()> {
             management_fee TEXT,
             trust_fee TEXT,
             sales_fee TEXT,
+            dividend_mode TEXT DEFAULT 'cash',
             last_sync_at DATETIME
         )",
         [],
@@ -57,6 +58,7 @@ fn setup_schema(conn: &Connection) -> Result<()> {
         ("management_fee", "TEXT"),
         ("trust_fee", "TEXT"),
         ("sales_fee", "TEXT"),
+        ("dividend_mode", "TEXT DEFAULT 'cash'"),
     ];
     for (name, col_type) in new_cols {
         let _ = conn.execute(
@@ -283,6 +285,30 @@ pub fn add_fund(
     Ok(())
 }
 
+pub fn get_earliest_transaction_date(
+    conn: &Connection,
+    wallet_id: i64,
+    fund_code: &str,
+) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT MIN(date) FROM transaction_log WHERE wallet_id = ?1 AND fund_code = ?2",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![wallet_id, fund_code])?;
+    if let Some(row) = rows.next()? {
+        Ok(row.get(0)?)
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn update_fund_dividend_mode(conn: &Connection, code: &str, mode: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE fund SET dividend_mode = ?2 WHERE code = ?1",
+        [code, mode],
+    )?;
+    Ok(())
+}
+
 pub fn get_wallet_id_by_name(conn: &Connection, name: &str) -> Result<Option<i64>> {
     let mut stmt = conn.prepare("SELECT id FROM wallet WHERE name = ?1")?;
     let mut rows = stmt.query([name])?;
@@ -364,12 +390,43 @@ pub fn insert_nav_history_idempotent(
     code: &str,
     date: &str,
     nav: &str,
+    acc_nav: Option<&str>,
 ) -> Result<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO nav_history (fund_code, date, nav) VALUES (?1, ?2, ?3)",
-        [code, date, nav],
-    )?;
+    if let Some(acc) = acc_nav {
+        conn.execute(
+            "INSERT OR REPLACE INTO nav_history (fund_code, date, nav, acc_nav) VALUES (?1, ?2, ?3, ?4)",
+            [code, date, nav, acc],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT OR REPLACE INTO nav_history (fund_code, date, nav) VALUES (?1, ?2, ?3)",
+            [code, date, nav],
+        )?;
+    }
     Ok(())
+}
+
+pub fn get_latest_nav_before(
+    conn: &Connection,
+    code: &str,
+    date: &str,
+) -> Result<Option<(String, Decimal, Option<Decimal>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT date, nav, acc_nav FROM nav_history WHERE fund_code = ?1 AND date < ?2 ORDER BY date DESC LIMIT 1"
+    )?;
+    let mut rows = stmt.query([code, date])?;
+    if let Some(row) = rows.next()? {
+        let d: String = row.get(0)?;
+        let n: String = row.get(1)?;
+        let a: Option<String> = row.get(2)?;
+        Ok(Some((
+            d,
+            Decimal::from_str(&n).unwrap_or_default(),
+            a.and_then(|s| Decimal::from_str(&s).ok()),
+        )))
+    } else {
+        Ok(None)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -384,6 +441,7 @@ pub struct Fund {
     pub management_fee: Option<String>,
     pub trust_fee: Option<String>,
     pub sales_fee: Option<String>,
+    pub dividend_mode: Option<String>,
     pub last_sync_at: Option<String>,
 }
 
@@ -399,7 +457,7 @@ pub fn get_fund_by_code_or_name(conn: &Connection, identifier: &str) -> Result<O
     let mut stmt = conn.prepare(
         "SELECT 
         code, name, fund_type, risk_level, manager, company, establish_date, 
-        management_fee, trust_fee, sales_fee, last_sync_at 
+        management_fee, trust_fee, sales_fee, dividend_mode, last_sync_at 
         FROM fund WHERE code = ?1 OR name = ?1",
     )?;
     let mut rows = stmt.query([identifier])?;
@@ -415,7 +473,8 @@ pub fn get_fund_by_code_or_name(conn: &Connection, identifier: &str) -> Result<O
             management_fee: row.get(7)?,
             trust_fee: row.get(8)?,
             sales_fee: row.get(9)?,
-            last_sync_at: row.get(10)?,
+            dividend_mode: row.get(10)?,
+            last_sync_at: row.get(11)?,
         }))
     } else {
         Ok(None)
@@ -426,7 +485,7 @@ pub fn search_funds_locally(conn: &Connection, identifier: &str) -> Result<Vec<F
     let mut stmt = conn.prepare(
         "SELECT 
         code, name, fund_type, risk_level, manager, company, establish_date, 
-        management_fee, trust_fee, sales_fee, last_sync_at 
+        management_fee, trust_fee, sales_fee, dividend_mode, last_sync_at 
         FROM fund WHERE code LIKE ?1 OR name LIKE ?1",
     )?;
     let pattern = format!("%{}%", identifier);
@@ -442,7 +501,8 @@ pub fn search_funds_locally(conn: &Connection, identifier: &str) -> Result<Vec<F
             management_fee: row.get(7)?,
             trust_fee: row.get(8)?,
             sales_fee: row.get(9)?,
-            last_sync_at: row.get(10)?,
+            dividend_mode: row.get(10)?,
+            last_sync_at: row.get(11)?,
         })
     })?;
 
@@ -457,7 +517,7 @@ pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
     let mut stmt = conn.prepare(
         "SELECT 
         code, name, fund_type, risk_level, manager, company, establish_date, 
-        management_fee, trust_fee, sales_fee, last_sync_at 
+        management_fee, trust_fee, sales_fee, dividend_mode, last_sync_at 
         FROM fund",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -472,7 +532,8 @@ pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
             management_fee: row.get(7)?,
             trust_fee: row.get(8)?,
             sales_fee: row.get(9)?,
-            last_sync_at: row.get(10)?,
+            dividend_mode: row.get(10)?,
+            last_sync_at: row.get(11)?,
         })
     })?;
 
@@ -490,12 +551,16 @@ pub fn get_funds_with_valuations(
     let mut stmt = conn.prepare(
         "SELECT 
             f.code, f.name, f.fund_type, f.risk_level, f.manager, f.company, f.establish_date,
-            f.management_fee, f.trust_fee, f.sales_fee, f.last_sync_at,
+            f.management_fee, f.trust_fee, f.sales_fee, f.dividend_mode, f.last_sync_at,
             (SELECT nav FROM nav_history WHERE fund_code = f.code ORDER BY date DESC LIMIT 1) as latest_nav,
             (SELECT date FROM nav_history WHERE fund_code = f.code ORDER BY date DESC LIMIT 1) as latest_nav_date,
             SUM(CASE 
                 WHEN t.wallet_id = ?1 AND t.status = 'settled' 
-                THEN (CASE WHEN t.type IN ('buy', 'import') THEN CAST(t.shares AS REAL) ELSE -CAST(t.shares AS REAL) END)
+                THEN (CASE 
+                    WHEN t.type IN ('buy', 'import', 'reinvest') THEN CAST(IFNULL(t.shares, '0') AS REAL) 
+                    WHEN t.type = 'sell' THEN -CAST(IFNULL(t.shares, '0') AS REAL)
+                    ELSE 0
+                END)
                 ELSE 0 
             END) as total_shares
         FROM fund f
@@ -516,11 +581,12 @@ pub fn get_funds_with_valuations(
                 management_fee: row.get(7)?,
                 trust_fee: row.get(8)?,
                 sales_fee: row.get(9)?,
-                last_sync_at: row.get(10)?,
+                dividend_mode: row.get(10)?,
+                last_sync_at: row.get(11)?,
             },
-            latest_nav: row.get(11)?,
-            latest_nav_date: row.get(12)?,
-            total_shares: row.get::<_, Option<f64>>(13)?.unwrap_or(0.0),
+            latest_nav: row.get(12)?,
+            latest_nav_date: row.get(13)?,
+            total_shares: row.get::<_, Option<f64>>(14)?.unwrap_or(0.0),
         })
     })?;
 
@@ -787,41 +853,73 @@ pub fn update_transaction_settlement(
 pub struct Holding {
     pub fund_code: String,
     pub fund_name: String,
-    pub total_shares: String,
-    pub net_cost: String,
-    pub latest_nav: Option<String>,
+    pub shares: Decimal,
+    pub net_cost: Decimal,
+    pub latest_nav: Option<Decimal>,
+    pub cumulative_dividend: Decimal,
+    pub wallet_id: i64,
 }
 
-pub fn get_holdings(conn: &Connection, wallet_id: i64) -> Result<Vec<Holding>> {
-    let mut stmt = conn.prepare(
+pub fn get_holdings(
+    conn: &Connection,
+    wallet_id: Option<i64>,
+    fund_code: Option<&str>,
+) -> Result<Vec<Holding>> {
+    let mut where_clauses = vec!["t.status = 'settled'".to_string()];
+    if let Some(w_id) = wallet_id {
+        where_clauses.push(format!("t.wallet_id = {}", w_id));
+    }
+    if let Some(f_code) = fund_code {
+        where_clauses.push(format!("t.fund_code = '{}'", f_code));
+    }
+
+    let where_sql = if where_clauses.is_empty() {
+        "".to_string()
+    } else {
+        format!("WHERE {}", where_clauses.join(" AND "))
+    };
+
+    let sql = format!(
         "SELECT
             f.code,
             f.name,
-            SUM(CASE 
-                WHEN t.type IN ('buy', 'import', 'reinvest') THEN CAST(IFNULL(t.shares, '0') AS REAL) 
-                WHEN t.type = 'sell' THEN -CAST(IFNULL(t.shares, '0') AS REAL) 
-                ELSE 0 
+            SUM(CASE
+                WHEN t.type IN ('buy', 'import', 'reinvest') THEN CAST(IFNULL(t.shares, '0') AS REAL)
+                WHEN t.type = 'sell' THEN -CAST(IFNULL(t.shares, '0') AS REAL)
+                ELSE 0
             END) as total_shares,
-            SUM(CASE 
-                WHEN t.type IN ('buy', 'import') THEN CAST(t.money AS REAL) 
-                WHEN t.type IN ('sell', 'dividend') THEN -CAST(t.money AS REAL) 
-                ELSE 0 
+            SUM(CASE
+                WHEN t.type IN ('buy', 'import') THEN CAST(t.money AS REAL)
+                WHEN t.type IN ('sell', 'dividend') THEN -CAST(t.money AS REAL)
+                ELSE 0
             END) as net_cost,
-            (SELECT nav FROM nav_history WHERE fund_code = f.code ORDER BY date DESC LIMIT 1) as latest_nav
+            (SELECT nav FROM nav_history WHERE fund_code = f.code ORDER BY date DESC LIMIT 1) as latest_nav,
+            SUM(CASE
+                WHEN t.type IN ('dividend', 'reinvest') THEN CAST(t.money AS REAL)
+                ELSE 0
+            END) as cumulative_dividend,
+            t.wallet_id
          FROM fund f
          JOIN transaction_log t ON f.code = t.fund_code
-         WHERE t.wallet_id = ?1 AND t.status = 'settled'
-         GROUP BY f.code
+         {}
+         GROUP BY f.code, t.wallet_id
          HAVING total_shares > 0 OR net_cost != 0",
-    )?;
+        where_sql
+    );
 
-    let rows = stmt.query_map([wallet_id], |row| {
+    let mut stmt = conn.prepare(&sql)?;
+
+    let rows = stmt.query_map([], |row| {
         Ok(Holding {
             fund_code: row.get(0)?,
             fund_name: row.get(1)?,
-            total_shares: row.get::<_, f64>(2)?.to_string(),
-            net_cost: row.get::<_, f64>(3)?.to_string(),
-            latest_nav: row.get(4)?,
+            shares: Decimal::from_f64(row.get(2)?).unwrap_or_default().round_dp(2),
+            net_cost: Decimal::from_f64(row.get(3)?).unwrap_or_default().round_dp(2),
+            latest_nav: row
+                .get::<_, Option<String>>(4)?
+                .and_then(|s| Decimal::from_str(&s).ok()),
+            cumulative_dividend: Decimal::from_f64(row.get(5)?).unwrap_or_default().round_dp(2),
+            wallet_id: row.get(6)?,
         })
     })?;
 
@@ -993,7 +1091,7 @@ mod tests {
         .expect("Failed to add fund");
 
         // Insert NAV for the same day
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-16", "1.5000")
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-16", "1.5000", None)
             .expect("Failed to insert nav");
 
         // Should find NAV on the same day
@@ -1029,7 +1127,7 @@ mod tests {
         .expect("Failed to add fund");
 
         // Insert NAV only for 3 days later
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-19", "1.5200")
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-19", "1.5200", None)
             .expect("Failed to insert nav");
 
         // Should find NAV after 3 days
@@ -1273,7 +1371,7 @@ mod tests {
             None,
         )
         .unwrap();
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.5000").unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.5000", None).unwrap();
 
         // Buy 1000 shares at 1.0
         add_transaction(
@@ -1322,7 +1420,7 @@ mod tests {
             None,
         )
         .unwrap();
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.5000").unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.5000", None).unwrap();
 
         // No transactions - should still show fund with 0 shares
         let valuations = get_funds_with_valuations(&conn, Some(1)).unwrap();
@@ -1409,7 +1507,7 @@ mod tests {
             None,
         )
         .unwrap();
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.5000").unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.5000", None).unwrap();
 
         // Verify fund exists
         assert!(get_fund_by_code_or_name(&conn, "000300").unwrap().is_some());
@@ -1543,8 +1641,8 @@ mod tests {
             None,
         )
         .unwrap();
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.2000").unwrap();
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-15", "1.5000").unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.2000", None).unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-15", "1.5000", None).unwrap();
 
         let nav = get_latest_nav(&conn, "000300").unwrap();
         assert_eq!(nav, Some("1.5000".to_string()));
@@ -1569,7 +1667,7 @@ mod tests {
             None,
         )
         .unwrap();
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.2000").unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.2000", None).unwrap();
 
         let nav = get_nav_at_date(&conn, "000300", "2026-03-01").unwrap();
         assert!(nav.is_some());
@@ -1639,8 +1737,8 @@ mod tests {
         .unwrap();
 
         // Insert same date twice
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.2000").unwrap();
-        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.3000").unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.2000", None).unwrap();
+        insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.3000", None).unwrap();
 
         // Should still have only 1 record with updated value
         let mut stmt = conn.prepare("SELECT count(*), nav FROM nav_history WHERE fund_code = '000300' AND date = '2026-03-01'").unwrap();

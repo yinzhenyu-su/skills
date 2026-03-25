@@ -31,8 +31,14 @@ pub async fn settle_pending_transactions(conn: &Connection) -> Result<usize, Str
         let provider = EastmoneyLsjzProvider;
         if let Ok(data) = provider.fetch_at_date(&tx.fund_code, &tx.date).await {
             if let Some(nav) = data.nav {
-                db::insert_nav_history_idempotent(conn, &tx.fund_code, &tx.date, &nav.to_string())
-                    .map_err(|e| e.to_string())?;
+                db::insert_nav_history_idempotent(
+                    conn,
+                    &tx.fund_code,
+                    &tx.date,
+                    &nav.to_string(),
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
                 settle_tx(conn, &tx, nav).map_err(|e| e.to_string())?;
                 settled_count += 1;
             }
@@ -40,6 +46,81 @@ pub async fn settle_pending_transactions(conn: &Connection) -> Result<usize, Str
     }
 
     Ok(settled_count)
+}
+
+async fn record_dividend_for_wallets(
+    conn: &Connection,
+    code: &str,
+    date: &str,
+    dividend_per_share: Decimal,
+    nav: Decimal,
+) -> Result<(), String> {
+    // 1. Get fund dividend mode
+    let fund = db::get_fund_by_code_or_name(conn, code)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Fund not found".to_string())?;
+    let mode = fund.dividend_mode.unwrap_or_else(|| "cash".to_string());
+
+    // 2. Get all wallets holding this fund
+    let holdings = db::get_holdings(conn, None, Some(code)).map_err(|e| e.to_string())?;
+
+    for h in holdings {
+        // 3. Time Isolation Wall
+        let earliest_date = db::get_earliest_transaction_date(conn, h.wallet_id, code)
+            .map_err(|e| e.to_string())?;
+
+        if let Some(ed) = earliest_date {
+            if date <= ed.as_str() {
+                continue; // Ignore dividends on or before the first transaction date
+            }
+        } else {
+            continue; // No transactions yet
+        }
+
+        // 4. Calculate total money/shares
+        let total_shares = h.shares;
+        if total_shares.is_zero() {
+            continue;
+        }
+
+        let total_dividend_money = (dividend_per_share * total_shares).round_dp(2);
+
+        if mode == "reinvest" {
+            let reinvest_shares = (total_dividend_money / nav).round_dp(2);
+            db::add_transaction(
+                conn,
+                h.wallet_id,
+                code,
+                "reinvest",
+                &format!("{:.2}", total_dividend_money),
+                Some(&format!("{:.2}", reinvest_shares)),
+                Some(&nav.to_string()),
+                "0",
+                date,
+                "settled",
+                Some(&format!("自动记录分红再投资 (每份分红: {})", dividend_per_share)),
+                "auto",
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            db::add_transaction(
+                conn,
+                h.wallet_id,
+                code,
+                "dividend",
+                &format!("{:.2}", total_dividend_money),
+                None,
+                None,
+                "0",
+                date,
+                "settled",
+                Some(&format!("自动记录现金分红 (每份分红: {})", dividend_per_share)),
+                "auto",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn settle_tx(conn: &Connection, tx: &db::Transaction, nav: Decimal) -> Result<(), String> {
@@ -187,18 +268,50 @@ pub async fn sync_funds(
                 Ok(results) => {
                     let count = results.len();
                     if count > 0 {
-                        for data in results {
-                            if let (Some(nav), Some(date)) = (data.nav, data.date) {
+                        let mut sorted_results = results;
+                        sorted_results.sort_by(|a, b| a.date.cmp(&b.date));
+
+                        let mut prev_nav: Option<Decimal> = None;
+                        let mut prev_acc_nav: Option<Decimal> = None;
+
+                        if let Some(first) = sorted_results.first() {
+                            if let Some(ref first_date) = first.date {
+                                if let Ok(Some((_, n, a))) =
+                                    db::get_latest_nav_before(conn, &code, first_date)
+                                {
+                                    prev_nav = Some(n);
+                                    prev_acc_nav = a;
+                                }
+                            }
+                        }
+
+                        for data in sorted_results {
+                            if let (Some(nav), Some(date)) = (data.nav, data.date.clone()) {
                                 db::insert_nav_history_idempotent(
                                     conn,
                                     &code,
                                     &date,
                                     &nav.to_string(),
+                                    data.acc_nav.as_ref().map(|d| d.to_string()).as_deref(),
                                 )
                                 .map_err(|e| e.to_string())?;
+
+                                if let (Some(acc_nav), Some(p_nav), Some(p_acc_nav)) =
+                                    (data.acc_nav, prev_nav, prev_acc_nav)
+                                {
+                                    let div =
+                                        finance::detect_dividend(nav, acc_nav, p_nav, p_acc_nav);
+                                    if div > Decimal::ZERO {
+                                        record_dividend_for_wallets(conn, &code, &date, div, nav)
+                                            .await?;
+                                    }
+                                }
+
+                                prev_nav = Some(nav);
+                                prev_acc_nav = data.acc_nav;
                             }
                         }
-                        println!("  ✓ 已同步 {} 天的历史净值", count);
+                        println!("  ✓ 已同步 {} 天的历史净值并自动检测分红", count);
                     }
                 }
                 Err(e) => {
@@ -211,8 +324,14 @@ pub async fn sync_funds(
         match aggregator.fetch_all(&code).await {
             Ok(data) => {
                 if let (Some(nav), Some(date)) = (data.nav, data.date) {
-                    db::insert_nav_history_idempotent(conn, &code, &date, &nav.to_string())
-                        .map_err(|e| e.to_string())?;
+                    db::insert_nav_history_idempotent(
+                        conn,
+                        &code,
+                        &date,
+                        &nav.to_string(),
+                        data.acc_nav.as_ref().map(|d| d.to_string()).as_deref(),
+                    )
+                    .map_err(|e| e.to_string())?;
                 }
 
                 // Update metadata (fee, name, etc.)
@@ -421,7 +540,7 @@ mod tests {
             None,
         )
         .expect("Failed to add fund");
-        db::insert_nav_history_idempotent(&conn, "000300", "2024-03-01", "1.5000")
+        db::insert_nav_history_idempotent(&conn, "000300", "2024-03-01", "1.5000", None)
             .expect("Failed to insert nav");
 
         // Add pending buy transaction
@@ -460,5 +579,95 @@ mod tests {
         assert_eq!(status, "settled");
         assert!(!shares.is_empty());
         assert!(!nav.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_record_dividend_for_wallets() {
+        let conn = db::setup_test_db().unwrap();
+        db::add_wallet(&conn, "Test").unwrap();
+        db::add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 1. Transaction on 2026-03-10
+        db::add_transaction(
+            &conn,
+            1,
+            "000300",
+            "buy",
+            "1000",
+            Some("1000"),
+            Some("1.0"),
+            "0",
+            "2026-03-10",
+            "settled",
+            None,
+            "manual",
+        )
+        .unwrap();
+
+        // 2. Dividend on 2026-03-05 (Before purchase) -> Should be ignored
+        record_dividend_for_wallets(&conn, "000300", "2026-03-05", dec!(0.1), dec!(1.0))
+            .await
+            .unwrap();
+        let history = db::get_transaction_history(&conn, Some("000300"), Some(1), None, 0).unwrap();
+        assert_eq!(history.len(), 1); // Only the buy
+
+        // 3. Dividend on 2026-03-15 (After purchase) -> Should be recorded
+        record_dividend_for_wallets(&conn, "000300", "2026-03-15", dec!(0.1), dec!(1.0))
+            .await
+            .unwrap();
+        let history = db::get_transaction_history(&conn, Some("000300"), Some(1), None, 0).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].t_type, "dividend");
+        assert_eq!(history[0].money, "100.00"); // 1000 shares * 0.1
+
+        // 4. Test reinvestment mode
+        db::update_fund_dividend_mode(&conn, "000300", "reinvest").unwrap();
+        record_dividend_for_wallets(&conn, "000300", "2026-03-20", dec!(0.2), dec!(1.0))
+            .await
+            .unwrap();
+        let history = db::get_transaction_history(&conn, Some("000300"), Some(1), None, 0).unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].t_type, "reinvest");
+        assert_eq!(history[0].money, "200.00"); // 1000 shares * 0.2
+        assert_eq!(history[0].shares, Some("200.00".to_string())); // 200 / 1.0
+
+        // 5. Test isolation wall with 'import' transaction
+        db::add_wallet(&conn, "ImportWallet").unwrap();
+        db::add_transaction(
+            &conn,
+            2,
+            "000300",
+            "import",
+            "5000",
+            Some("5000"),
+            Some("1.0"),
+            "0",
+            "2026-03-20",
+            "settled",
+            None,
+            "manual",
+        )
+        .unwrap();
+
+        // Dividend on 2026-03-15 (Before import) -> Should be ignored for wallet 2
+        record_dividend_for_wallets(&conn, "000300", "2026-03-15", dec!(0.1), dec!(1.0))
+            .await
+            .unwrap();
+        let history2 = db::get_transaction_history(&conn, Some("000300"), Some(2), None, 0).unwrap();
+        assert_eq!(history2.len(), 1); // Only the import
     }
 }

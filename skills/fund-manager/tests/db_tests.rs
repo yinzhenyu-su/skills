@@ -10,8 +10,8 @@ fn test_nav_history_idempotency() {
     )
     .unwrap();
 
-    db::insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.00").unwrap();
-    db::insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.10").unwrap();
+    db::insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.00", None).unwrap();
+    db::insert_nav_history_idempotent(&conn, "000300", "2026-03-09", "1.10", None).unwrap();
 
     let nav: String = conn
         .query_row(
@@ -89,8 +89,8 @@ fn test_get_funds_with_valuations() {
     .unwrap();
 
     // Add Nav
-    db::insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.00").unwrap();
-    db::insert_nav_history_idempotent(&conn, "000300", "2026-03-02", "1.10").unwrap();
+    db::insert_nav_history_idempotent(&conn, "000300", "2026-03-01", "1.00", None).unwrap();
+    db::insert_nav_history_idempotent(&conn, "000300", "2026-03-02", "1.10", None).unwrap();
 
     // Add Wallet & Transactions
     conn.execute(

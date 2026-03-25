@@ -398,7 +398,13 @@ pub async fn sync_fund_details(conn: &Connection, code: &str) -> Result<Fund, St
     .map_err(|e| e.to_string())?;
 
     if let (Some(nav), Some(date)) = (data.nav, data.date) {
-        db::insert_nav_history_idempotent(conn, &data.code, &date, &nav.to_string())
+        db::insert_nav_history_idempotent(
+            conn,
+            &data.code,
+            &date,
+            &nav.to_string(),
+            data.acc_nav.as_ref().map(|d| d.to_string()).as_deref(),
+        )
             .map_err(|e| e.to_string())?;
     }
 
