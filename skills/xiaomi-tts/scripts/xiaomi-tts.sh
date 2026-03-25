@@ -2,8 +2,19 @@
 # Xiaomi MiMo TTS Wrapper for OpenClaw
 
 set -euo pipefail
-
 API_KEY="${XIAOMI_MIMO_API_KEY:-your_api_key_here}"
+
+# 如果 API_KEY 未设置，尝试从 $HOME/.config/yinzhenyu/.env 加载环境变量，如果文件存在
+if [[ "$API_KEY" == "your_api_key_here" ]]; then
+  ENV_FILE="$HOME/.config/yinzhenyu/.env"
+  if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+  else
+    echo "Error: $ENV_FILE not found. Please create it and set XIAOMI_MIMO_API_KEY environment variable." >&2
+  fi
+fi
+
 BASE_URL="https://api.xiaomimimo.com/v1/chat/completions"
 MODEL="mimo-v2-tts"
 VOICE="mimo_default"

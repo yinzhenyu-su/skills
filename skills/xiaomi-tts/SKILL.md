@@ -3,8 +3,10 @@ name: xiaomi-tts
 description: Xiaomi MiMo TTS (语音合成)。基于 MiMo-v2 模型，支持预置音色、语速、音调、风格标签和多种响应格式。
 metadata:
   openclaw:
+    homepage: https://github.com/yinzhenyu-su/skills/
     requires:
       bins: ["curl", "base64", "jq"]
+      env: ["XIAOMI_MIMO_API_KEY"]
 ---
 
 # Xiaomi MiMo TTS
