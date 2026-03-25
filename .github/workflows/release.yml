@@ -10,7 +10,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   PACKAGE_NAME: fund-manager
-  AWS_LC_SYS_NO_JITTER_ENTROPY: 1
 
 jobs:
   build-linux-windows:
@@ -24,8 +23,11 @@ jobs:
         target:
           - x86_64-unknown-linux-gnu.2.17
           - aarch64-unknown-linux-gnu.2.17
-          - x86_64-pc-windows-gnu
-          - aarch64-pc-windows-gnullvm
+          # Windows 目标添加特定的环境变量标记
+          - target: x86_64-pc-windows-gnu
+            extra_env: "1"
+          - target: aarch64-pc-windows-gnullvm
+            extra_env: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +51,9 @@ jobs:
             ${{ runner.os }}-cargo-${{ matrix.target }}-
 
       - name: Build
+        env:
+          # 只有当 matrix 包含 extra_env 时才会设置为 1，否则为空（不生效）
+          AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ matrix.extra_env }}
         run: |
           cd skills/fund-manager
           cargo zigbuild --release --target ${{ matrix.target }} --locked
