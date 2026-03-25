@@ -10,6 +10,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   PACKAGE_NAME: fund-manager
+  AWS_LC_SYS_NO_JITTER_ENTROPY: 1
 
 jobs:
   build-linux-windows:
