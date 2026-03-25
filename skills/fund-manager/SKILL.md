@@ -1,6 +1,11 @@
 ---
 name: fund-manager
 description: 中国公募基金投资管理 CLI 工具。使用场景：(1) 用户询问基金持仓、基金盈亏；(2) 用户询问"我的基金"、"基金状态"；(3) 用户想要买入/卖出基金；(4) 用户想要同步基金净值、查看基金历史；(5) 用户想要管理钱包、导入持仓；(6) 用户想要查看市场指数行情；(7) 用户想要记录分红/红利再投。
+metadata:
+	openclaw:
+		requires:
+			bins: ["bash", "curl", "tar", "unzip"]
+			env: ["FUND_MANAGER_GITLAB_PROJECT_ID", "FUND_MANAGER_GITLAB_TOKEN"]
 ---
 
 # fund-manager
@@ -11,11 +16,64 @@ description: 中国公募基金投资管理 CLI 工具。使用场景：(1) 用�
 
 `skills/fund-manager/` - Rust CLI 项目
 
-## 常用命令
+## 运行方式
+
+优先使用包装脚本（推荐）：
+
+```bash
+cd skills/fund-manager
+chmod +x scripts/bootstrap-fund-manager.sh scripts/fund-manager.sh
+./scripts/fund-manager.sh --help
+```
+
+包装脚本行为：
+
+- 首次运行：识别当前平台并下载 `fund-manager` 核心二进制
+- 后续运行：复用本地缓存，避免重复下载
+- 缓存损坏：自动重新下载
+
+## 开发命令（源码模式）
 
 ```bash
 cd skills/fund-manager && cargo build     # 构建
 cd skills/fund-manager && cargo run -- [args]  # 运行
+```
+
+## 二进制下载配置
+
+### 必选（未设置 `FUND_MANAGER_CORE_URL` 时）
+
+- `FUND_MANAGER_GITLAB_PROJECT_ID`：GitLab 项目 ID
+- `FUND_MANAGER_GITLAB_TOKEN`：私有仓库访问令牌（公开仓库可不填）
+
+### 可选
+
+- `FUND_MANAGER_VERSION`：下载版本，默认 `latest`
+- `FUND_MANAGER_CORE_URL`：覆盖默认下载地址（用于回滚或自定义分发源）
+- `FUND_MANAGER_CORE_SHA256`：归档校验值（设置后会校验下载完整性）
+- `FUND_MANAGER_GITLAB_BASE_URL`：GitLab 基础地址，默认 `https://gitlab.com`
+- `FUND_MANAGER_GITLAB_PACKAGE`：Package Registry 包名，默认 `fund-manager`
+- `FUND_MANAGER_CACHE_DIR`：本地缓存目录
+
+### 示例
+
+```bash
+# 公开仓库：只需要项目 ID
+export FUND_MANAGER_GITLAB_PROJECT_ID="12345678"
+./scripts/fund-manager.sh status
+
+# 私有仓库：增加 token
+export FUND_MANAGER_GITLAB_PROJECT_ID="12345678"
+export FUND_MANAGER_GITLAB_TOKEN="<your-token>"
+./scripts/fund-manager.sh fund list
+
+# 固定版本
+export FUND_MANAGER_VERSION="0.1.0"
+./scripts/fund-manager.sh status
+
+# 强制覆盖下载源
+export FUND_MANAGER_CORE_URL="https://gitlab.example.com/api/v4/projects/123/packages/generic/fund-manager/0.1.0/fund-manager-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+./scripts/fund-manager.sh --help
 ```
 
 ## CLI 概述
@@ -166,10 +224,37 @@ fund-manager dividend <基金代码> --money 100
 
 | 变量 | 说明 |
 |------|------|
+| `FUND_MANAGER_GITLAB_PROJECT_ID` | GitLab 项目 ID（默认下载源必需） |
+| `FUND_MANAGER_GITLAB_TOKEN` | GitLab 私有仓库访问 token |
+| `FUND_MANAGER_VERSION` | 二进制版本（默认 latest） |
+| `FUND_MANAGER_CORE_URL` | 强制覆盖下载地址 |
+| `FUND_MANAGER_CORE_SHA256` | 下载归档 SHA256（可选） |
+| `FUND_MANAGER_GITLAB_BASE_URL` | GitLab 地址（默认 https://gitlab.com） |
+| `FUND_MANAGER_GITLAB_PACKAGE` | Package Registry 包名 |
+| `FUND_MANAGER_CACHE_DIR` | 二进制缓存目录 |
 | `FUND_MANAGER_APP_DIR` | 应用数据目录 |
 | `FUND_MANAGER_UA` | 自定义 User-Agent |
 | `SKIP_SYNC` | 跳过净值同步 |
 | `FORCE_SYNC_FAILURE` | 强制同步失败（测试用）|
+
+## GitLab CI 产物规范
+
+- Linux: `fund-manager-v<version>-x86_64-unknown-linux-gnu.tar.gz`
+- macOS: `fund-manager-v<version>-aarch64-apple-darwin.tar.gz`
+- Windows: `fund-manager-v<version>-x86_64-pc-windows-msvc.zip`（内含 `fund-manager.exe`）
+
+默认下载路径（Package Registry）：
+
+```text
+{GITLAB_BASE_URL}/api/v4/projects/{PROJECT_ID}/packages/generic/fund-manager/{VERSION}/{ASSET_NAME}
+```
+
+## 常见问题
+
+- `401 Unauthorized`：检查 `FUND_MANAGER_GITLAB_TOKEN` 是否有效、是否有读取 package 权限。
+- `403 Forbidden`：检查项目可见性、token 作用域与项目 ID 是否正确。
+- `404 Not Found`：检查 `FUND_MANAGER_VERSION` 与平台产物名是否存在。
+- 下载后执行失败：删除缓存目录后重试，或设置 `FUND_MANAGER_CORE_SHA256` 开启校验。
 
 ## 注意事项
 
