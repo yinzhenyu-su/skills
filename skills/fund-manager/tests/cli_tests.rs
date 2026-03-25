@@ -740,8 +740,8 @@ fn test_sell_all_shares() {
 }
 
 #[test]
-fn test_fund_import_arguments() {
-    let temp_app_dir = env::temp_dir().join("fund-manager-test-import-args");
+fn test_fund_import_holding_csv() {
+    let temp_app_dir = env::temp_dir().join("fund-manager-test-import-holding-csv");
     if temp_app_dir.exists() {
         fs::remove_dir_all(&temp_app_dir).unwrap();
     }
@@ -778,76 +778,18 @@ fn test_fund_import_arguments() {
         .unwrap();
     }
 
-    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
-        .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .env("SKIP_SYNC", "1")
-        .arg("import")
-        .arg("000300")
-        .arg("1000")
-        .arg("--date")
-        .arg(TEST_DATE)
-        .assert()
-        .success();
-
-    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
-        .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .env("SKIP_SYNC", "1")
-        .arg("status")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("1000"));
-}
-
-#[test]
-fn test_fund_import_csv() {
-    let temp_app_dir = env::temp_dir().join("fund-manager-test-import-csv");
-    if temp_app_dir.exists() {
-        fs::remove_dir_all(&temp_app_dir).unwrap();
-    }
-    fs::create_dir_all(&temp_app_dir).unwrap();
-    let app_dir_str = temp_app_dir.to_str().unwrap();
-
-    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
-        .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("wallet")
-        .arg("add")
-        .arg("Main")
-        .assert()
-        .success();
-    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
-        .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("wallet")
-        .arg("use")
-        .arg("Main")
-        .assert()
-        .success();
-    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
-        .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("000300")
-        .assert()
-        .success();
-
-    {
-        let db_path = temp_app_dir.join("fund.db");
-        let conn = rusqlite::Connection::open(db_path).unwrap();
-        conn.execute(
-            "INSERT INTO nav_history (fund_code, date, nav) VALUES ('000300', '2024-01-01', '1.0')",
-            [],
-        )
-        .unwrap();
-    }
-
-    let csv_path = temp_app_dir.join("data.csv");
+    // CSV format: 基金名称,持有金额,持有收益
+    let csv_path = temp_app_dir.join("holdings.csv");
     fs::write(
         &csv_path,
-        "name,money,date\n000300,5000,2024-01-01\ninvalid,100,2024-01-01\n",
+        "name,amount,profit\n000300,5000,500\ninvalid,100,10\n",
     )
     .unwrap();
 
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
-        .arg("import")
+        .arg("import-holding")
         .arg("--file")
         .arg(csv_path.to_str().unwrap())
         .assert()
@@ -863,8 +805,8 @@ fn test_fund_import_csv() {
 }
 
 #[test]
-fn test_fund_import_override() {
-    let temp_app_dir = env::temp_dir().join("fund-manager-test-import-override");
+fn test_fund_import_holding_override() {
+    let temp_app_dir = env::temp_dir().join("fund-manager-test-import-holding-override");
     if temp_app_dir.exists() {
         fs::remove_dir_all(&temp_app_dir).unwrap();
     }
@@ -901,31 +843,30 @@ fn test_fund_import_override() {
         .unwrap();
     }
 
-    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
-        .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .env("SKIP_SYNC", "1")
-        .arg("buy")
-        .arg("000300")
-        .arg("--money")
-        .arg("1000")
-        .arg("--shares")
-        .arg("1000")
-        .arg("--nav")
-        .arg("1.0")
-        .arg("--date")
-        .arg(TEST_DATE)
-        .assert()
-        .success();
+    // First import: 持有5000，盈利500
+    let csv_path1 = temp_app_dir.join("holdings1.csv");
+    fs::write(&csv_path1, "name,amount,profit\n000300,5000,500\n").unwrap();
 
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
         .env("SKIP_SYNC", "1")
-        .arg("import")
-        .arg("000300")
-        .arg("5000")
+        .arg("import-holding")
+        .arg("--file")
+        .arg(csv_path1.to_str().unwrap())
+        .assert()
+        .success();
+
+    // Override import: 持有8000，盈利800
+    let csv_path2 = temp_app_dir.join("holdings2.csv");
+    fs::write(&csv_path2, "name,amount,profit\n000300,8000,800\n").unwrap();
+
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .env("SKIP_SYNC", "1")
+        .arg("import-holding")
+        .arg("--file")
+        .arg(csv_path2.to_str().unwrap())
         .arg("--override")
-        .arg("--date")
-        .arg(TEST_DATE)
         .assert()
         .success();
 
@@ -935,8 +876,8 @@ fn test_fund_import_override() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("5000"))
-        .stdout(predicate::str::contains("6000").not());
+        .stdout(predicate::str::contains("8000"))
+        .stdout(predicate::str::contains("5000").not());
 }
 
 #[test]

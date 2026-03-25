@@ -102,35 +102,6 @@ pub enum Commands {
         #[arg(long)]
         date: Option<String>,
     },
-    /// 从 CSV 文件或参数批量导入基金持仓
-    #[command(
-        long_about = "批量导入基金持仓记录。\n\n示例：\n    fund import --file data.csv\n    fund import 000300 5000 000001 2000 --date 2024-01-01\n\nCSV 格式说明：\n    名称,金额[,日期]\n    沪深300,5000,2024-01-01"
-    )]
-    Import {
-        /// 要导入的 CSV 文件路径
-        #[arg(long)]
-        file: Option<std::path::PathBuf>,
-
-        /// 基金名称和金额的成对参数 [名称 金额]...
-        #[arg(num_args(0..))]
-        pairs: Vec<String>,
-
-        /// 与现有持仓合并（默认行为）
-        #[arg(long, conflicts_with = "override_flag")]
-        merge: bool,
-
-        /// 完全覆盖现有持仓记录
-        #[arg(long = "override")]
-        override_flag: bool,
-
-        /// 导入交易使用的特定钱包
-        #[arg(long)]
-        wallet: Option<String>,
-
-        /// 此次导入的全局交易日期 (YYYY-MM-DD)
-        #[arg(long)]
-        date: Option<String>,
-    },
     /// 从其他平台导入基金持仓（CSV 格式：基金名称,持有金额,持有收益）
     #[command(
         name = "import-holding",
@@ -144,7 +115,7 @@ pub enum Commands {
         #[arg(long, conflicts_with = "override_flag")]
         merge: bool,
         /// 完全覆盖现有导入记录
-        #[arg(long)]
+        #[arg(long = "override")]
         override_flag: bool,
         /// 导入使用的特定钱包
         #[arg(long)]
