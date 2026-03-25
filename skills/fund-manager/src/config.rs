@@ -2,7 +2,47 @@ use dirs;
 use std::env;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io;
+
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Config {
+    #[serde(default)]
+    pub default_market_items: Vec<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            default_market_items: Vec::new(),
+        }
+    }
+}
+
+impl Config {
+    pub fn load() -> Self {
+        let path = get_config_path();
+        if !path.exists() {
+            return Self::default();
+        }
+
+        let content = fs::read_to_string(path).unwrap_or_default();
+        serde_json::from_str(&content).unwrap_or_else(|_| Self::default())
+    }
+
+    pub fn save(&self) -> io::Result<()> {
+        let path = get_config_path();
+        let app_dir = get_app_dir();
+        if !app_dir.exists() {
+            fs::create_dir_all(app_dir)?;
+        }
+        let content = serde_json::to_string_pretty(self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        fs::write(path, content)
+    }
+}
 
 pub fn get_user_agent() -> String {
     env::var("FUND_MANAGER_UA").unwrap_or_else(|_| DEFAULT_USER_AGENT.to_string())

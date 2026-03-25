@@ -166,14 +166,33 @@ pub enum Commands {
         #[command(subcommand)]
         command: PreviewCommands,
     },
-    /// 查询主要市场指数的实时行情
+    /// 查询主要市场行情（指数、外汇、大宗商品）
     #[command(
-        long_about = "查询主要市场指数的实时行情。\n\n示例：\n    fund index                 # 查询所有默认指数\n    fund index 沪深300           # 仅查询沪深300指数\n    fund index 纳斯达克 标普500  # 查询多个指定的指数"
+        name = "market",
+        long_about = "查询主要市场指数、外汇及大宗商品的实时行情。\n\n示例：\n    fund market                 # 查询所有默认行情\n    fund market --fx            # 仅查询外汇行情\n    fund market --com           # 仅查询大宗商品\n    fund market --detail        # 查看包含 52 周区间的详细水位\n    fund market --trend         # 查看日内走势图\n    fund market 沪深300 黄金    # 查询多个指定的项"
     )]
-    Index {
-        /// 指定要查询的指数名称（可选，省略则显示全部默认指数）
+    Market {
+        /// 指定要查询的名称（可选，省略则显示全部默认行情）
         #[arg(num_args(0..))]
         names: Vec<String>,
+        /// 仅显示外汇行情
+        #[arg(long, default_value_t = false)]
+        fx: bool,
+        /// 仅显示大宗商品行情
+        #[arg(long, default_value_t = false)]
+        com: bool,
+        /// 仅显示股市指数
+        #[arg(long, default_value_t = false)]
+        index: bool,
+        /// 仅显示热门资产
+        #[arg(long, default_value_t = false)]
+        hot: bool,
+        /// 显示详细水位（52 周区间）
+        #[arg(short, long, default_value_t = false)]
+        detail: bool,
+        /// 显示趋势图（火花图）
+        #[arg(short, long, default_value_t = false)]
+        trend: bool,
     },
 }
 

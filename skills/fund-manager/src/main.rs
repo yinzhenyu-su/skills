@@ -33,6 +33,56 @@ fn get_today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
+fn render_sparkline(data: &[f64]) -> String {
+    if data.is_empty() {
+        return "N/A".to_string();
+    }
+    let min = data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let max = data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let range = max - min;
+    let chars = [' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+    data.iter()
+        .map(|&v| {
+            if range == 0.0 {
+                chars[4]
+            } else {
+                let idx = ((v - min) / range * 7.0).round() as usize;
+                chars[idx.min(7)]
+            }
+        })
+        .collect()
+}
+
+fn render_range_bar(current: f64, low: f64, high: f64) -> String {
+    let range = high - low;
+    if range <= 0.0 {
+        return "N/A".to_string();
+    }
+    let pct = ((current - low) / range).clamp(0.0, 1.0);
+    let bar_width = 10;
+    let pos = (pct * bar_width as f64).round() as usize;
+    
+    let mut bar = String::from("[ ");
+    for i in 0..bar_width {
+        if i == pos {
+            bar.push('■');
+        } else {
+            bar.push('□');
+        }
+    }
+    bar.push_str(" ]");
+    format!("{} ({:.0}%)", bar, pct * 100.0)
+}
+
+fn get_status_indicator(status: Option<i32>) -> &'static str {
+    match status {
+        Some(1) => "🟢",
+        Some(0) => "🔴",
+        _ => "⚪",
+    }
+}
+
 fn parse_date(date_str: &str) -> Result<String, String> {
     if date_str.len() != 10 {
         return Err("日期格式必须为 YYYY-MM-DD".to_string());
@@ -710,74 +760,136 @@ async fn handle_preview_buy(
     println!("└─────────────────────────────────────────────────────────┘");
 }
 
-async fn handle_market_index(names: &[String]) {
-    let filter_names = if names.is_empty() {
+async fn handle_market(
+    names: &[String],
+    fx: bool,
+    com: bool,
+    index: bool,
+    hot: bool,
+    detail: bool,
+    trend: bool,
+) {
+    use morningstar_market::MarketCategory;
+    use fund_manager::config::Config;
+    
+    let config = Config::load();
+    let effective_names = if names.is_empty() && !config.default_market_items.is_empty() {
+        Some(config.default_market_items.as_slice())
+    } else if names.is_empty() {
         None
     } else {
         Some(names)
     };
 
-    match morningstar_market::fetch_indices(filter_names).await {
-        Ok(indices) => {
-            if indices.is_empty() && filter_names.is_some() {
-                eprintln!("⚠️ 警告: 未找到指定的指数行情数据。");
-                eprintln!("支持的指数包括: 沪深300, 上证指数, 深证成指, 创业板指, 中证500, 恒生指数, 恒生科技, 标普500, 纳斯达克, 道琼斯等。");
+    let mut filter_cats = Vec::new();
+    if fx { filter_cats.push(MarketCategory::Forex); }
+    if com { filter_cats.push(MarketCategory::Commodity); }
+    if index {
+        filter_cats.push(MarketCategory::ChinaEquity);
+        filter_cats.push(MarketCategory::GlobalEquity);
+    }
+    if hot { filter_cats.push(MarketCategory::HotAssets); }
+
+    let categories = if filter_cats.is_empty() {
+        None
+    } else {
+        Some(filter_cats.as_slice())
+    };
+
+    match morningstar_market::fetch_market_data(effective_names, categories).await {
+        Ok(items) => {
+            if items.is_empty() && effective_names.is_some() {
+                eprintln!("⚠️ 警告: 未找到指定的行情数据。");
                 return;
             }
 
             // If user provided names, check for unrecognized ones
-            if let Some(target_names) = filter_names {
+            if let Some(target_names) = effective_names {
                 for name in target_names {
-                    if !indices.iter().any(|idx| &idx.name == name) {
-                        eprintln!("⚠️ 警告: 未找到名为 \"{}\" 的指数行情数据。", name);
+                    if !items.iter().any(|item| &item.name == name) {
+                        eprintln!("⚠️ 警告: 未找到名为 \"{}\" 的行情数据。", name);
                     }
                 }
             }
 
             let mut table = Table::new();
-            table.set_header(vec![
-                Cell::new("指数名称").set_alignment(CellAlignment::Left),
-                Cell::new("当前点位").set_alignment(CellAlignment::Right),
+            let mut headers = vec![
+                Cell::new("名称").set_alignment(CellAlignment::Left),
+                Cell::new("当前").set_alignment(CellAlignment::Right),
                 Cell::new("涨跌").set_alignment(CellAlignment::Right),
                 Cell::new("涨跌幅 (%)").set_alignment(CellAlignment::Right),
-            ]);
+            ];
+
+            if detail {
+                headers.push(Cell::new("52周区间 [L --- H]").set_alignment(CellAlignment::Center));
+            }
+            if trend {
+                headers.push(Cell::new("今日趋势").set_alignment(CellAlignment::Center));
+            }
+
+            table.set_header(headers);
 
             let mut current_market = String::new();
 
-            for idx in indices {
+            for item in items {
                 // Add market separator if changed
-                if idx.market != current_market {
-                    current_market = idx.market.clone();
-                    table.add_row(vec![
+                let market_name = item.category.to_str();
+                if market_name != current_market {
+                    current_market = market_name.to_string();
+                    let mut sep_row = vec![
                         Cell::new(format!("─── {} ───", current_market))
                             .add_attribute(comfy_table::Attribute::Bold)
                             .set_alignment(CellAlignment::Center),
                         Cell::new(""),
                         Cell::new(""),
                         Cell::new(""),
-                    ]);
+                    ];
+                    if detail { sep_row.push(Cell::new("")); }
+                    if trend { sep_row.push(Cell::new("")); }
+                    table.add_row(sep_row);
                 }
 
-                let color = if idx.change > 0.0 {
+                let color = if item.change > 0.0 {
                     Color::Red
-                } else if idx.change < 0.0 {
+                } else if item.change < 0.0 {
                     Color::Green
                 } else {
                     Color::Reset
                 };
 
-                table.add_row(vec![
-                    Cell::new(idx.name).set_alignment(CellAlignment::Left),
-                    Cell::new(format!("{:.2}", idx.current))
+                let mut row = vec![
+                    Cell::new(format!("{} {}", get_status_indicator(item.status), item.name))
+                        .set_alignment(CellAlignment::Left),
+                    Cell::new(format!("{:.2}", item.price))
                         .set_alignment(CellAlignment::Right)
                         .fg(color),
-                    Cell::new(format!("{:.2}", idx.change))
+                    Cell::new(format!("{:.2}", item.change))
                         .set_alignment(CellAlignment::Right)
                         .fg(color),
-                    Cell::new(format!("{:.2}%", idx.change_percent))
+                    Cell::new(format!("{:.2}%", item.pct))
                         .set_alignment(CellAlignment::Right)
                         .fg(color),
-                ]);
+                ];
+
+                if detail {
+                    let bar = if let (Some(l), Some(h)) = (item.w52_low, item.w52_high) {
+                        render_range_bar(item.price, l, h)
+                    } else {
+                        "N/A".to_string()
+                    };
+                    row.push(Cell::new(bar).set_alignment(CellAlignment::Left));
+                }
+
+                if trend {
+                    let spark = if let Some(t) = item.trend {
+                        render_sparkline(&t)
+                    } else {
+                        "N/A".to_string()
+                    };
+                    row.push(Cell::new(spark).set_alignment(CellAlignment::Center));
+                }
+
+                table.add_row(row);
             }
 
             println!("{}", table);
@@ -787,7 +899,7 @@ async fn handle_market_index(names: &[String]) {
             );
         }
         Err(e) => {
-            eprintln!("❌ 错误: 无法获取市场指数数据: {}", e);
+            eprintln!("❌ 错误: 无法获取市场数据: {}", e);
             std::process::exit(1);
         }
     }
@@ -2068,8 +2180,16 @@ async fn main() {
                     .await;
             }
         },
-        Commands::Index { names } => {
-            handle_market_index(names.as_slice()).await;
+        Commands::Market {
+            names,
+            fx,
+            com,
+            index,
+            hot,
+            detail,
+            trend,
+        } => {
+            handle_market(&names, fx, com, index, hot, detail, trend).await;
         }
     }
 }
