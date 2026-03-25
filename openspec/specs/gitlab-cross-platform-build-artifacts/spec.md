@@ -1,14 +1,15 @@
 ## ADDED Requirements
 
-### Requirement: Three-platform CI build matrix
+### Requirement: Six-platform GitHub Actions build matrix
 
-The CI pipeline SHALL build `fund-manager` release binaries for Linux, macOS, and Windows using platform-appropriate runners.
+The GitHub Actions pipeline SHALL build `fund-manager` release binaries for Linux, macOS, and Windows (x86_64 and aarch64) using a unified Linux runner and `cargo-zigbuild`.
 
-#### Scenario: Pipeline execution on main branch
+#### Scenario: Pipeline execution on main branch or tag
 
-- **WHEN** CI runs for the default branch
-- **THEN** the pipeline MUST include build jobs for Linux, macOS, and Windows targets
+- **WHEN** GitHub Actions runs for the default branch or a version tag
+- **THEN** the pipeline MUST include build jobs for 6 target triples
 - **THEN** each job MUST produce a release binary artifact for its target platform
+- **THEN** all build jobs MUST execute on an Ubuntu-based runner environment
 
 ### Requirement: Stable artifact naming convention
 

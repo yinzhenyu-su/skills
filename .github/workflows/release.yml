@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  PACKAGE_NAME: fund-manager
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    container:
+      image: messense/cargo-zigbuild:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu.2.17
+          - aarch64-unknown-linux-gnu.2.17
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-gnu
+          - aarch64-pc-windows-gnullvm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-${{ matrix.target }}-
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            skills/fund-manager/target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: Setup macOS SDK
+        if: contains(matrix.target, 'apple-darwin')
+        run: |
+          echo "SDKROOT=$(find /usr/osxcross -name "MacOSX*.sdk" | head -n 1)" >> $GITHUB_ENV
+
+      - name: Build
+        run: |
+          cd skills/fund-manager
+          cargo zigbuild --release --target ${{ matrix.target }} --locked
+
+      - name: Package
+        shell: bash
+        run: |
+          cd skills/fund-manager
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ $GITHUB_REF_TYPE != "tag" ]]; then
+            VERSION="0.0.0-${GITHUB_SHA:0:7}"
+          fi
+          
+          # Clean triple name for filename (remove glibc version)
+          CLEAN_TARGET=$(echo "${{ matrix.target }}" | cut -d. -f1)
+          
+          mkdir -p dist
+          BIN_NAME="fund-manager"
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            BIN_NAME="fund-manager.exe"
+            ASSET_NAME="fund-manager-v${VERSION}-${CLEAN_TARGET}.zip"
+            cp "target/${{ matrix.target }}/release/${BIN_NAME}" dist/
+            cd dist && zip "../${ASSET_NAME}" "${BIN_NAME}" && cd ..
+          else
+            ASSET_NAME="fund-manager-v${VERSION}-${CLEAN_TARGET}.tar.gz"
+            cp "target/${{ matrix.target }}/release/${BIN_NAME}" dist/
+            tar -czf "${ASSET_NAME}" -C dist "${BIN_NAME}"
+          fi
+          
+          echo "ASSET_PATH=skills/fund-manager/${ASSET_NAME}" >> $GITHUB_ENV
+          echo "ASSET_NAME=${ASSET_NAME}" >> $GITHUB_ENV
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET_NAME }}
+          path: ${{ env.ASSET_PATH }}
+
+  release:
+    name: Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

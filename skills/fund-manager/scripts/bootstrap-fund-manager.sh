@@ -49,11 +49,14 @@ detect_target() {
     Linux/aarch64|Linux/arm64)
       echo "aarch64-unknown-linux-gnu"
       ;;
-    MINGW64_NT-*/x86_64|MSYS_NT-*/x86_64|CYGWIN_NT-*/x86_64)
-      echo "x86_64-pc-windows-msvc"
+    MINGW*_NT-*/x86_64|MSYS_NT-*/x86_64|CYGWIN_NT-*/x86_64)
+      echo "x86_64-pc-windows-gnu"
+      ;;
+    MINGW*_NT-*/aarch64|MSYS_NT-*/aarch64|CYGWIN_NT-*/aarch64|ARM64_NT-*/aarch64)
+      echo "aarch64-pc-windows-gnullvm"
       ;;
     *)
-      die "unsupported platform: $os/$arch (supported: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc)"
+      die "unsupported platform: $os/$arch (supported: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-gnu, aarch64-pc-windows-gnullvm)"
       ;;
   esac
 }
@@ -62,14 +65,16 @@ build_default_url() {
   local version="$1"
   local target="$2"
   local ext="$3"
-  local base="${FUND_MANAGER_GITLAB_BASE_URL:-https://gitlab.com}"
-  local project_id="${FUND_MANAGER_GITLAB_PROJECT_ID:-}"
-  local package="${FUND_MANAGER_GITLAB_PACKAGE:-fund-manager}"
+  local base="${FUND_MANAGER_GITHUB_BASE_URL:-https://github.com}"
+  local repo="${FUND_MANAGER_GITHUB_REPO:-yinzhenyu-su/skills}"
   local asset="fund-manager-v${version}-${target}.${ext}"
 
-  [[ -n "$project_id" ]] || die "FUND_MANAGER_GITLAB_PROJECT_ID is required when FUND_MANAGER_CORE_URL is not set"
-
-  echo "${base%/}/api/v4/projects/${project_id}/packages/generic/${package}/${version}/${asset}"
+  if [[ "$version" == "latest" ]]; then
+    echo "${base%/}/${repo}/releases/latest/download/${asset}"
+  else
+    # We assume the tag name is v{version}
+    echo "${base%/}/${repo}/releases/download/v${version}/${asset}"
+  fi
 }
 
 validate_cached_binary() {
@@ -94,10 +99,13 @@ validate_cached_binary() {
 download_file() {
   local url="$1"
   local out="$2"
-  local token="${FUND_MANAGER_GITLAB_TOKEN:-}"
+  local token="${FUND_MANAGER_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
 
   if [[ -n "$token" ]]; then
-    curl -fL --retry 3 --retry-delay 1 -H "PRIVATE-TOKEN: ${token}" "$url" -o "$out"
+    # Note: GitHub Release asset downloads via API are different, 
+    # but for public assets or with auth header on browser-like URL it might work depending on repo visibility.
+    # For simplicity, we use Bearer token if provided.
+    curl -fL --retry 3 --retry-delay 1 -H "Authorization: Bearer ${token}" "$url" -o "$out"
   else
     curl -fL --retry 3 --retry-delay 1 "$url" -o "$out"
   fi
