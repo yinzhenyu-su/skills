@@ -4,7 +4,7 @@ use csv::ReaderBuilder;
 use fund_manager::cli::{Cli, Commands, FundCommands, PreviewCommands, WalletCommands};
 use fund_manager::db;
 use fund_manager::finance;
-use fund_manager::provider::{Provider, eastmoney_lsjz::EastmoneyLsjzProvider};
+use fund_manager::provider::{morningstar_market, Provider, eastmoney_lsjz::EastmoneyLsjzProvider};
 use fund_manager::{config, resolver, sync};
 use rusqlite::Connection;
 use rust_decimal::Decimal;
@@ -951,6 +951,89 @@ async fn handle_preview_buy(
     println!("│   成本: {} → {}", current_cost, new_total_cost);
     println!("│   均价: {} → {}", current_avg_cost, new_avg_cost);
     println!("└─────────────────────────────────────────────────────────┘");
+}
+
+async fn handle_market_index(names: &[String]) {
+    let filter_names = if names.is_empty() {
+        None
+    } else {
+        Some(names)
+    };
+
+    match morningstar_market::fetch_indices(filter_names).await {
+        Ok(indices) => {
+            if indices.is_empty() && filter_names.is_some() {
+                eprintln!("⚠️ 警告: 未找到指定的指数行情数据。");
+                eprintln!("支持的指数包括: 沪深300, 上证指数, 深证成指, 创业板指, 中证500, 恒生指数, 恒生科技, 标普500, 纳斯达克, 道琼斯等。");
+                return;
+            }
+
+            // If user provided names, check for unrecognized ones
+            if let Some(target_names) = filter_names {
+                for name in target_names {
+                    if !indices.iter().any(|idx| &idx.name == name) {
+                        eprintln!("⚠️ 警告: 未找到名为 \"{}\" 的指数行情数据。", name);
+                    }
+                }
+            }
+
+            let mut table = Table::new();
+            table.set_header(vec![
+                Cell::new("指数名称").set_alignment(CellAlignment::Left),
+                Cell::new("当前点位").set_alignment(CellAlignment::Right),
+                Cell::new("涨跌").set_alignment(CellAlignment::Right),
+                Cell::new("涨跌幅 (%)").set_alignment(CellAlignment::Right),
+            ]);
+
+            let mut current_market = String::new();
+
+            for idx in indices {
+                // Add market separator if changed
+                if idx.market != current_market {
+                    current_market = idx.market.clone();
+                    table.add_row(vec![
+                        Cell::new(format!("─── {} ───", current_market))
+                            .add_attribute(comfy_table::Attribute::Bold)
+                            .set_alignment(CellAlignment::Center),
+                        Cell::new(""),
+                        Cell::new(""),
+                        Cell::new(""),
+                    ]);
+                }
+
+                let color = if idx.change > 0.0 {
+                    Color::Red
+                } else if idx.change < 0.0 {
+                    Color::Green
+                } else {
+                    Color::Reset
+                };
+
+                table.add_row(vec![
+                    Cell::new(idx.name).set_alignment(CellAlignment::Left),
+                    Cell::new(format!("{:.2}", idx.current))
+                        .set_alignment(CellAlignment::Right)
+                        .fg(color),
+                    Cell::new(format!("{:.2}", idx.change))
+                        .set_alignment(CellAlignment::Right)
+                        .fg(color),
+                    Cell::new(format!("{:.2}%", idx.change_percent))
+                        .set_alignment(CellAlignment::Right)
+                        .fg(color),
+                ]);
+            }
+
+            println!("{}", table);
+            println!(
+                "\n数据来源: 晨星 (Morningstar) | 更新时间: {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
+        }
+        Err(e) => {
+            eprintln!("❌ 错误: 无法获取市场指数数据: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 async fn handle_preview_sell(
@@ -2072,6 +2155,9 @@ async fn main() {
                 handle_preview_sell(&conn, wallet_id, &fund_input, money, shares, nav, date.as_deref())
                     .await;
             }
+        },
+        Commands::Index { names } => {
+            handle_market_index(names.as_slice()).await;
         }
     }
 }

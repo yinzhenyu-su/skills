@@ -1372,7 +1372,7 @@ mod tests {
         .unwrap();
 
         // Settle
-        settle_transaction(&conn, 1, "666.67", "1.5000").unwrap();
+        super::update_transaction_settlement(&conn, 1, "666.67", "1.5000", "0.00", "1000.00", "settled").unwrap();
 
         // Verify
         let mut stmt = conn

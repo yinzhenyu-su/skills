@@ -1124,3 +1124,9 @@ fn test_missing_required_argument_format() {
         .stderr(predicate::str::contains("❌ 缺少基金标识符参数"))
         .stderr(predicate::str::contains("用法示例：fund buy"));
 }
+
+#[test]
+fn test_index_command() {
+    let ctx = TestContext::new("index-command");
+    ctx.cmd().arg("index").assert().success();
+}

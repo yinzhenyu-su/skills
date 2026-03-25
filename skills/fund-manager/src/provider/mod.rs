@@ -70,4 +70,5 @@ pub mod eastmoney_html;
 pub mod eastmoney_js;
 pub mod eastmoney_lsjz;
 pub mod morningstar;
+pub mod morningstar_market;
 pub mod morningstar_search;

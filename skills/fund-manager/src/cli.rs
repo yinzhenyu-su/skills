@@ -195,6 +195,15 @@ pub enum Commands {
         #[command(subcommand)]
         command: PreviewCommands,
     },
+    /// 查询主要市场指数的实时行情
+    #[command(
+        long_about = "查询主要市场指数的实时行情。\n\n示例：\n    fund index                 # 查询所有默认指数\n    fund index 沪深300           # 仅查询沪深300指数\n    fund index 纳斯达克 标普500  # 查询多个指定的指数"
+    )]
+    Index {
+        /// 指定要查询的指数名称（可选，省略则显示全部默认指数）
+        #[arg(num_args(0..))]
+        names: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
