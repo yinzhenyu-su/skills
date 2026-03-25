@@ -375,6 +375,9 @@ pub async fn sync_fund_details(conn: &Connection, code: &str) -> Result<Fund, St
     aggregator.add_provider(Box::new(
         crate::provider::eastmoney_html::EastmoneyHtmlProvider,
     ));
+    aggregator.add_provider(Box::new(
+        crate::provider::eastmoney_lsjz::EastmoneyLsjzProvider,
+    ));
     aggregator.add_provider(Box::new(crate::provider::morningstar::MorningstarProvider));
 
     let data = aggregator.fetch_all(code).await?;
@@ -405,6 +408,28 @@ pub async fn sync_fund_details(conn: &Connection, code: &str) -> Result<Fund, St
             &nav.to_string(),
             data.acc_nav.as_ref().map(|d| d.to_string()).as_deref(),
         )
+            .map_err(|e| e.to_string())?;
+    }
+
+    if data.subscription_status.is_some()
+        || data.redemption_status.is_some()
+        || data.min_subscription_amount.is_some()
+        || data.limit_per_transaction.is_some()
+        || data.settlement_days.is_some()
+    {
+        let tradability = db::FundTradability {
+            fund_code: data.code.clone(),
+            subscription_status: data.subscription_status.clone(),
+            redemption_status: data.redemption_status.clone(),
+            min_subscription_amount: data.min_subscription_amount,
+            limit_per_transaction: data.limit_per_transaction,
+            settlement_days: data.settlement_days,
+        };
+        db::upsert_fund_tradability(conn, &tradability).map_err(|e| e.to_string())?;
+    }
+
+    if !data.redemption_fee_tiers.is_empty() {
+        db::replace_redemption_fee_tiers(conn, &data.code, &data.redemption_fee_tiers)
             .map_err(|e| e.to_string())?;
     }
 

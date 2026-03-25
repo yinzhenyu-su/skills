@@ -2,6 +2,15 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::str::FromStr;
 
+pub fn days_since(date_str: &str) -> i64 {
+    let target = match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+    let today = chrono::Local::now().date_naive();
+    (today - target).num_days()
+}
+
 pub struct PurchaseResult {
     pub shares: Decimal,
     pub fee: Decimal,
@@ -287,5 +296,29 @@ mod tests {
         assert_eq!(shares, dec!(10000.00));
         assert_eq!(cost_basis, dec!(10000.00));
         assert_eq!(cost_per_share, dec!(1.0000));
+    }
+
+    #[test]
+    fn test_days_since_today() {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert_eq!(days_since(&today), 0);
+    }
+
+    #[test]
+    fn test_days_since_past_date() {
+        let today = chrono::Local::now().date_naive();
+        let past = (today - chrono::Duration::days(10))
+            .format("%Y-%m-%d")
+            .to_string();
+        assert_eq!(days_since(&past), 10);
+    }
+
+    #[test]
+    fn test_days_since_future_date() {
+        let today = chrono::Local::now().date_naive();
+        let future = (today + chrono::Duration::days(3))
+            .format("%Y-%m-%d")
+            .to_string();
+        assert_eq!(days_since(&future), -3);
     }
 }

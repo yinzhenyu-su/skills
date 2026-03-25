@@ -1,6 +1,6 @@
 use rusqlite::{Connection, Result};
-use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -184,6 +184,38 @@ fn setup_schema(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS fund_tradability (
+            fund_code TEXT PRIMARY KEY,
+            subscription_status TEXT,
+            redemption_status TEXT,
+            min_subscription_amount TEXT,
+            limit_per_transaction TEXT,
+            settlement_days INTEGER,
+            last_update DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (fund_code) REFERENCES fund (code) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS redemption_fee_tiers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fund_code TEXT NOT NULL,
+            min_days INTEGER NOT NULL,
+            max_days INTEGER,
+            fee_rate TEXT NOT NULL,
+            FOREIGN KEY (fund_code) REFERENCES fund (code) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_redemption_fee_tiers_fund_code
+         ON redemption_fee_tiers (fund_code)",
+        [],
+    )?;
+
     Ok(())
 }
 
@@ -290,9 +322,8 @@ pub fn get_earliest_transaction_date(
     wallet_id: i64,
     fund_code: &str,
 ) -> Result<Option<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT MIN(date) FROM transaction_log WHERE wallet_id = ?1 AND fund_code = ?2",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT MIN(date) FROM transaction_log WHERE wallet_id = ?1 AND fund_code = ?2")?;
     let mut rows = stmt.query(rusqlite::params![wallet_id, fund_code])?;
     if let Some(row) = rows.next()? {
         Ok(row.get(0)?)
@@ -858,6 +889,30 @@ pub struct Holding {
     pub latest_nav: Option<Decimal>,
     pub cumulative_dividend: Decimal,
     pub wallet_id: i64,
+    pub holding_days: Option<i64>,
+    pub allocation_pct: Option<f64>,
+}
+
+pub fn get_first_buy_date(
+    conn: &Connection,
+    wallet_id: i64,
+    fund_code: &str,
+) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT MIN(date)
+         FROM transaction_log
+         WHERE wallet_id = ?1
+           AND fund_code = ?2
+           AND status = 'settled'
+           AND type IN ('buy', 'import')",
+    )?;
+
+    let mut rows = stmt.query(rusqlite::params![wallet_id, fund_code])?;
+    if let Some(row) = rows.next()? {
+        Ok(row.get(0)?)
+    } else {
+        Ok(None)
+    }
 }
 
 pub fn get_holdings(
@@ -913,13 +968,21 @@ pub fn get_holdings(
         Ok(Holding {
             fund_code: row.get(0)?,
             fund_name: row.get(1)?,
-            shares: Decimal::from_f64(row.get(2)?).unwrap_or_default().round_dp(2),
-            net_cost: Decimal::from_f64(row.get(3)?).unwrap_or_default().round_dp(2),
+            shares: Decimal::from_f64(row.get(2)?)
+                .unwrap_or_default()
+                .round_dp(2),
+            net_cost: Decimal::from_f64(row.get(3)?)
+                .unwrap_or_default()
+                .round_dp(2),
             latest_nav: row
                 .get::<_, Option<String>>(4)?
                 .and_then(|s| Decimal::from_str(&s).ok()),
-            cumulative_dividend: Decimal::from_f64(row.get(5)?).unwrap_or_default().round_dp(2),
+            cumulative_dividend: Decimal::from_f64(row.get(5)?)
+                .unwrap_or_default()
+                .round_dp(2),
             wallet_id: row.get(6)?,
+            holding_days: None,
+            allocation_pct: None,
         })
     })?;
 
@@ -941,10 +1004,8 @@ pub fn get_fund_shares(conn: &Connection, wallet_id: i64, fund_code: &str) -> Re
          FROM transaction_log
          WHERE wallet_id = ?1 AND fund_code = ?2 AND status = 'settled'",
     )?;
-    let val: Option<f64> = stmt.query_row(
-        rusqlite::params![wallet_id, fund_code],
-        |row| row.get(0),
-    )?;
+    let val: Option<f64> =
+        stmt.query_row(rusqlite::params![wallet_id, fund_code], |row| row.get(0))?;
     let shares_f64 = val.unwrap_or(0.0);
     Ok(Decimal::from_f64(shares_f64)
         .unwrap_or_default()
@@ -989,6 +1050,16 @@ pub struct FundAnalysis {
     pub last_update: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct FundTradability {
+    pub fund_code: String,
+    pub subscription_status: Option<String>,
+    pub redemption_status: Option<String>,
+    pub min_subscription_amount: Option<Decimal>,
+    pub limit_per_transaction: Option<Decimal>,
+    pub settlement_days: Option<i32>,
+}
+
 pub fn add_fund_analysis(conn: &Connection, analysis: &FundAnalysis) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO fund_analysis (
@@ -1030,6 +1101,109 @@ pub fn get_fund_analysis(conn: &Connection, code: &str) -> Result<Option<FundAna
             max_drawdown_3y: row.get(7)?,
             investor_gap_3y: row.get(8)?,
             last_update: row.get(9)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn upsert_fund_tradability(conn: &Connection, tradability: &FundTradability) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO fund_tradability (
+            fund_code,
+            subscription_status,
+            redemption_status,
+            min_subscription_amount,
+            limit_per_transaction,
+            settlement_days,
+            last_update
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP)",
+        rusqlite::params![
+            tradability.fund_code,
+            tradability.subscription_status,
+            tradability.redemption_status,
+            tradability.min_subscription_amount.map(|d| d.to_string()),
+            tradability.limit_per_transaction.map(|d| d.to_string()),
+            tradability.settlement_days,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn replace_redemption_fee_tiers(
+    conn: &Connection,
+    fund_code: &str,
+    tiers: &[(i32, Option<i32>, Decimal)],
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM redemption_fee_tiers WHERE fund_code = ?1",
+        [fund_code],
+    )?;
+
+    for (min_days, max_days, fee_rate) in tiers {
+        conn.execute(
+            "INSERT INTO redemption_fee_tiers (fund_code, min_days, max_days, fee_rate)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![fund_code, min_days, max_days, fee_rate.to_string()],
+        )?;
+    }
+
+    Ok(())
+}
+
+pub fn get_redemption_fee_rate(
+    conn: &Connection,
+    fund_code: &str,
+    holding_days: i32,
+) -> Result<Option<Decimal>> {
+    let mut stmt = conn.prepare(
+        "SELECT fee_rate
+         FROM redemption_fee_tiers
+         WHERE fund_code = ?1
+           AND ?2 >= min_days
+           AND (max_days IS NULL OR ?2 <= max_days)
+         ORDER BY min_days DESC
+         LIMIT 1",
+    )?;
+
+    let mut rows = stmt.query(rusqlite::params![fund_code, holding_days])?;
+    if let Some(row) = rows.next()? {
+        let fee_rate: String = row.get(0)?;
+        Ok(Decimal::from_str(&fee_rate).ok())
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn get_fund_tradability(conn: &Connection, fund_code: &str) -> Result<Option<FundTradability>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+            fund_code,
+            subscription_status,
+            redemption_status,
+            min_subscription_amount,
+            limit_per_transaction,
+            settlement_days
+         FROM fund_tradability
+         WHERE fund_code = ?1",
+    )?;
+
+    let mut rows = stmt.query([fund_code])?;
+    if let Some(row) = rows.next()? {
+        let min_subscription_amount: Option<String> = row.get(3)?;
+        let limit_per_transaction: Option<String> = row.get(4)?;
+
+        Ok(Some(FundTradability {
+            fund_code: row.get(0)?,
+            subscription_status: row.get(1)?,
+            redemption_status: row.get(2)?,
+            min_subscription_amount: min_subscription_amount
+                .as_deref()
+                .and_then(|v| Decimal::from_str(v).ok()),
+            limit_per_transaction: limit_per_transaction
+                .as_deref()
+                .and_then(|v| Decimal::from_str(v).ok()),
+            settlement_days: row.get(5)?,
         }))
     } else {
         Ok(None)
@@ -1166,6 +1340,244 @@ mod tests {
         let result =
             find_next_available_nav(&conn, "000300", "2026-03-16", 20).expect("Failed to query");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_fund_tradability_upsert_and_get() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            Some("股票型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        let tradability = FundTradability {
+            fund_code: "000300".to_string(),
+            subscription_status: Some("开放申购".to_string()),
+            redemption_status: Some("开放赎回".to_string()),
+            min_subscription_amount: Some(Decimal::from_str("100.00").unwrap()),
+            limit_per_transaction: Some(Decimal::from_str("500000.00").unwrap()),
+            settlement_days: None,
+        };
+
+        upsert_fund_tradability(&conn, &tradability).expect("Failed to upsert tradability");
+
+        let loaded = get_fund_tradability(&conn, "000300")
+            .expect("Failed to get tradability")
+            .expect("Expected tradability data");
+
+        assert_eq!(loaded.fund_code, "000300");
+        assert_eq!(loaded.subscription_status.as_deref(), Some("开放申购"));
+        assert_eq!(loaded.redemption_status.as_deref(), Some("开放赎回"));
+        assert_eq!(
+            loaded.min_subscription_amount,
+            Decimal::from_str("100.00").ok()
+        );
+        assert_eq!(
+            loaded.limit_per_transaction,
+            Decimal::from_str("500000.00").ok()
+        );
+        assert_eq!(loaded.settlement_days, None);
+    }
+
+    #[test]
+    fn test_get_redemption_fee_rate_by_holding_days() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            Some("股票型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        let tiers = vec![
+            (
+                0,
+                Some(6),
+                Decimal::from_str("0.015").expect("Invalid decimal"),
+            ),
+            (
+                7,
+                Some(29),
+                Decimal::from_str("0.005").expect("Invalid decimal"),
+            ),
+            (
+                30,
+                None,
+                Decimal::from_str("0.000").expect("Invalid decimal"),
+            ),
+        ];
+
+        replace_redemption_fee_tiers(&conn, "000300", &tiers)
+            .expect("Failed to replace redemption tiers");
+
+        assert_eq!(
+            get_redemption_fee_rate(&conn, "000300", 3).unwrap(),
+            Decimal::from_str("0.015").ok()
+        );
+        assert_eq!(
+            get_redemption_fee_rate(&conn, "000300", 10).unwrap(),
+            Decimal::from_str("0.005").ok()
+        );
+        assert_eq!(
+            get_redemption_fee_rate(&conn, "000300", 120).unwrap(),
+            Decimal::from_str("0.000").ok()
+        );
+    }
+
+    #[test]
+    fn test_get_first_buy_date() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).unwrap();
+
+        add_wallet(&conn, "默认").expect("Failed to add wallet");
+        let wallet_id = get_wallet_id_by_name(&conn, "默认")
+            .unwrap()
+            .expect("Wallet should exist");
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            Some("股票型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        add_transaction(
+            &conn,
+            wallet_id,
+            "000300",
+            "buy",
+            "1000",
+            Some("500"),
+            Some("2"),
+            "0",
+            "2026-01-10",
+            "settled",
+            None,
+            "manual",
+        )
+        .expect("Failed to add first buy");
+        add_transaction(
+            &conn,
+            wallet_id,
+            "000300",
+            "buy",
+            "800",
+            Some("400"),
+            Some("2"),
+            "0",
+            "2026-02-10",
+            "settled",
+            None,
+            "manual",
+        )
+        .expect("Failed to add second buy");
+
+        assert_eq!(
+            get_first_buy_date(&conn, wallet_id, "000300").unwrap(),
+            Some("2026-01-10".to_string())
+        );
+
+        assert_eq!(
+            get_first_buy_date(&conn, wallet_id, "999999").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_get_first_buy_date_single_buy() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).unwrap();
+
+        add_wallet(&conn, "默认").expect("Failed to add wallet");
+        let wallet_id = get_wallet_id_by_name(&conn, "默认")
+            .unwrap()
+            .expect("Wallet should exist");
+
+        add_fund(
+            &conn,
+            "110011",
+            "易方达",
+            Some("债券型"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        // Single buy transaction
+        add_transaction(
+            &conn,
+            wallet_id,
+            "110011",
+            "buy",
+            "2000",
+            Some("1000"),
+            Some("2"),
+            "0",
+            "2025-06-15",
+            "settled",
+            None,
+            "manual",
+        )
+        .expect("Failed to add buy");
+
+        // Single buy → returns that date
+        assert_eq!(
+            get_first_buy_date(&conn, wallet_id, "110011").unwrap(),
+            Some("2025-06-15".to_string())
+        );
+
+        // No holding for other fund → None
+        assert_eq!(
+            get_first_buy_date(&conn, wallet_id, "000001").unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -1470,7 +1882,10 @@ mod tests {
         .unwrap();
 
         // Settle
-        super::update_transaction_settlement(&conn, 1, "666.67", "1.5000", "0.00", "1000.00", "settled").unwrap();
+        super::update_transaction_settlement(
+            &conn, 1, "666.67", "1.5000", "0.00", "1000.00", "settled",
+        )
+        .unwrap();
 
         // Verify
         let mut stmt = conn

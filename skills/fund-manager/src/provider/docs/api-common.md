@@ -575,3 +575,7 @@ jQuery18306819045531849094_1773656476226({
     "PageIndex": 1
 })
 ```
+
+## 获取基金分段费率
+
+请求接口 GET <https://www.morningstar.cn/cn-api/v2/funds/000300/fees>

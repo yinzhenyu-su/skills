@@ -223,7 +223,9 @@ fn test_e2e_full_lifecycle() {
     // 2. Add Fund
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("000001")
+        .arg("fund")
+        .arg("add")
+        .arg("000001")
         .assert()
         .success();
 
@@ -406,7 +408,9 @@ fn test_fund_delete_cascade() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("000300")
+        .arg("fund")
+        .arg("add")
+        .arg("000300")
         .assert()
         .success();
 
@@ -470,7 +474,9 @@ fn test_fund_delete_with_yes_flag() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("000300")
+        .arg("fund")
+        .arg("add")
+        .arg("000300")
         .assert()
         .success();
 
@@ -509,7 +515,9 @@ fn test_sell_basic_flow() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("000300")
+        .arg("fund")
+        .arg("add")
+        .arg("000300")
         .assert()
         .success();
 
@@ -575,7 +583,9 @@ fn test_sell_auto_calculation() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("000300")
+        .arg("fund")
+        .arg("add")
+        .arg("000300")
         .assert()
         .success();
 
@@ -645,7 +655,9 @@ fn test_sell_insufficient_shares() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("000300")
+        .arg("fund")
+        .arg("add")
+        .arg("000300")
         .assert()
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
@@ -699,7 +711,9 @@ fn test_sell_all_shares() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("000300")
+        .arg("fund")
+        .arg("add")
+        .arg("000300")
         .assert()
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
@@ -764,7 +778,9 @@ fn test_fund_import_holding_csv() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("000300")
+        .arg("fund")
+        .arg("add")
+        .arg("000300")
         .assert()
         .success();
 
@@ -829,7 +845,9 @@ fn test_fund_import_holding_override() {
         .success();
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("000300")
+        .arg("fund")
+        .arg("add")
+        .arg("000300")
         .assert()
         .success();
 
@@ -948,7 +966,9 @@ fn test_fund_457001_profit_loss_calculation() {
 
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund").arg("add").arg("457001")
+        .arg("fund")
+        .arg("add")
+        .arg("457001")
         .arg("--fee")
         .arg("0.0015")
         .assert()
@@ -1041,7 +1061,9 @@ fn test_misplaced_subcommand_hint() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("❌ 未识别的参数或子命令 'use'"))
-        .stderr(predicate::str::contains("💡 Hint: 你是不是想找：'fund wallet use'？"));
+        .stderr(predicate::str::contains(
+            "💡 Hint: 你是不是想找：'fund wallet use'？",
+        ));
 
     // fund walllet list (typo)
     ctx.cmd()
@@ -1049,8 +1071,12 @@ fn test_misplaced_subcommand_hint() {
         .arg("list")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("❌ 未识别的参数或子命令 'walllet'"))
-        .stderr(predicate::str::contains("❓ 未识别的子命令 'walllet'。你是不是想找：'wallet'？"));
+        .stderr(predicate::str::contains(
+            "❌ 未识别的参数或子命令 'walllet'",
+        ))
+        .stderr(predicate::str::contains(
+            "❓ 未识别的子命令 'walllet'。你是不是想找：'wallet'？",
+        ));
 }
 
 #[test]
@@ -1070,4 +1096,195 @@ fn test_missing_required_argument_format() {
 fn test_index_command() {
     let ctx = TestContext::new("index-command");
     ctx.cmd().arg("index").assert().success();
+}
+
+#[test]
+fn test_status_columns_holding_days_fee_allocation() {
+    let temp_app_dir = env::temp_dir().join("fund-manager-test-status-cols");
+    if temp_app_dir.exists() {
+        fs::remove_dir_all(&temp_app_dir).unwrap();
+    }
+    fs::create_dir_all(&temp_app_dir).unwrap();
+    let app_dir_str = temp_app_dir.to_str().unwrap();
+
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("add")
+        .arg("Test")
+        .assert()
+        .success();
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("use")
+        .arg("Test")
+        .assert()
+        .success();
+
+    {
+        let db_path = temp_app_dir.join("fund.db");
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.execute(
+            "INSERT INTO fund (code, name, management_fee) VALUES ('000300', '沪深300', '0.00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO nav_history (fund_code, date, nav) VALUES ('000300', '2024-01-01', '1.00')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO nav_history (fund_code, date, nav) VALUES ('000300', '2026-01-01', '1.20')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO transaction_log (wallet_id, fund_code, type, money, shares, nav, fee, date, status)
+             VALUES (1, '000300', 'buy', '1000', '1000', '1.00', '0', '2024-01-01', 'settled')",
+            [],
+        ).unwrap();
+    }
+
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .env("SKIP_SYNC", "1")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("持有天数"))
+        .stdout(predicate::str::contains("赎回费率"))
+        .stdout(predicate::str::contains("仓位占比"));
+}
+
+#[test]
+fn test_preview_sell_shows_holding_days_and_fee_rate() {
+    let temp_app_dir = env::temp_dir().join("fund-manager-test-preview-sell-fee");
+    if temp_app_dir.exists() {
+        fs::remove_dir_all(&temp_app_dir).unwrap();
+    }
+    fs::create_dir_all(&temp_app_dir).unwrap();
+    let app_dir_str = temp_app_dir.to_str().unwrap();
+
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("add")
+        .arg("Test")
+        .assert()
+        .success();
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("use")
+        .arg("Test")
+        .assert()
+        .success();
+
+    {
+        let db_path = temp_app_dir.join("fund.db");
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.execute(
+            "INSERT INTO fund (code, name, management_fee) VALUES ('000300', '沪深300', '0.00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO nav_history (fund_code, date, nav) VALUES ('000300', '2026-01-01', '1.50')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO transaction_log (wallet_id, fund_code, type, money, shares, nav, fee, date, status)
+             VALUES (1, '000300', 'buy', '1000', '1000', '1.00', '0', '2026-01-01', 'settled')",
+            [],
+        ).unwrap();
+        // Insert a redemption fee tier: 0+ days → 0.5%
+        conn.execute(
+            "INSERT INTO redemption_fee_tiers (fund_code, min_days, max_days, fee_rate) VALUES ('000300', 0, NULL, '0.005')",
+            [],
+        ).unwrap();
+    }
+
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .env("SKIP_SYNC", "1")
+        .arg("preview")
+        .arg("sell")
+        .arg("000300")
+        .arg("--shares")
+        .arg("500")
+        .arg("--nav")
+        .arg("1.50")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("赎回费率"));
+}
+
+#[test]
+fn test_sell_auto_fee_rate_from_tiers() {
+    let temp_app_dir = env::temp_dir().join("fund-manager-test-sell-auto-fee");
+    if temp_app_dir.exists() {
+        fs::remove_dir_all(&temp_app_dir).unwrap();
+    }
+    fs::create_dir_all(&temp_app_dir).unwrap();
+    let app_dir_str = temp_app_dir.to_str().unwrap();
+
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("add")
+        .arg("Test")
+        .assert()
+        .success();
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("use")
+        .arg("Test")
+        .assert()
+        .success();
+
+    {
+        let db_path = temp_app_dir.join("fund.db");
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.execute(
+            "INSERT INTO fund (code, name, management_fee) VALUES ('000300', '沪深300', '0.00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO nav_history (fund_code, date, nav) VALUES ('000300', '2026-01-01', '1.00')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO nav_history (fund_code, date, nav) VALUES ('000300', '2026-03-09', '1.20')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO transaction_log (wallet_id, fund_code, type, money, shares, nav, fee, date, status)
+             VALUES (1, '000300', 'buy', '1000', '1000', '1.00', '0', '2026-01-01', 'settled')",
+            [],
+        ).unwrap();
+        // Fee tier: 0+ days → 0.5%
+        conn.execute(
+            "INSERT INTO redemption_fee_tiers (fund_code, min_days, max_days, fee_rate) VALUES ('000300', 0, NULL, '0.005')",
+            [],
+        ).unwrap();
+    }
+
+    // sell without --fee: should auto-apply tier
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .env("SKIP_SYNC", "1")
+        .arg("sell")
+        .arg("000300")
+        .arg("--shares")
+        .arg("500")
+        .arg("--nav")
+        .arg("1.20")
+        .arg("--date")
+        .arg(TEST_DATE)
+        .arg("-y")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("赎回费用"));
 }

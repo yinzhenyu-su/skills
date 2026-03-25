@@ -8,7 +8,7 @@ use fund_manager::provider::{morningstar_market, Provider, eastmoney_lsjz::Eastm
 use fund_manager::{config, resolver, sync};
 use rusqlite::Connection;
 use rust_decimal::Decimal;
-use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal_macros::dec;
 use std::fs;
 use std::io::{self, Write};
@@ -259,7 +259,8 @@ async fn handle_inspect(
     };
 
     if let Some(a) = final_analysis {
-        format_inspect_report(&fund, &a);
+        let tradability = db::get_fund_tradability(conn, &fund.code).ok().flatten();
+        format_inspect_report(&fund, &a, tradability);
     } else {
         println!("❌ 暂无该基金的分析数据。");
     }
@@ -267,7 +268,7 @@ async fn handle_inspect(
     Ok(())
 }
 
-fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
+fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis, tradability: Option<db::FundTradability>) {
     let mut table = Table::new();
     table.set_header(vec!["评价指标", "数值", "指标说明"]);
 
@@ -353,6 +354,35 @@ fn format_inspect_report(fund: &db::Fund, analysis: &db::FundAnalysis) {
                 g
             );
             println!("   且投资者常因追涨杀跌（择时错误）导致亏损。");
+        }
+    }
+
+    // 交易信息区块
+    println!("\n🏦 交易信息");
+    match tradability {
+        None => {
+            println!("  数据不可用（运行 fund sync 更新）");
+        }
+        Some(t) => {
+            let format_status = |s: &Option<String>| -> String {
+                match s {
+                    None => "未知".to_string(),
+                    Some(v) if v.contains("暂停") => format!("⚠️  {}", v),
+                    Some(v) => v.clone(),
+                }
+            };
+            println!("  申购状态：{}", format_status(&t.subscription_status));
+            println!("  赎回状态：{}", format_status(&t.redemption_status));
+            if let Some(min) = t.min_subscription_amount {
+                println!("  最低买入额：{} 元", min);
+            }
+            if let Some(limit) = t.limit_per_transaction {
+                println!("  单笔限购额：{} 元", limit);
+            }
+            match t.settlement_days {
+                Some(d) => println!("  资金到账天数：T+{}", d),
+                None => println!("  资金到账天数：未知"),
+            }
         }
     }
 }
@@ -771,6 +801,7 @@ async fn handle_preview_sell(
     shares: Option<String>,
     nav: Option<String>,
     date: Option<&str>,
+    fee_input: Option<String>,
 ) {
     let fund_obj = match resolver::resolve_fund(conn, fund, true).await {
         Ok(f) => f,
@@ -840,31 +871,59 @@ async fn handle_preview_sell(
         }
     };
 
+    // Lookup holding days for auto fee rate
+    let holding_days_for_fee = db::get_first_buy_date(conn, wallet_id, &fund_obj.code)
+        .ok()
+        .flatten()
+        .map(|d| finance::days_since(&d));
+
+    // Determine fee rate: manual or auto
+    enum FeeSource {
+        Manual(Decimal),
+        Auto { rate: Decimal, tier_desc: String },
+        Fallback,
+    }
+    let fee_source = if let Some(ref f_str) = fee_input {
+        let rate = finance::resolve_fee(f_str, dec!(1))
+            .map(|fee| fee) // resolve_fee returns actual fee amount
+            .unwrap_or_else(|_| {
+                // try treating it as a percentage string like "0.5%" or "0.005"
+                Decimal::from_str(f_str.trim_end_matches('%'))
+                    .map(|pct| if f_str.contains('%') { pct / dec!(100) } else { pct })
+                    .unwrap_or(dec!(0.005))
+            });
+        FeeSource::Manual(rate)
+    } else if let Some(days) = holding_days_for_fee {
+        match db::get_redemption_fee_rate(conn, &fund_obj.code, days as i32) {
+            Ok(Some(rate)) => {
+                let tier_desc = format!("持有 {} 天，适用赎回费率 {:.2}%", days, rate * dec!(100));
+                FeeSource::Auto { rate, tier_desc }
+            }
+            _ => FeeSource::Fallback,
+        }
+    } else {
+        FeeSource::Fallback
+    };
+
     // Calculate shares to sell based on money or shares input
-    let (sell_shares, sell_money, fee) = if let Some(ref s) = shares {
+    let sell_shares = if let Some(ref s) = shares {
         let parsed_shares = finance::resolve_shares(s, current_shares).unwrap_or_else(|e| {
             eprintln!("❌ {}", e);
             std::process::exit(1);
         });
-
         if parsed_shares > current_shares {
             eprintln!(
                 "⚠️ 警告：卖出份额 {} 超出当前持仓 {} 份",
                 parsed_shares, current_shares
             );
         }
-
-        let total_money = parsed_shares * nav_value;
-        let sell_fee = (total_money * dec!(0)).round_dp(2); // Assume 0 fee for now
-        (parsed_shares, total_money.round_dp(2), sell_fee)
+        parsed_shares
     } else if let Some(ref m_str) = money {
         let parsed_money = Decimal::from_str(m_str).unwrap_or_else(|e| {
             eprintln!("❌ 无效的金额格式：{}", e);
             std::process::exit(1);
         });
-        let sell_shares = (parsed_money / nav_value).round_dp(2);
-        let sell_fee = (parsed_money * dec!(0)).round_dp(2);
-        (sell_shares, parsed_money, sell_fee)
+        (parsed_money / nav_value).round_dp(2)
     } else {
         eprintln!("❌ 缺少参数：请提供 --money 或 --shares 之一");
         eprintln!("   --shares <份额>  按指定份额卖出，例如：--shares 500");
@@ -872,6 +931,13 @@ async fn handle_preview_sell(
         eprintln!("   --shares 1/2     卖出一半份额");
         eprintln!("   --money <金额>   按预期收回金额卖出，例如：--money 5000");
         std::process::exit(1);
+    };
+    let sell_money = (sell_shares * nav_value).round_dp(2);
+
+    let (fee_rate, fee) = match &fee_source {
+        FeeSource::Manual(rate) => (*rate, (sell_money * rate).round_dp(2)),
+        FeeSource::Auto { rate, .. } => (*rate, (sell_money * rate).round_dp(2)),
+        FeeSource::Fallback => (dec!(0.005), (sell_money * dec!(0.005)).round_dp(2)),
     };
 
     let net_received = (sell_money - fee).round_dp(2);
@@ -883,7 +949,6 @@ async fn handle_preview_sell(
 
     // Calculate post-sell values
     let new_total_shares = (current_shares - sell_shares).max(Decimal::ZERO);
-    // Proportional cost reduction
     let cost_reduction = if current_shares.is_zero() {
         Decimal::ZERO
     } else {
@@ -901,6 +966,11 @@ async fn handle_preview_sell(
         (current_cost / current_shares).round_dp(4)
     };
 
+    // Display warnings for fallback
+    if matches!(fee_source, FeeSource::Fallback) {
+        eprintln!("⚠️ 赎回费率数据不可用，以下金额仅供参考（使用默认费率 0.50%）");
+    }
+
     // Display preview
     println!("┌─────────────────────────────────────────────────────────┐");
     println!("│ 基金: {} ({})", fund_obj.name, fund_obj.code);
@@ -908,7 +978,17 @@ async fn handle_preview_sell(
     println!("├─────────────────────────────────────────────────────────┤");
     println!("│ 卖出份额: {} 份 ({}%)", sell_shares, sell_ratio);
     println!("│ 卖出金额: {} 元", sell_money);
-    println!("│ 赎回费率: 0.00%");
+    match &fee_source {
+        FeeSource::Manual(_) => {
+            println!("│ 赎回费率: {:.2}%（手动指定）", fee_rate * dec!(100));
+        }
+        FeeSource::Auto { tier_desc, .. } => {
+            println!("│ 赎回费率: {:.2}% ({})", fee_rate * dec!(100), tier_desc);
+        }
+        FeeSource::Fallback => {
+            println!("│ 赎回费率: {:.2}%（默认，无档位数据）", fee_rate * dec!(100));
+        }
+    }
     println!("│ 手续费: {} 元", fee);
     println!("│ 实际到账: {} 元", net_received);
     println!("├─────────────────────────────────────────────────────────┤");
@@ -1309,25 +1389,73 @@ async fn main() {
 
             let wallet_id = resolve_wallet_id(&conn, wallet);
 
-            let holdings = db::get_holdings(&conn, Some(wallet_id), None).expect("数据库错误");
+            let mut holdings = db::get_holdings(&conn, Some(wallet_id), None).expect("数据库错误");
+
+            let total_valuation = holdings
+                .iter()
+                .map(|h| h.shares * h.latest_nav.unwrap_or_default())
+                .fold(Decimal::ZERO, |acc, v| acc + v);
+
+            for h in &mut holdings {
+                h.holding_days = db::get_first_buy_date(&conn, wallet_id, &h.fund_code)
+                    .ok()
+                    .flatten()
+                    .map(|d| finance::days_since(&d));
+
+                let valuation = h.shares * h.latest_nav.unwrap_or_default();
+                h.allocation_pct = if total_valuation.is_zero() {
+                    None
+                } else {
+                    Some(((valuation / total_valuation) * dec!(100)).round_dp(2).to_f64().unwrap_or(0.0))
+                };
+            }
 
             let mut table = Table::new();
             table.set_header(vec![
                 "基金",
                 "份额",
+                "持有天数",
+                "赎回费率",
                 "持仓成本",
                 "累计分红",
                 "当前净值",
                 "当前市值",
                 "盈亏额",
                 "收益率",
+                "仓位占比",
             ]);
+
+            let mut sum_cost = Decimal::ZERO;
+            let mut sum_valuation = Decimal::ZERO;
+            let mut sum_pl = Decimal::ZERO;
 
             for h in holdings {
                 let shares = h.shares;
                 let cost = h.net_cost;
                 let dividend = h.cumulative_dividend;
                 let nav = h.latest_nav.unwrap_or_default();
+                let holding_days_val = h.holding_days;
+                let holding_days = holding_days_val
+                    .map(|d| d.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+
+                // 查询赎回费率
+                let redemption_fee_str = if let Some(days) = holding_days_val {
+                    match db::get_redemption_fee_rate(&conn, &h.fund_code, days as i32) {
+                        Ok(Some(rate)) => {
+                            let pct = rate * dec!(100);
+                            format!("{:.2}%", pct)
+                        }
+                        _ => "-".to_string(),
+                    }
+                } else {
+                    "-".to_string()
+                };
+
+                let allocation_pct = h
+                    .allocation_pct
+                    .map(|p| format!("{:.2}%", p))
+                    .unwrap_or_else(|| "-".to_string());
 
                 let valuation = (shares * nav).round_dp(2);
                 let pl = (valuation - cost).round_dp(2);
@@ -1337,17 +1465,44 @@ async fn main() {
                     ((pl / cost) * dec!(100)).round_dp(2)
                 };
 
+                sum_cost += cost;
+                sum_valuation += valuation;
+                sum_pl += pl;
+
                 table.add_row(vec![
                     format!("{} ({})", h.fund_name, h.fund_code),
                     shares.to_string(),
+                    holding_days,
+                    redemption_fee_str,
                     cost.to_string(),
                     dividend.to_string(),
                     nav.to_string(),
                     valuation.to_string(),
                     pl.to_string(),
                     format!("{:.2}%", pl_pct),
+                    allocation_pct,
                 ]);
             }
+
+            let sum_pl_pct = if sum_cost.is_zero() {
+                dec!(0.00)
+            } else {
+                ((sum_pl / sum_cost) * dec!(100)).round_dp(2)
+            };
+
+            table.add_row(vec![
+                "合计".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                sum_cost.round_dp(2).to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                sum_valuation.round_dp(2).to_string(),
+                sum_pl.round_dp(2).to_string(),
+                format!("{:.2}%", sum_pl_pct),
+                "100.00%".to_string(),
+            ]);
             println!("{table}");
         }
         Commands::History {
@@ -1786,13 +1941,40 @@ async fn main() {
 
             // 3. Resolve Fee
             let total_money = final_shares * final_nav;
-            let final_fee = if let Some(f_input) = fee {
-                finance::resolve_fee(&f_input, total_money).unwrap_or_else(|e| {
+            let (final_fee, fee_rate_desc) = if let Some(f_input) = fee {
+                let resolved = finance::resolve_fee(&f_input, total_money).unwrap_or_else(|e| {
                     eprintln!("❌ 无效的 --fee 参数：{}", e);
                     std::process::exit(1);
-                })
+                });
+                (resolved, "（手动指定）".to_string())
             } else {
-                Decimal::ZERO
+                // Auto-lookup holding days and fee rate
+                let holding_days = db::get_first_buy_date(&conn, wallet_id, &fund_obj.code)
+                    .ok()
+                    .flatten()
+                    .map(|d| finance::days_since(&d));
+
+                match holding_days {
+                    Some(days) => {
+                        match db::get_redemption_fee_rate(&conn, &fund_obj.code, days as i32) {
+                            Ok(Some(rate)) => {
+                                let fee_amount = (total_money * rate).round_dp(2);
+                                let desc = format!("（自动：持有 {} 天，档位 {:.2}%）", days, rate * dec!(100));
+                                (fee_amount, desc)
+                            }
+                            _ => {
+                                eprintln!("⚠️ 赎回费率数据不可用，使用默认费率 0.50%");
+                                let fee_amount = (total_money * dec!(0.005)).round_dp(2);
+                                (fee_amount, "（默认 0.50%，无档位数据）".to_string())
+                            }
+                        }
+                    }
+                    None => {
+                        eprintln!("⚠️ 赎回费率数据不可用，使用默认费率 0.50%");
+                        let fee_amount = (total_money * dec!(0.005)).round_dp(2);
+                        (fee_amount, "（默认 0.50%，无持有记录）".to_string())
+                    }
+                }
             };
 
             let received_money = (total_money - final_fee).round_dp(2);
@@ -1811,7 +1993,7 @@ async fn main() {
             println!("│ 日期: {} ", tx_date);
             println!("├─────────────────────────────────────────┤");
             println!("│ 预计金额: ￥{}", total_money);
-            println!("│ 赎回费用: ￥{}", final_fee);
+            println!("│ 赎回费用: ￥{} {}", final_fee, fee_rate_desc);
             println!("│ 实际到账: ￥{}", received_money);
             println!("└─────────────────────────────────────────┘");
 
@@ -1877,11 +2059,12 @@ async fn main() {
                 shares,
                 nav,
                 date,
+                fee,
                 wallet,
             } => {
                 let wallet_id = resolve_wallet_id(&conn, wallet);
                 let fund_input = require_fund_or_exit(&conn, fund, wallet_id, "sell");
-                handle_preview_sell(&conn, wallet_id, &fund_input, money, shares, nav, date.as_deref())
+                handle_preview_sell(&conn, wallet_id, &fund_input, money, shares, nav, date.as_deref(), fee)
                     .await;
             }
         },

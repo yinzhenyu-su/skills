@@ -60,6 +60,24 @@ impl Aggregator {
                     if data.fee_rate.is_some() {
                         final_data.fee_rate = data.fee_rate;
                     }
+                    if data.subscription_status.is_some() {
+                        final_data.subscription_status = data.subscription_status;
+                    }
+                    if data.redemption_status.is_some() {
+                        final_data.redemption_status = data.redemption_status;
+                    }
+                    if data.min_subscription_amount.is_some() {
+                        final_data.min_subscription_amount = data.min_subscription_amount;
+                    }
+                    if data.limit_per_transaction.is_some() {
+                        final_data.limit_per_transaction = data.limit_per_transaction;
+                    }
+                    if data.settlement_days.is_some() {
+                        final_data.settlement_days = data.settlement_days;
+                    }
+                    if !data.redemption_fee_tiers.is_empty() {
+                        final_data.redemption_fee_tiers = data.redemption_fee_tiers;
+                    }
                     if data.date.is_some() {
                         final_data.date = data.date;
                     }

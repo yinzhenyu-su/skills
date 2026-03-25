@@ -221,6 +221,9 @@ pub enum PreviewCommands {
         /// 指定日期（查询该日期之前的最近净值）
         #[arg(long)]
         date: Option<String>,
+        /// 手动指定赎回费率（自动从持有天数推算，指定后跳过自动查询）
+        #[arg(long)]
+        fee: Option<String>,
         /// 交易使用的特定钱包
         #[arg(long)]
         wallet: Option<String>,

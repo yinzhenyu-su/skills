@@ -35,6 +35,10 @@ struct LsjzItem {
     pub DWJZ: String, // NAV
     #[serde(rename = "LJJZ")]
     pub LJJZ: String, // Acc NAV
+    #[serde(rename = "SGZT")]
+    pub SGZT: Option<String>, // Subscription status
+    #[serde(rename = "SHZT")]
+    pub SHZT: Option<String>, // Redemption status
 }
 
 impl EastmoneyLsjzProvider {
@@ -91,6 +95,8 @@ impl EastmoneyLsjzProvider {
             code: code.to_string(),
             nav: Some(Decimal::from_str(&item.DWJZ).map_err(|e| e.to_string())?),
             acc_nav: Some(Decimal::from_str(&item.LJJZ).map_err(|e| e.to_string())?),
+            subscription_status: item.SGZT,
+            redemption_status: item.SHZT,
             date: Some(item.FSRQ),
             ..Default::default()
         })
@@ -108,6 +114,8 @@ impl Provider for EastmoneyLsjzProvider {
             code: code.to_string(),
             nav: Some(Decimal::from_str(&item.DWJZ).map_err(|e| e.to_string())?),
             acc_nav: Some(Decimal::from_str(&item.LJJZ).map_err(|e| e.to_string())?),
+            subscription_status: item.SGZT.clone(),
+            redemption_status: item.SHZT.clone(),
             date: Some(item.FSRQ.clone()),
             ..Default::default()
         })

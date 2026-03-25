@@ -1,7 +1,9 @@
 use super::{FundData, Provider};
 use async_trait::async_trait;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use serde_json::Value;
 use std::str::FromStr;
 
 #[derive(Debug, Deserialize)]
@@ -98,19 +100,99 @@ struct FeesData {
     custodian_fee: Option<String>,
     #[serde(rename = "distributionFee")]
     distribution_fee: Option<String>,
+    #[serde(rename = "minInvestment")]
+    min_investment: Option<Value>,
     #[serde(rename = "frontLoadFee", default)]
-    front_load_fee: Option<Vec<FrontLoadFeeTier>>,
+    front_load_fee: Vec<FeeTierRaw>,
+    #[serde(rename = "deferLoadFee", default)]
+    defer_load_fee: Vec<FeeTierRaw>,
+    #[serde(rename = "redemptionFee", default)]
+    redemption_fee: Vec<FeeTierRaw>,
+    #[serde(rename = "purchaseAndRedeem")]
+    purchase_and_redeem: Option<PurchaseAndRedeemRaw>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-struct FrontLoadFeeTier {
+struct FeeTierRaw {
     floor: f64,
     fee: f64,
     #[serde(rename = "feeUnit")]
     fee_unit: f64,
     #[serde(rename = "floorUnit")]
     floor_unit: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
+struct PurchaseAndRedeemRaw {
+    applyingMaxIII: Option<Value>,
+    applyingMaxIV: Option<Value>,
+    applyingMaxVII: Option<Value>,
+    applyingMaxVIII: Option<Value>,
+}
+
+fn value_to_decimal(value: &Value) -> Option<Decimal> {
+    match value {
+        Value::Number(n) => n.as_f64().and_then(Decimal::from_f64),
+        Value::String(s) => Decimal::from_str(s.trim()).ok(),
+        _ => None,
+    }
+}
+
+fn floor_to_days(floor: Decimal, floor_unit: f64) -> Option<i32> {
+    if floor_unit == 10.0 {
+        return floor.round_dp(0).to_i32();
+    }
+
+    if floor_unit == 4.0 {
+        let days = floor * Decimal::from(30_i32);
+        return days.round_dp(0).to_i32();
+    }
+
+    None
+}
+
+fn normalize_redemption_tiers(tiers: &[FeeTierRaw]) -> Vec<(i32, Option<i32>, Decimal)> {
+    let mut normalized: Vec<(i32, Decimal)> = tiers
+        .iter()
+        .filter_map(|tier| {
+            if tier.fee_unit != 2.0 {
+                return None;
+            }
+
+            let min_days = floor_to_days(Decimal::from_f64(tier.floor)?, tier.floor_unit)?;
+            let fee = Decimal::from_f64(tier.fee)? / Decimal::from(100_i32);
+            Some((min_days, fee))
+        })
+        .collect();
+
+    normalized.sort_by_key(|(min_days, _)| *min_days);
+
+    normalized
+        .iter()
+        .enumerate()
+        .map(|(idx, (min_days, fee))| {
+            let max_days = normalized
+                .get(idx + 1)
+                .map(|(next_min, _)| (*next_min - 1).max(*min_days));
+            (*min_days, max_days, *fee)
+        })
+        .collect()
+}
+
+fn extract_limit_per_transaction(raw: &PurchaseAndRedeemRaw) -> Option<Decimal> {
+    [
+        &raw.applyingMaxIII,
+        &raw.applyingMaxIV,
+        &raw.applyingMaxVII,
+        &raw.applyingMaxVIII,
+    ]
+    .iter()
+    .filter_map(|v| v.as_ref())
+    .filter_map(value_to_decimal)
+    .filter(|d| *d > Decimal::ZERO)
+    .max()
 }
 
 pub struct MorningstarProvider;
@@ -207,22 +289,22 @@ impl Provider for MorningstarProvider {
                     data.mgmt_fee = d.management_fee;
                     data.trust_fee = d.custodian_fee;
                     data.sales_fee = d.distribution_fee;
+                    data.min_subscription_amount =
+                        d.min_investment.as_ref().and_then(value_to_decimal);
+
+                    if let Some(raw) = d.purchase_and_redeem.as_ref() {
+                        data.limit_per_transaction = extract_limit_per_transaction(raw);
+                    }
+
+                    data.redemption_fee_tiers = normalize_redemption_tiers(&d.redemption_fee);
 
                     // Extract front load fee (first tier, typically 0-500k)
-                    if let Some(tiers) = d.front_load_fee {
-                        if let Some(first_tier) = tiers.first() {
+                    if let Some(first_tier) = d.front_load_fee.first() {
+                        if let Some(rate) = Decimal::from_f64(first_tier.fee) {
                             if first_tier.fee_unit == 2.0 {
-                                // feeUnit = 2.0 means percentage (e.g., 1.5 means 1.5%)
-                                // Store as Decimal (1.5% -> 0.015)
-                                if let Ok(rate) = Decimal::from_str(&first_tier.fee.to_string()) {
-                                    data.fee_rate = Some(rate / Decimal::from_str("100").unwrap());
-                                }
+                                data.fee_rate = Some(rate / Decimal::from(100_i32));
                             } else {
-                                // feeUnit = 1.0 means fixed amount (e.g., 1000 means 1000元)
-                                // Store fixed amount as Decimal
-                                if let Ok(rate) = Decimal::from_str(&first_tier.fee.to_string()) {
-                                    data.fee_rate = Some(rate);
-                                }
+                                data.fee_rate = Some(rate);
                             }
                         }
                     }
@@ -314,8 +396,7 @@ mod tests {
         let d = body.data;
 
         // Check front load fee tiers exist
-        assert!(d.front_load_fee.is_some());
-        let tiers = d.front_load_fee.unwrap();
+        let tiers = d.front_load_fee;
         assert_eq!(tiers.len(), 4);
 
         // First tier: 0-500k, 1.5%
@@ -343,7 +424,40 @@ mod tests {
         let body: FeesResponse = serde_json::from_str(json).unwrap();
         let d = body.data;
 
-        // No frontLoadFee field means None
-        assert!(d.front_load_fee.is_none());
+        // No frontLoadFee field means empty vector
+        assert!(d.front_load_fee.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_redemption_tiers() {
+        let tiers = vec![
+            FeeTierRaw {
+                floor: 0.0,
+                fee: 1.5,
+                fee_unit: 2.0,
+                floor_unit: 10.0,
+            },
+            FeeTierRaw {
+                floor: 7.0,
+                fee: 0.5,
+                fee_unit: 2.0,
+                floor_unit: 10.0,
+            },
+            FeeTierRaw {
+                floor: 30.0,
+                fee: 0.0,
+                fee_unit: 2.0,
+                floor_unit: 10.0,
+            },
+        ];
+
+        let normalized = normalize_redemption_tiers(&tiers);
+        assert_eq!(normalized.len(), 3);
+        assert_eq!(normalized[0].0, 0);
+        assert_eq!(normalized[0].1, Some(6));
+        assert_eq!(normalized[1].0, 7);
+        assert_eq!(normalized[1].1, Some(29));
+        assert_eq!(normalized[2].0, 30);
+        assert_eq!(normalized[2].1, None);
     }
 }
