@@ -12,18 +12,18 @@ env:
   PACKAGE_NAME: fund-manager
 
 jobs:
+  # --- Job 1: 处理 Linux 和 Windows (使用 cargo-zigbuild) ---
   build-linux-windows:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.job.target }}
     runs-on: ubuntu-latest
     container:
       image: messense/cargo-zigbuild:latest
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu.2.17
-          - aarch64-unknown-linux-gnu.2.17
-          # Windows 目标添加特定的环境变量标记
+        job:
+          - target: x86_64-unknown-linux-gnu.2.17
+          - target: aarch64-unknown-linux-gnu.2.17
           - target: x86_64-pc-windows-gnu
             extra_env: "1"
           - target: aarch64-pc-windows-gnullvm
@@ -35,9 +35,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-zig-${{ matrix.job.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-zig-${{ matrix.target }}-
+            ${{ runner.os }}-zig-${{ matrix.job.target }}-
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -46,32 +46,32 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             skills/fund-manager/target
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.job.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.target }}-
+            ${{ runner.os }}-cargo-${{ matrix.job.target }}-
 
       - name: Build
         env:
-          # 只有当 matrix 包含 extra_env 时才会设置为 1，否则为空（不生效）
-          AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ matrix.extra_env }}
+          # 关键点：仅在 Windows 矩阵项中生效，避开 sched.h 报错
+          AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ matrix.job.extra_env }}
         run: |
           cd skills/fund-manager
-          cargo zigbuild --release --target ${{ matrix.target }} --locked
+          cargo zigbuild --release --target ${{ matrix.job.target }} --locked
 
       - name: Package
         shell: bash
         run: |
           cd skills/fund-manager
           VERSION="${GITHUB_REF_NAME#v}"
-          if [[ $GITHUB_REF_TYPE != "tag" ]]; then
-            VERSION="0.0.0-${GITHUB_SHA:0:7}"
-          fi
+          [[ $GITHUB_REF_TYPE != "tag" ]] && VERSION="0.0.0-${GITHUB_SHA:0:7}"
           
-          CLEAN_TARGET=$(echo "${{ matrix.target }}" | cut -d. -f1)
+          CURRENT_TARGET="${{ matrix.job.target }}"
+          CLEAN_TARGET=$(echo "$CURRENT_TARGET" | cut -d. -f1)
 
           mkdir -p dist
           BIN_NAME="fund-manager"
-          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+          
+          if [[ "$CURRENT_TARGET" == *"windows"* ]]; then
             BIN_NAME="fund-manager.exe"
             ASSET_NAME="fund-manager-v${VERSION}-${CLEAN_TARGET}.zip"
             cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" dist/
@@ -91,15 +91,16 @@ jobs:
           name: ${{ env.ASSET_NAME }}
           path: ${{ env.ASSET_PATH }}
 
+  # --- Job 2: 处理 macOS (使用原生 Apple 运行器) ---
   build-macos:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.job.target }}
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
+        job:
+          - target: x86_64-apple-darwin
+          - target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -110,32 +111,30 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             skills/fund-manager/target
-          key: ${{ runner.os }}-cargo-macos-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-macos-${{ matrix.job.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-macos-${{ matrix.target }}-
+            ${{ runner.os }}-cargo-macos-${{ matrix.job.target }}-
 
       - name: Setup Toolchain
-        run: rustup target add ${{ matrix.target }}
+        run: rustup target add ${{ matrix.job.target }}
 
       - name: Build
         run: |
           cd skills/fund-manager
-          cargo build --release --target ${{ matrix.target }} --locked
+          cargo build --release --target ${{ matrix.job.target }} --locked
 
       - name: Package
         shell: bash
         run: |
           cd skills/fund-manager
           VERSION="${GITHUB_REF_NAME#v}"
-          if [[ $GITHUB_REF_TYPE != "tag" ]]; then
-            VERSION="0.0.0-${GITHUB_SHA:0:7}"
-          fi
+          [[ $GITHUB_REF_TYPE != "tag" ]] && VERSION="0.0.0-${GITHUB_SHA:0:7}"
           
-          CLEAN_TARGET="${{ matrix.target }}"
+          CLEAN_TARGET="${{ matrix.job.target }}"
           mkdir -p dist
           BIN_NAME="fund-manager"
           ASSET_NAME="fund-manager-v${VERSION}-${CLEAN_TARGET}.tar.gz"
-          cp "target/${{ matrix.target }}/release/${BIN_NAME}" dist/
+          cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" dist/
           tar -czf "${ASSET_NAME}" -C dist "${BIN_NAME}"
           
           echo "ASSET_PATH=skills/fund-manager/${ASSET_NAME}" >> $GITHUB_ENV
@@ -147,11 +146,14 @@ jobs:
           name: ${{ env.ASSET_NAME }}
           path: ${{ env.ASSET_PATH }}
 
+  # --- Job 3: 汇总并发布到 GitHub Release ---
   release:
     name: Release
     needs: [build-linux-windows, build-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
