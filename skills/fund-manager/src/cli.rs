@@ -27,7 +27,7 @@ pub enum Commands {
     },
     /// 查看当前持仓盈亏状态
     #[command(
-        long_about = "查看当前持仓状态，包括市值、成本和盈亏。\n\n示例：\n    fund status\n    fund status 000300\n    fund status --wallet 我的投资"
+        long_about = "查看当前持仓状态，包括市值、成本和盈亏。\n\n示例：\n    fund-manager status\n    fund-manager status 000300\n    fund-manager status --wallet 我的投资"
     )]
     Status {
         /// 基金代码或名称（可选，省略则显示全部）
@@ -38,7 +38,7 @@ pub enum Commands {
     },
     /// 查看交易历史
     #[command(
-        long_about = "查看特定基金的交易历史记录。\n\n示例：\n    fund history 000300\n    fund history --wallet 我的投资\n    fund history --type buy --limit 10"
+        long_about = "查看特定基金的交易历史记录。\n\n示例：\n    fund-manager history 000300\n    fund-manager history --wallet 我的投资\n    fund-manager history --type buy --limit 10"
     )]
     History {
         /// 基金代码或名称（可选）
@@ -55,7 +55,7 @@ pub enum Commands {
     },
     /// 买入基金
     #[command(
-        long_about = "记录一笔买入交易。\n\n示例：\n    fund buy 000300 --money 1000\n    fund buy 000300 --money 1000 --date 2024-01-01\n    fund buy 000300 --shares 800 --nav 1.25 --date 2024-01-01"
+        long_about = "记录一笔买入交易。\n\n示例：\n    fund-manager buy 000300 --money 1000\n    fund-manager buy 000300 --money 1000 --date 2024-01-01\n    fund-manager buy 000300 --shares 800 --nav 1.25 --date 2024-01-01"
     )]
     Buy {
         /// 基金代码或名称（省略将列出可用基金并提示）
@@ -78,7 +78,7 @@ pub enum Commands {
     },
     /// 卖出基金
     #[command(
-        long_about = "记录一笔卖出交易。\n\n示例：\n    fund sell 000300 --shares 500\n    fund sell 000300 --money 1000 --date 2024-01-01\n    fund sell 000300 --shares 1/2 --nav 1.25 --date 2024-01-01"
+        long_about = "记录一笔卖出交易。\n\n示例：\n    fund-manager sell 000300 --shares 500\n    fund-manager sell 000300 --money 1000 --date 2024-01-01\n    fund-manager sell 000300 --shares 1/2 --nav 1.25 --date 2024-01-01"
     )]
     Sell {
         /// 基金代码或名称（省略将列出可用基金并提示）
@@ -105,7 +105,7 @@ pub enum Commands {
     /// 从其他平台导入基金持仓（CSV 格式：基金名称,持有金额,持有收益）
     #[command(
         name = "import-holding",
-        long_about = "从 CSV 文件批量导入基金持仓数据。\n\n示例：\n    fund import-holding --file holdings.csv\n    fund import-holding --file holdings.csv --override\n    fund import-holding --file holdings.csv --wallet 我的钱包\n\nCSV 格式说明：\n    基金名称,持有金额,持有收益\n    中欧医疗健康混合A,11000,1000\n    注意：持有收益包含现金分红"
+        long_about = "从 CSV 文件批量导入基金持仓数据。\n\n示例：\n    fund-manager import-holding --file holdings.csv\n    fund-manager import-holding --file holdings.csv --override\n    fund-manager import-holding --file holdings.csv --wallet 我的钱包\n\nCSV 格式说明：\n    基金名称,持有金额,持有收益\n    中欧医疗健康混合A,11000,1000\n    注意：持有收益包含现金分红"
     )]
     ImportHolding {
         /// 要导入的 CSV 文件路径
@@ -123,7 +123,7 @@ pub enum Commands {
     },
     /// 记录一笔分红（现金分红）
     #[command(
-        long_about = "记录一笔基金分红（现金分红，不改变份额，仅降低成本）。\n\n示例：\n    fund dividend 000300 --money 100\n    fund dividend 000300 --money 100 --date 2024-03-15"
+        long_about = "记录一笔基金分红（现金分红，不改变份额，仅降低成本）。\n\n示例：\n    fund-manager dividend 000300 --money 100\n    fund-manager dividend 000300 --money 100 --date 2024-03-15"
     )]
     Dividend {
         /// 基金代码或名称
@@ -140,7 +140,7 @@ pub enum Commands {
     },
     /// 记录一笔红利再投
     #[command(
-        long_about = "记录一笔红利再投（不涉及现金流动，仅增加份额）。\n\n示例：\n    fund reinvest 000300 --shares 50 --nav 2.0\n    fund reinvest 000300 --shares 50 --date 2024-03-15"
+        long_about = "记录一笔红利再投（不涉及现金流动，仅增加份额）。\n\n示例：\n    fund-manager reinvest 000300 --shares 50 --nav 2.0\n    fund-manager reinvest 000300 --shares 50 --date 2024-03-15"
     )]
     Reinvest {
         /// 基金代码或名称
@@ -169,7 +169,7 @@ pub enum Commands {
     /// 查询主要市场行情（指数、外汇、大宗商品）
     #[command(
         name = "market",
-        long_about = "查询主要市场指数、外汇及大宗商品的实时行情。\n\n示例：\n    fund market                 # 查询所有默认行情\n    fund market --fx            # 仅查询外汇行情\n    fund market --com           # 仅查询大宗商品\n    fund market --detail        # 查看包含 52 周区间的详细水位\n    fund market --trend         # 查看日内走势图\n    fund market 沪深300 黄金    # 查询多个指定的项"
+        long_about = "查询主要市场指数、外汇及大宗商品的实时行情。\n\n示例：\n    fund-manager market                 # 查询所有默认行情\n    fund-manager market --fx            # 仅查询外汇行情\n    fund-manager market --com           # 仅查询大宗商品\n    fund-manager market --detail        # 查看包含 52 周区间的详细水位\n    fund-manager market --trend         # 查看日内走势图\n    fund-manager market 沪深300 黄金    # 查询多个指定的项"
     )]
     Market {
         /// 指定要查询的名称（可选，省略则显示全部默认行情）
@@ -194,6 +194,11 @@ pub enum Commands {
         #[arg(short, long, default_value_t = false)]
         trend: bool,
     },
+    /// 重置所有数据（清除所有钱包、基金、交易历史、净值记录、配置）
+    #[command(
+        long_about = "永久删除所有个人数据，包括钱包、基金、交易历史、净值记录和配置。此操作不可恢复！\n\n示例：\n    fund-manager reset\n    fund-manager reset -y"
+    )]
+    Reset,
 }
 
 #[derive(Subcommand)]
@@ -253,7 +258,7 @@ pub enum PreviewCommands {
 pub enum WalletCommands {
     /// 添加一个新钱包
     #[command(
-        long_about = "添加一个新钱包以管理多个投资组合。\n\n示例：\n    fund wallet add 我的投资"
+        long_about = "添加一个新钱包以管理多个投资组合。\n\n示例：\n    fund-manager wallet add 我的投资"
     )]
     Add {
         /// 钱包名称
@@ -263,7 +268,7 @@ pub enum WalletCommands {
     List,
     /// 设置特定钱包为当前活跃钱包
     #[command(
-        long_about = "将特定钱包设置为后续命令的默认操作钱包。\n\n示例：\n    fund wallet use 我的投资"
+        long_about = "将特定钱包设置为后续命令的默认操作钱包。\n\n示例：\n    fund-manager wallet use 我的投资"
     )]
     Use {
         /// 要使用的钱包名称
@@ -272,7 +277,7 @@ pub enum WalletCommands {
     /// 删除一个钱包及其所有数据
     #[command(
         alias = "del",
-        long_about = "从本地数据库中移除钱包及其所有的交易历史记录。\n\n示例：\n    fund wallet delete 我的投资"
+        long_about = "从本地数据库中移除钱包及其所有的交易历史记录。\n\n示例：\n    fund-manager wallet delete 我的投资"
     )]
     Delete {
         /// 要删除的钱包名称
@@ -280,7 +285,7 @@ pub enum WalletCommands {
     },
     /// 重命名钱包
     #[command(
-        long_about = "将钱包重命名为新名称。\n\n示例：\n    fund wallet rename 我的投资 投资组合"
+        long_about = "将钱包重命名为新名称。\n\n示例：\n    fund-manager wallet rename 我的投资 投资组合"
     )]
     Rename {
         /// 钱包当前名称
@@ -362,9 +367,4 @@ pub enum FundCommands {
         #[arg(long, value_parser = ["cash", "reinvest"])]
         dividend_mode: String,
     },
-    /// 重置所有数据（清除所有钱包、基金、交易历史）
-    #[command(
-        long_about = "永久删除所有个人数据，包括钱包、基金、交易历史和配置。此操作不可恢复！\n\n示例：\n    fund reset\n    fund reset -y"
-    )]
-    Reset,
 }

@@ -5,7 +5,7 @@ fund-manager 使用 SQLite 数据库存储所有个人数据（钱包、基金�
 ## Goals / Non-Goals
 
 **Goals:**
-- 提供 `fund reset` 命令，一键清除所有个人数据
+- 提供 `fund-manager reset` 命令，一键清除所有个人数据
 - 保留数据库表结构（schema），下次启动自动重建
 - 操作不可逆，需交互确认
 
@@ -37,14 +37,14 @@ fn reset_all_data(conn: &Connection, db_path: &Path) -> Result<()> {
 
 ### 2. 命令层级
 
-放在 `Commands::Fund { command: FundCommands::Reset }` 下，即 `fund reset`。
+放在 `Commands::Reset` 下，即 `fund-manager reset`。
 
-**理由**：与 `fund delete`、`wallet delete` 等数据管理命令保持同一层级，逻辑一致。
+**理由**：与 `status`、`history` 等顶层命令平级，用户操作路径更直接。
 
 ### 3. 确认交互
 
 使用已有的 `confirm_action()` 确认函数，提示语：
-> "确定要重置所有数据吗？这将永久删除所有钱包、基金、交易历史和配置，且无法恢复！"
+> "确定要重置所有数据吗？这将永久删除所有钱包、基金、交易历史、净值记录和配置，且无法恢复！"
 
 全局 `-y` 参数可跳过确认。
 

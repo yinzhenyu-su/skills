@@ -1038,7 +1038,7 @@ pub fn delete_fund(conn: &Connection, code: &str) -> Result<()> {
 }
 
 /// Reset all data by deleting the database file and reinitializing the schema.
-/// Used by the `fund reset` command to wipe all personal data.
+/// Used by the `reset` command to wipe all personal data.
 pub fn reset_all_data(db_path: &Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Create a new connection to switch WAL to DELETE mode (releases WAL lock)
     let conn = Connection::open(db_path)?;

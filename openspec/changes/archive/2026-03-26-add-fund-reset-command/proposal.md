@@ -4,7 +4,7 @@
 
 ## What Changes
 
-- 新增 `fund reset` 命令，一键清除所有个人数据（钱包、基金、交易历史、配置），保留数据库表结构
+- 新增 `fund-manager reset` 命令，一键清除所有个人数据（钱包、基金、交易历史、净值记录、配置），保留数据库表结构
 - 操作不可逆，执行前需用户确认（可跳过确认）
 - 清除范围：wallet、transaction_log、fund、nav_history、fund_analysis、fund_tradability、redemption_fee_tiers、app_config
 
@@ -12,7 +12,7 @@
 
 ### New Capabilities
 
-- `fund-reset`: 提供 `fund reset` 命令，清除所有个人数据并重建空数据库
+- `fund-reset`: 提供 `fund-manager reset` 命令，清除所有个人数据并重建空数据库
 
 ## Impact
 

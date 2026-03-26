@@ -1336,7 +1336,6 @@ fn test_fund_reset_with_yes_flag() {
     // Run reset with -y flag
     assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
         .env("FUND_MANAGER_APP_DIR", app_dir_str)
-        .arg("fund")
         .arg("reset")
         .arg("-y")
         .assert()
