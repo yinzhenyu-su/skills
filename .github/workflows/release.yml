@@ -135,6 +135,10 @@ jobs:
           cd skills/${{ env.SKILL_NAME }}
           cargo zigbuild --release --target ${{ matrix.job.target }} --locked
 
+      - name: Install zip (for Windows)
+        if: matrix.job.target == 'x86_64-pc-windows-gnu' || matrix.job.target == 'aarch64-pc-windows-gnullvm'
+        run: apt-get update && apt-get install -y zip
+
       - name: Package
         shell: bash
         run: |
