@@ -138,7 +138,8 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          cd skills/${{ env.SKILL_NAME }}
+          SKILL_DIR="skills/${{ env.SKILL_NAME }}"
+          cd "$SKILL_DIR"
           VERSION="${GITHUB_REF_NAME#v}"
           [[ $GITHUB_REF_TYPE != "tag" ]] && VERSION="0.0.0-${GITHUB_SHA:0:7}"
 
@@ -147,21 +148,20 @@ jobs:
           SKILL_NAME="${{ env.SKILL_NAME }}"
 
           mkdir -p dist
-          mkdir -p "dist/${SKILL_NAME}"
           BIN_NAME="${SKILL_NAME}"
 
           if [[ "$CURRENT_TARGET" == *"windows"* ]]; then
             BIN_NAME="${SKILL_NAME}.exe"
             ASSET_NAME="${SKILL_NAME}-v${VERSION}-${CLEAN_TARGET}.zip"
-            cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" "dist/${SKILL_NAME}/"
-            cd "dist/${SKILL_NAME}" && zip "../../${ASSET_NAME}" "${BIN_NAME}" && cd ../..
+            cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" "dist/"
+            cd dist && zip "../${ASSET_NAME}" "${BIN_NAME}" && cd ..
           else
             ASSET_NAME="${SKILL_NAME}-v${VERSION}-${CLEAN_TARGET}.tar.gz"
-            cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" "dist/${SKILL_NAME}/"
-            tar -czf "${ASSET_NAME}" -C dist "${SKILL_NAME}/${BIN_NAME}"
+            cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" "dist/"
+            tar -czf "${ASSET_NAME}" -C dist "${BIN_NAME}"
           fi
 
-          echo "ASSET_PATH=dist/${ASSET_NAME}" >> $GITHUB_ENV
+          echo "ASSET_PATH=${SKILL_DIR}/${ASSET_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ASSET_NAME}" >> $GITHUB_ENV
 
       - name: Upload Artifacts
@@ -209,20 +209,20 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          cd skills/${{ env.SKILL_NAME }}
+          SKILL_DIR="skills/${{ env.SKILL_NAME }}"
+          cd "$SKILL_DIR"
           VERSION="${GITHUB_REF_NAME#v}"
           [[ $GITHUB_REF_TYPE != "tag" ]] && VERSION="0.0.0-${GITHUB_SHA:0:7}"
 
           CLEAN_TARGET="${{ matrix.job.target }}"
           SKILL_NAME="${{ env.SKILL_NAME }}"
           mkdir -p dist
-          mkdir -p "dist/${SKILL_NAME}"
           BIN_NAME="${SKILL_NAME}"
           ASSET_NAME="${SKILL_NAME}-v${VERSION}-${CLEAN_TARGET}.tar.gz"
-          cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" "dist/${SKILL_NAME}/"
-          tar -czf "${ASSET_NAME}" -C dist "${SKILL_NAME}/${BIN_NAME}"
+          cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" "dist/"
+          tar -czf "${ASSET_NAME}" -C dist "${BIN_NAME}"
 
-          echo "ASSET_PATH=dist/${ASSET_NAME}" >> $GITHUB_ENV
+          echo "ASSET_PATH=${SKILL_DIR}/${ASSET_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ASSET_NAME}" >> $GITHUB_ENV
 
       - name: Upload Artifacts
