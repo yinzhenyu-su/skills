@@ -1492,6 +1492,19 @@ async fn main() {
                     fund_obj.name, fund_obj.code, mode_zh
                 );
             }
+            FundCommands::Reset => {
+                let prompt = "确定要重置所有数据吗？这将永久删除所有钱包、基金、交易历史和配置，且无法恢复！";
+                if !confirm_action(prompt, cli.yes) {
+                    println!("已取消重置操作。");
+                    std::process::exit(0);
+                }
+                println!("正在重置所有数据...");
+                if let Err(e) = db::reset_all_data(&db_path) {
+                    eprintln!("❌ 重置失败：{}", e);
+                    std::process::exit(1);
+                }
+                println!("✅ 数据已重置，所有个人数据已被永久删除。");
+            }
         },
         Commands::Status { fund: _, wallet } => {
             if let Err(e) = sync::sync_funds(&conn, None, None, None, true).await {

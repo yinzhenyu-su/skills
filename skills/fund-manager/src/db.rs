@@ -1037,6 +1037,24 @@ pub fn delete_fund(conn: &Connection, code: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reset all data by deleting the database file and reinitializing the schema.
+/// Used by the `fund reset` command to wipe all personal data.
+pub fn reset_all_data(db_path: &Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // Create a new connection to switch WAL to DELETE mode (releases WAL lock)
+    let conn = Connection::open(db_path)?;
+    conn.execute_batch("PRAGMA journal_mode=DELETE;")?;
+    drop(conn);
+
+    // Now delete the database file
+    if db_path.exists() {
+        std::fs::remove_file(db_path)?;
+    }
+
+    // Reinitialize with empty schema
+    init_db(db_path)?;
+    Ok(())
+}
+
 pub struct FundAnalysis {
     pub fund_code: String,
     pub snapshot_date: Option<String>,

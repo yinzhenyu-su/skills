@@ -362,4 +362,9 @@ pub enum FundCommands {
         #[arg(long, value_parser = ["cash", "reinvest"])]
         dividend_mode: String,
     },
+    /// 重置所有数据（清除所有钱包、基金、交易历史）
+    #[command(
+        long_about = "永久删除所有个人数据，包括钱包、基金、交易历史和配置。此操作不可恢复！\n\n示例：\n    fund reset\n    fund reset -y"
+    )]
+    Reset,
 }

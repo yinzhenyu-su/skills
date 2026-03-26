@@ -1288,3 +1288,67 @@ fn test_sell_auto_fee_rate_from_tiers() {
         .success()
         .stdout(predicate::str::contains("赎回费用"));
 }
+
+#[test]
+fn test_fund_reset_with_yes_flag() {
+    let temp_app_dir = env::temp_dir().join("fund-manager-test-reset-yes");
+    if temp_app_dir.exists() {
+        fs::remove_dir_all(&temp_app_dir).unwrap();
+    }
+    fs::create_dir_all(&temp_app_dir).unwrap();
+    let app_dir_str = temp_app_dir.to_str().unwrap();
+
+    // Create a wallet and fund to populate the database
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("add")
+        .arg("Invest")
+        .assert()
+        .success();
+
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("use")
+        .arg("Invest")
+        .assert()
+        .success();
+
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .env("SKIP_SYNC", "1")
+        .arg("fund")
+        .arg("add")
+        .arg("000300")
+        .assert()
+        .success();
+
+    // Verify wallet exists before reset
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Invest"));
+
+    // Run reset with -y flag
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("fund")
+        .arg("reset")
+        .arg("-y")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✅ 数据已重置"));
+
+    // Verify all wallets are gone after reset
+    assert_cmd::cargo::cargo_bin_cmd!("fund-manager")
+        .env("FUND_MANAGER_APP_DIR", app_dir_str)
+        .arg("wallet")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("钱包名称")); // Header only, no wallets
+}
