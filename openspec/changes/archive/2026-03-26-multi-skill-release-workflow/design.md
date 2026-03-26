@@ -184,16 +184,16 @@ for skill_dir in skills/*/:
 ## 7. 通用型 skill Raw URL 格式
 
 ```
-https://raw.githubusercontent.com/YinZ-510/skills/v{VERSION}/skills/{skill}/SKILL.md
+https://raw.githubusercontent.com/yinzhenyu-su/skills/v{VERSION}/skills/{skill}/SKILL.md
 ```
 
 ### 示例
 
 | Skill | Raw URL |
 |-------|---------|
-| trending v0.1.0 | `https://raw.githubusercontent.com/YinZ-510/skills/v0.1.0/skills/trending/SKILL.md` |
-| joke-learner v0.1.0 | `https://raw.githubusercontent.com/YinZ-510/skills/v0.1.0/skills/joke-learner/SKILL.md` |
-| xiaomi-tts v0.1.0 | `https://raw.githubusercontent.com/YinZ-510/skills/v0.1.0/skills/xiaomi-tts/SKILL.md` |
+| trending v0.1.0 | `https://raw.githubusercontent.com/yinzhenyu-su/skills/v0.1.0/skills/trending/SKILL.md` |
+| joke-learner v0.1.0 | `https://raw.githubusercontent.com/yinzhenyu-su/skills/v0.1.0/skills/joke-learner/SKILL.md` |
+| xiaomi-tts v0.1.0 | `https://raw.githubusercontent.com/yinzhenyu-su/skills/v0.1.0/skills/xiaomi-tts/SKILL.md` |
 
 ### 版本更新时机
 

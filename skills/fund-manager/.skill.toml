@@ -38,7 +38,7 @@ binary-name = "fund-manager"
 
 # GitHub repository for releases
 # Can be overridden via FUND_MANAGER_REPO environment variable
-# repo = "YinZ-510/skills"
+# repo = "yinzhenyu-su/skills"
 
 # Environment variables passed during build
 [build.env]

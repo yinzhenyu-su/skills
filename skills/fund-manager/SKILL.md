@@ -43,7 +43,7 @@ cd skills/fund-manager && cargo run -- [args]  # 运行
 
 ### 必选（未设置 `FUND_MANAGER_CORE_URL` 时）
 
-- `FUND_MANAGER_REPO`：GitHub 仓库路径 (例如 `YinZ-510/skills`)，默认 `YinZ-510/skills`
+- `FUND_MANAGER_REPO`：GitHub 仓库路径 (例如 `yinzhenyu-su/skills`)，默认 `yinzhenyu-su/skills`
 - `FUND_MANAGER_GITHUB_TOKEN`：GitHub 访问令牌（私有仓库或避免 API 限制时使用，也可直接使用 `GITHUB_TOKEN`）
 
 ### 可选

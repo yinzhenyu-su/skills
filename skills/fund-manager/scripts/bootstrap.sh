@@ -6,7 +6,7 @@
 #
 # Environment variables:
 #   FUND_MANAGER_VERSION    - Version to install (default: latest)
-#   FUND_MANAGER_REPO       - GitHub repository (default: YinZ-510/skills)
+#   FUND_MANAGER_REPO       - GitHub repository (default: yinzhenyu-su/skills)
 #   FUND_MANAGER_CACHE_DIR  - Cache directory (default: ~/.cache/fund-manager/bin)
 #   FUND_MANAGER_GITHUB_TOKEN - GitHub token for API access
 #   FUND_MANAGER_DRY_RUN    - If set to 1, only print the download URL
@@ -86,7 +86,7 @@ build_download_url() {
     local version="$1"
     local target="$2"
     local ext="$3"
-    local repo="${FUND_MANAGER_REPO:-YinZ-510/skills}"
+    local repo="${FUND_MANAGER_REPO:-yinzhenyu-su/skills}"
     local base="https://github.com"
     local asset="${SCRIPT_NAME}-v${version}-${target}.${ext}"
 
@@ -98,7 +98,7 @@ build_download_url() {
 }
 
 get_latest_version() {
-    local repo="${FUND_MANAGER_REPO:-YinZ-510/skills}"
+    local repo="${FUND_MANAGER_REPO:-yinzhenyu-su/skills}"
     curl -sSL "https://github.com/${repo}/releases/latest" | \
         grep -o 'releases/tag/[^"]*' | head -1 | sed 's/releases\/tag\///'
 }

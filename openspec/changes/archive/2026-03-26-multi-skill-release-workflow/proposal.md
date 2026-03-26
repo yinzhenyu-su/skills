@@ -59,8 +59,8 @@
 通用型 skill SKILL.md 引用：
 
 ```
-https://raw.githubusercontent.com/YinZ-510/skills/v{VERSION}/skills/{skill}/SKILL.md
+https://raw.githubusercontent.com/yinzhenyu-su/skills/v{VERSION}/skills/{skill}/SKILL.md
 
 示例（v0.1.0）:
-https://raw.githubusercontent.com/YinZ-510/skills/v0.1.0/skills/trending/SKILL.md
+https://raw.githubusercontent.com/yinzhenyu-su/skills/v0.1.0/skills/trending/SKILL.md
 ```
