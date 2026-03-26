@@ -3,9 +3,17 @@ name: Release
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'skills/fund-manager/src/**'
+      - 'skills/fund-manager/Cargo.toml'
+      - 'skills/fund-manager/Cargo.lock'
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
+    paths:
+      - 'skills/fund-manager/src/**'
+      - 'skills/fund-manager/Cargo.toml'
+      - 'skills/fund-manager/Cargo.lock'
 
 env:
   CARGO_TERM_COLOR: always
