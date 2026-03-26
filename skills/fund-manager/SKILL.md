@@ -2,10 +2,10 @@
 name: fund-manager
 description: 中国公募基金投资管理 CLI 工具。使用场景：(1) 用户询问基金持仓、基金盈亏；(2) 用户询问"我的基金"、"基金状态"；(3) 用户想要买入/卖出基金；(4) 用户想要同步基金净值、查看基金历史；(5) 用户想要管理钱包、导入持仓；(6) 用户想要查看市场指数行情；(7) 用户想要记录分红/红利再投。
 metadata:
-	openclaw:
-		requires:
-			bins: ["bash", "curl", "tar", "unzip"]
-			env: ["FUND_MANAGER_GITHUB_REPO"]
+  openclaw:
+    requires:
+      bins: ["bash", "curl", "tar", "unzip"]
+      env: ["FUND_MANAGER_GITHUB_REPO"]
 ---
 
 # fund-manager
@@ -96,6 +96,7 @@ fund-manager fund add <基金代码> [--fee <费率>]  # 添加基金
 fund-manager fund delete <基金代码>               # 删除基金
 fund-manager fund list [--wallet <钱包>]          # 列出追踪的基金
 fund-manager fund inspect <基金代码> [--force]     # 查看晨星健康报告
+fund-manager fund config <基金代码> --dividend-mode reinvest  # 配置基金（如分红方式）
 ```
 
 ### 净值同步
@@ -137,8 +138,11 @@ fund-manager import-holding --file <CSV文件>          # 从其他平台导入�
 ### 市场指数
 
 ```bash
-fund-manager index                    # 查询所有默认指数
-fund-manager index 沪深300 纳斯达克   # 查询指定指数
+fund-manager market                         # 查询默认行情
+fund-manager market 沪深300 纳斯达克        # 查询指定指数
+fund-manager market --fx                    # 仅外汇
+fund-manager market --com                   # 仅大宗商品
+fund-manager market --detail                 # 包含 52 周区间
 ```
 
 ## 数据存储
