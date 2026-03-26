@@ -15,11 +15,11 @@
 ## 3. CI/CD 更新
 
 - [x] 3.1 修改 `.github/workflows/release.yml` 添加 skill 类型判断逻辑
-- [ ] 3.2 验证 CI 正确跳过无 `.skill.toml` 的通用型 skill
-- [ ] 3.3 创建 test tag 验证 GitHub Actions Release 生成
+- [x] 3.2 验证 CI 正确跳过无 `.skill.toml` 的通用型 skill
+- [x] 3.3 创建 test tag 验证 GitHub Actions Release 生成
 
 ## 4. 验证测试
 
 - [x] 4.1 运行 `cargo build --release` 验证 fund-manager 构建
-- [ ] 4.2 手动测试 bootstrap 脚本下载流程
-- [ ] 4.3 验证通用型 skill Raw URL 引用格式
+- [x] 4.2 手动测试 bootstrap 脚本下载流程
+- [x] 4.3 验证通用型 skill Raw URL 引用格式
