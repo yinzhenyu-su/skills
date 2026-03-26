@@ -9,15 +9,92 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  PACKAGE_NAME: fund-manager
+
+#
+# Multi-Skill Release Workflow
+#
+# Binary skills (type = "binary" in .skill.toml) are built and released.
+# Generic skills (no .skill.toml or type != "binary") are skipped.
+#
+# Current binary skills:
+#   - fund-manager
+#
+# To add a new binary skill:
+#   1. Create skills/<name>/.skill.toml with type = "binary"
+#   2. Add build job below with SKILL_DIR and SKILL_NAME set appropriately
+#
 
 jobs:
+  # --- Pre-flight: Read version from VERSION file and verify binary skills ---
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+      skill_name: ${{ steps.skill.outputs.SKILL_NAME }}
+      skill_type: ${{ steps.skill.outputs.SKILL_TYPE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read VERSION
+        id: version
+        run: |
+          if [[ -f "skills/VERSION" ]]; then
+            VERSION=$(cat skills/VERSION | tr -d '[:space:]')
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+            [[ $GITHUB_REF_TYPE != "tag" ]] && VERSION="0.0.0-${GITHUB_SHA:0:7}"
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+      - name: Detect binary skills
+        id: skill
+        run: |
+          # Scan skills/*/.skill.toml for type = "binary"
+          SKILL_NAME=""
+          SKILL_TYPE="generic"
+          for dir in skills/*/; do
+            SKILL_DIR=$(basename "$dir")
+            if [[ -f "${dir}.skill.toml" ]]; then
+              if grep -q 'type\s*=\s*"binary"' "${dir}.skill.toml" 2>/dev/null; then
+                SKILL_NAME="$SKILL_DIR"
+                SKILL_TYPE="binary"
+                break
+              fi
+            fi
+          done
+          echo "SKILL_NAME=${SKILL_NAME}" >> $GITHUB_OUTPUT
+          echo "SKILL_TYPE=${SKILL_TYPE}" >> $GITHUB_OUTPUT
+          echo "Detected binary skill: ${SKILL_NAME} (type: ${SKILL_TYPE})"
+
+  # --- Pre-check: Skip if no binary skills found ---
+  pre-check:
+    name: Pre-check
+    runs-on: ubuntu-latest
+    needs: setup
+    outputs:
+      should_build: ${{ steps.check.outputs.SHOULD_BUILD }}
+    steps:
+      - name: Check if build needed
+        id: check
+        run: |
+          SKILL_TYPE="${{ needs.setup.outputs.skill_type }}"
+          if [[ "$SKILL_TYPE" == "binary" ]]; then
+            echo "SHOULD_BUILD=true" >> $GITHUB_OUTPUT
+            echo "Binary skill detected, proceeding with build..."
+          else
+            echo "SHOULD_BUILD=false" >> $GITHUB_OUTPUT
+            echo "No binary skills found, skipping build..."
+          fi
+
   # --- Job 1: 处理 Linux 和 Windows (使用 cargo-zigbuild) ---
   build-linux-windows:
     name: Build ${{ matrix.job.target }}
     runs-on: ubuntu-latest
     container:
       image: messense/cargo-zigbuild:latest
+    needs: [setup, pre-check]
+    if: needs.pre-check.outputs.should_build == 'true'
+    env:
+      SKILL_NAME: ${{ needs.setup.outputs.skill_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +122,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            skills/fund-manager/target
+            skills/${{ env.SKILL_NAME }}/target
           key: ${{ runner.os }}-cargo-${{ matrix.job.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-${{ matrix.job.target }}-
@@ -55,46 +132,52 @@ jobs:
           # 关键点：仅在 Windows 矩阵项中生效，避开 sched.h 报错
           AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ matrix.job.extra_env }}
         run: |
-          cd skills/fund-manager
+          cd skills/${{ env.SKILL_NAME }}
           cargo zigbuild --release --target ${{ matrix.job.target }} --locked
 
       - name: Package
         shell: bash
         run: |
-          cd skills/fund-manager
+          cd skills/${{ env.SKILL_NAME }}
           VERSION="${GITHUB_REF_NAME#v}"
           [[ $GITHUB_REF_TYPE != "tag" ]] && VERSION="0.0.0-${GITHUB_SHA:0:7}"
-          
+
           CURRENT_TARGET="${{ matrix.job.target }}"
           CLEAN_TARGET=$(echo "$CURRENT_TARGET" | cut -d. -f1)
+          SKILL_NAME="${{ env.SKILL_NAME }}"
 
           mkdir -p dist
-          BIN_NAME="fund-manager"
-          
+          mkdir -p "dist/${SKILL_NAME}"
+          BIN_NAME="${SKILL_NAME}"
+
           if [[ "$CURRENT_TARGET" == *"windows"* ]]; then
-            BIN_NAME="fund-manager.exe"
-            ASSET_NAME="fund-manager-v${VERSION}-${CLEAN_TARGET}.zip"
-            cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" dist/
-            cd dist && zip "../${ASSET_NAME}" "${BIN_NAME}" && cd ..
+            BIN_NAME="${SKILL_NAME}.exe"
+            ASSET_NAME="${SKILL_NAME}-v${VERSION}-${CLEAN_TARGET}.zip"
+            cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" "dist/${SKILL_NAME}/"
+            cd "dist/${SKILL_NAME}" && zip "../../${ASSET_NAME}" "${BIN_NAME}" && cd ../..
           else
-            ASSET_NAME="fund-manager-v${VERSION}-${CLEAN_TARGET}.tar.gz"
-            cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" dist/
-            tar -czf "${ASSET_NAME}" -C dist "${BIN_NAME}"
+            ASSET_NAME="${SKILL_NAME}-v${VERSION}-${CLEAN_TARGET}.tar.gz"
+            cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" "dist/${SKILL_NAME}/"
+            tar -czf "${ASSET_NAME}" -C dist "${SKILL_NAME}/${BIN_NAME}"
           fi
-          
-          echo "ASSET_PATH=skills/fund-manager/${ASSET_NAME}" >> $GITHUB_ENV
+
+          echo "ASSET_PATH=dist/${ASSET_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ASSET_NAME}" >> $GITHUB_ENV
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ASSET_NAME }}
+          name: ${{ env.SKILL_NAME }}-${{ matrix.job.target }}
           path: ${{ env.ASSET_PATH }}
 
   # --- Job 2: 处理 macOS (使用原生 Apple 运行器) ---
   build-macos:
     name: Build ${{ matrix.job.target }}
     runs-on: macos-latest
+    needs: [setup, pre-check]
+    if: needs.pre-check.outputs.should_build == 'true'
+    env:
+      SKILL_NAME: ${{ needs.setup.outputs.skill_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -110,7 +193,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            skills/fund-manager/target
+            skills/${{ env.SKILL_NAME }}/target
           key: ${{ runner.os }}-cargo-macos-${{ matrix.job.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-macos-${{ matrix.job.target }}-
@@ -120,45 +203,54 @@ jobs:
 
       - name: Build
         run: |
-          cd skills/fund-manager
+          cd skills/${{ env.SKILL_NAME }}
           cargo build --release --target ${{ matrix.job.target }} --locked
 
       - name: Package
         shell: bash
         run: |
-          cd skills/fund-manager
+          cd skills/${{ env.SKILL_NAME }}
           VERSION="${GITHUB_REF_NAME#v}"
           [[ $GITHUB_REF_TYPE != "tag" ]] && VERSION="0.0.0-${GITHUB_SHA:0:7}"
-          
+
           CLEAN_TARGET="${{ matrix.job.target }}"
+          SKILL_NAME="${{ env.SKILL_NAME }}"
           mkdir -p dist
-          BIN_NAME="fund-manager"
-          ASSET_NAME="fund-manager-v${VERSION}-${CLEAN_TARGET}.tar.gz"
-          cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" dist/
-          tar -czf "${ASSET_NAME}" -C dist "${BIN_NAME}"
-          
-          echo "ASSET_PATH=skills/fund-manager/${ASSET_NAME}" >> $GITHUB_ENV
+          mkdir -p "dist/${SKILL_NAME}"
+          BIN_NAME="${SKILL_NAME}"
+          ASSET_NAME="${SKILL_NAME}-v${VERSION}-${CLEAN_TARGET}.tar.gz"
+          cp "target/${CLEAN_TARGET}/release/${BIN_NAME}" "dist/${SKILL_NAME}/"
+          tar -czf "${ASSET_NAME}" -C dist "${SKILL_NAME}/${BIN_NAME}"
+
+          echo "ASSET_PATH=dist/${ASSET_NAME}" >> $GITHUB_ENV
           echo "ASSET_NAME=${ASSET_NAME}" >> $GITHUB_ENV
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ASSET_NAME }}
+          name: ${{ env.SKILL_NAME }}-${{ matrix.job.target }}
           path: ${{ env.ASSET_PATH }}
 
   # --- Job 3: 汇总并发布到 GitHub Release ---
   release:
     name: Release
-    needs: [build-linux-windows, build-macos]
+    needs: [setup, build-linux-windows, build-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      SKILL_NAME: ${{ needs.setup.outputs.skill_name }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: ${{ env.SKILL_NAME }}-*
           merge-multiple: true
+
+      - name: Display structure
+        run: |
+          ls -la dist/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

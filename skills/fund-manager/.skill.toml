@@ -1,0 +1,44 @@
+# .skill.toml - Skill build matrix declaration
+#
+# This file declares the build targets and output configuration for fund-manager.
+# Used by CI/CD to generate the build matrix and by bootstrap scripts to locate binaries.
+
+name = "fund-manager"
+description = "中国公募基金投资管理 CLI 工具 - 持仓追踪、盈亏计算、净值同步"
+license = "MIT"
+
+# Build configuration
+[build]
+# Target triples for cross-platform builds
+# These targets are validated against GitHub Actions runner capabilities
+default-targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-gnu",
+    "aarch64-pc-windows-gnullvm",
+]
+
+# Build command executed by CI
+# Assumes working directory is skills/fund-manager/
+build-command = "cargo build --release"
+
+# Output configuration
+[output]
+# Name of the binary (without platform suffix)
+binary-name = "fund-manager"
+
+# Default archive extension per platform is inferred:
+#   - Windows (*-windows-*): zip
+#   - Others: tar.gz
+# This can be overridden per-target if needed
+# archive-ext = "tar.gz"
+
+# GitHub repository for releases
+# Can be overridden via FUND_MANAGER_REPO environment variable
+# repo = "YinZ-510/skills"
+
+# Environment variables passed during build
+[build.env]
+AWS_LC_SYS_NO_JITTER_ENTROPY = "1"

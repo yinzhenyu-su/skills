@@ -5,7 +5,7 @@ metadata:
   openclaw:
     requires:
       bins: ["bash", "curl", "tar", "unzip"]
-      env: ["FUND_MANAGER_GITHUB_REPO"]
+      env: ["FUND_MANAGER_REPO"]
 ---
 
 # fund-manager
@@ -18,18 +18,18 @@ metadata:
 
 ## 运行方式
 
-优先使用包装脚本（推荐）：
+使用 bootstrap 脚本（推荐）：
 
 ```bash
 cd skills/fund-manager
-chmod +x scripts/bootstrap-fund-manager.sh scripts/fund-manager.sh
-./scripts/fund-manager.sh --help
+chmod +x scripts/bootstrap.sh
+./scripts/bootstrap.sh --help
 ```
 
-包装脚本行为：
+Bootstrap 脚本行为：
 
-- 首次运行：识别当前平台并下载 `fund-manager` 核心二进制
-- 后续运行：复用本地缓存，避免重复下载
+- 首次运行：识别当前平台并从 GitHub Releases 下载 `fund-manager` 核心二进制
+- 后续运行：复用本地缓存（`~/.cache/fund-manager/bin/`），避免重复下载
 - 缓存损坏：自动重新下载
 
 ## 开发命令（源码模式）
@@ -43,7 +43,7 @@ cd skills/fund-manager && cargo run -- [args]  # 运行
 
 ### 必选（未设置 `FUND_MANAGER_CORE_URL` 时）
 
-- `FUND_MANAGER_GITHUB_REPO`：GitHub 仓库路径 (例如 `yinzhenyu-su/skills`)
+- `FUND_MANAGER_REPO`：GitHub 仓库路径 (例如 `YinZ-510/skills`)，默认 `YinZ-510/skills`
 - `FUND_MANAGER_GITHUB_TOKEN`：GitHub 访问令牌（私有仓库或避免 API 限制时使用，也可直接使用 `GITHUB_TOKEN`）
 
 ### 可选
@@ -57,12 +57,15 @@ cd skills/fund-manager && cargo run -- [args]  # 运行
 ### 示例
 
 ```bash
-# 公开仓库
-export FUND_MANAGER_GITHUB_REPO="yinzhenyu-su/skills"
+# 公开仓库（默认仓库）
+./scripts/fund-manager.sh status
+
+# 指定仓库
+export FUND_MANAGER_REPO="yinzhenyu-su/skills"
 ./scripts/fund-manager.sh status
 
 # 私有仓库
-export FUND_MANAGER_GITHUB_REPO="yinzhenyu-su/skills"
+export FUND_MANAGER_REPO="owner/private-repo"
 export FUND_MANAGER_GITHUB_TOKEN="<your-token>"
 ./scripts/fund-manager.sh fund list
 
