@@ -3,6 +3,7 @@
 # This file declares the build targets and output configuration for fund-manager.
 # Used by CI/CD to generate the build matrix and by bootstrap scripts to locate binaries.
 
+type = "binary"
 name = "fund-manager"
 description = "中国公募基金投资管理 CLI 工具 - 持仓追踪、盈亏计算、净值同步"
 license = "MIT"
