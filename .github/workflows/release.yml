@@ -33,26 +33,15 @@ env:
 #
 
 jobs:
-  # --- Pre-flight: Read version from VERSION file and verify binary skills ---
+  # --- Pre-flight: Verify binary skills ---
   setup:
     name: Setup
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.VERSION }}
       skill_name: ${{ steps.skill.outputs.SKILL_NAME }}
       skill_type: ${{ steps.skill.outputs.SKILL_TYPE }}
     steps:
       - uses: actions/checkout@v4
-      - name: Read VERSION
-        id: version
-        run: |
-          if [[ -f "skills/VERSION" ]]; then
-            VERSION=$(cat skills/VERSION | tr -d '[:space:]')
-          else
-            VERSION="${GITHUB_REF_NAME#v}"
-            [[ $GITHUB_REF_TYPE != "tag" ]] && VERSION="0.0.0-${GITHUB_SHA:0:7}"
-          fi
-          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
       - name: Detect binary skills
         id: skill
         run: |
