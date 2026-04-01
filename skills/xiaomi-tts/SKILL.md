@@ -31,6 +31,78 @@ chmod +x scripts/xiaomi-tts.sh
 export XIAOMI_MIMO_API_KEY="你的_API_KEY"
 ```
 
+## 扩展配置
+
+脚本支持将常用参数保存为默认值，避免每次调用时重复指定。
+
+### 配置文件位置
+
+| 层级 | 路径 | 优先级 |
+|------|------|--------|
+| 项目级 | `{pwd}/.xiaomi-tts/EXTEND.md` | 高 |
+| 用户级 | `~/.config/xiaomi-tts/EXTEND.md` | 低 |
+
+### 保存配置
+
+```bash
+# 保存当前参数为默认值
+./scripts/xiaomi-tts.sh --save-config --voice default_zh --speed 1.2 --pitch 2
+
+# 保存风格配置
+./scripts/xiaomi-tts.sh --save-config --style "东北话"
+```
+
+### 查看当前配置
+
+```bash
+./scripts/xiaomi-tts.sh --list-config
+```
+
+输出示例：
+
+```
+当前 xiaomi-tts 配置：
+
+  --voice   = default_zh
+  --speed   = 1.2
+  --pitch   = 2
+  --format  = mp3
+  --model   = mimo-v2-tts
+  --style   = 东北话
+
+配置文件：
+  用户级: /home/user/.config/xiaomi-tts/EXTEND.md
+```
+
+### 配置项说明
+
+| 配置项 | 说明 | 可选值 |
+|--------|------|--------|
+| `default_voice` | 默认音色 | `default_zh`, `mimo_default`, `default_en` |
+| `default_speed` | 默认语速 | `0.5` - `2.0` |
+| `default_pitch` | 默认音调 | `-10` - `10` |
+| `default_format` | 默认输出格式 | `mp3`, `wav`, `pcm` |
+| `default_model` | 默认模型 | `mimo-v2-tts` |
+| `default_style` | 默认风格标签 | 如 `开心`, `东北话`, `粤语` |
+
+### 配置优先级
+
+1. **CLI 参数** > 扩展配置 > 硬编码默认值
+2. **项目级配置** > 用户级配置
+
+### EXTEND.md 格式示例
+
+```yaml
+---
+default_voice: default_zh
+default_speed: 1.0
+default_pitch: 0
+default_format: mp3
+default_model: mimo-v2-tts
+default_style: ""
+---
+```
+
 ## 使用方法
 
 ### 命令行调用
@@ -51,7 +123,7 @@ export XIAOMI_MIMO_API_KEY="你的_API_KEY"
 | 参数 | 说明 | 可选值 / 范围 |
 | :--- | :--- | :--- |
 | `model` | 模型版本 | `mimo-v2-tts` (默认) |
-| `voice` | 预置音色 | `mimo_default` (默认), `default_zh`, `default_en` |
+| `voice` | 预置音色 | `default_zh` (默认), `mimo_default`, `default_en` |
 | `speed` | 语速倍率 | `0.5` - `2.0` (默认 `1.0`) |
 | `pitch` | 音调偏移 | `-10` - `10` (默认 `0`) |
 | `style` | 风格控制 | 通过 `--style "开心"` 自动追加 `<style>开心</style>`，或手动写入文本开头 |
