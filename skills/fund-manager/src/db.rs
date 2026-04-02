@@ -43,6 +43,8 @@ fn setup_schema(conn: &Connection) -> Result<()> {
             trust_fee TEXT,
             sales_fee TEXT,
             dividend_mode TEXT DEFAULT 'cash',
+            target_profit_rate TEXT,
+            stop_loss_rate TEXT,
             last_sync_at DATETIME
         )",
         [],
@@ -59,6 +61,8 @@ fn setup_schema(conn: &Connection) -> Result<()> {
         ("trust_fee", "TEXT"),
         ("sales_fee", "TEXT"),
         ("dividend_mode", "TEXT DEFAULT 'cash'"),
+        ("target_profit_rate", "TEXT"),
+        ("stop_loss_rate", "TEXT"),
     ];
     for (name, col_type) in new_cols {
         let _ = conn.execute(
@@ -340,6 +344,27 @@ pub fn update_fund_dividend_mode(conn: &Connection, code: &str, mode: &str) -> R
     Ok(())
 }
 
+pub fn update_fund_goals(
+    conn: &Connection,
+    code: &str,
+    target_profit: Option<&str>,
+    stop_loss: Option<&str>,
+) -> Result<()> {
+    if let Some(tp) = target_profit {
+        conn.execute(
+            "UPDATE fund SET target_profit_rate = ?2 WHERE code = ?1",
+            [code, tp],
+        )?;
+    }
+    if let Some(sl) = stop_loss {
+        conn.execute(
+            "UPDATE fund SET stop_loss_rate = ?2 WHERE code = ?1",
+            [code, sl],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn get_wallet_id_by_name(conn: &Connection, name: &str) -> Result<Option<i64>> {
     let mut stmt = conn.prepare("SELECT id FROM wallet WHERE name = ?1")?;
     let mut rows = stmt.query([name])?;
@@ -473,6 +498,8 @@ pub struct Fund {
     pub trust_fee: Option<String>,
     pub sales_fee: Option<String>,
     pub dividend_mode: Option<String>,
+    pub target_profit_rate: Option<String>,
+    pub stop_loss_rate: Option<String>,
     pub last_sync_at: Option<String>,
 }
 
@@ -488,7 +515,7 @@ pub fn get_fund_by_code_or_name(conn: &Connection, identifier: &str) -> Result<O
     let mut stmt = conn.prepare(
         "SELECT 
         code, name, fund_type, risk_level, manager, company, establish_date, 
-        management_fee, trust_fee, sales_fee, dividend_mode, last_sync_at 
+        management_fee, trust_fee, sales_fee, dividend_mode, target_profit_rate, stop_loss_rate, last_sync_at 
         FROM fund WHERE code = ?1 OR name = ?1",
     )?;
     let mut rows = stmt.query([identifier])?;
@@ -505,7 +532,9 @@ pub fn get_fund_by_code_or_name(conn: &Connection, identifier: &str) -> Result<O
             trust_fee: row.get(8)?,
             sales_fee: row.get(9)?,
             dividend_mode: row.get(10)?,
-            last_sync_at: row.get(11)?,
+            target_profit_rate: row.get(11)?,
+            stop_loss_rate: row.get(12)?,
+            last_sync_at: row.get(13)?,
         }))
     } else {
         Ok(None)
@@ -516,7 +545,7 @@ pub fn search_funds_locally(conn: &Connection, identifier: &str) -> Result<Vec<F
     let mut stmt = conn.prepare(
         "SELECT 
         code, name, fund_type, risk_level, manager, company, establish_date, 
-        management_fee, trust_fee, sales_fee, dividend_mode, last_sync_at 
+        management_fee, trust_fee, sales_fee, dividend_mode, target_profit_rate, stop_loss_rate, last_sync_at 
         FROM fund WHERE code LIKE ?1 OR name LIKE ?1",
     )?;
     let pattern = format!("%{}%", identifier);
@@ -533,7 +562,9 @@ pub fn search_funds_locally(conn: &Connection, identifier: &str) -> Result<Vec<F
             trust_fee: row.get(8)?,
             sales_fee: row.get(9)?,
             dividend_mode: row.get(10)?,
-            last_sync_at: row.get(11)?,
+            target_profit_rate: row.get(11)?,
+            stop_loss_rate: row.get(12)?,
+            last_sync_at: row.get(13)?,
         })
     })?;
 
@@ -548,7 +579,7 @@ pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
     let mut stmt = conn.prepare(
         "SELECT 
         code, name, fund_type, risk_level, manager, company, establish_date, 
-        management_fee, trust_fee, sales_fee, dividend_mode, last_sync_at 
+        management_fee, trust_fee, sales_fee, dividend_mode, target_profit_rate, stop_loss_rate, last_sync_at 
         FROM fund",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -564,7 +595,9 @@ pub fn get_all_funds(conn: &Connection) -> Result<Vec<Fund>> {
             trust_fee: row.get(8)?,
             sales_fee: row.get(9)?,
             dividend_mode: row.get(10)?,
-            last_sync_at: row.get(11)?,
+            target_profit_rate: row.get(11)?,
+            stop_loss_rate: row.get(12)?,
+            last_sync_at: row.get(13)?,
         })
     })?;
 
@@ -582,7 +615,7 @@ pub fn get_funds_with_valuations(
     let mut stmt = conn.prepare(
         "SELECT 
             f.code, f.name, f.fund_type, f.risk_level, f.manager, f.company, f.establish_date,
-            f.management_fee, f.trust_fee, f.sales_fee, f.dividend_mode, f.last_sync_at,
+            f.management_fee, f.trust_fee, f.sales_fee, f.dividend_mode, f.target_profit_rate, f.stop_loss_rate, f.last_sync_at,
             (SELECT nav FROM nav_history WHERE fund_code = f.code ORDER BY date DESC LIMIT 1) as latest_nav,
             (SELECT date FROM nav_history WHERE fund_code = f.code ORDER BY date DESC LIMIT 1) as latest_nav_date,
             SUM(CASE 
@@ -613,11 +646,13 @@ pub fn get_funds_with_valuations(
                 trust_fee: row.get(8)?,
                 sales_fee: row.get(9)?,
                 dividend_mode: row.get(10)?,
-                last_sync_at: row.get(11)?,
+                target_profit_rate: row.get(11)?,
+                stop_loss_rate: row.get(12)?,
+                last_sync_at: row.get(13)?,
             },
-            latest_nav: row.get(12)?,
-            latest_nav_date: row.get(13)?,
-            total_shares: row.get::<_, Option<f64>>(14)?.unwrap_or(0.0),
+            latest_nav: row.get(14)?,
+            latest_nav_date: row.get(15)?,
+            total_shares: row.get::<_, Option<f64>>(16)?.unwrap_or(0.0),
         })
     })?;
 
@@ -891,6 +926,8 @@ pub struct Holding {
     pub wallet_id: i64,
     pub holding_days: Option<i64>,
     pub allocation_pct: Option<f64>,
+    pub target_profit: Option<Decimal>,
+    pub stop_loss: Option<Decimal>,
 }
 
 pub fn get_first_buy_date(
@@ -953,7 +990,9 @@ pub fn get_holdings(
                 WHEN t.type IN ('dividend', 'reinvest') THEN CAST(t.money AS REAL)
                 ELSE 0
             END) as cumulative_dividend,
-            t.wallet_id
+            t.wallet_id,
+            f.target_profit_rate,
+            f.stop_loss_rate
          FROM fund f
          JOIN transaction_log t ON f.code = t.fund_code
          {}
@@ -983,6 +1022,12 @@ pub fn get_holdings(
             wallet_id: row.get(6)?,
             holding_days: None,
             allocation_pct: None,
+            target_profit: row
+                .get::<_, Option<String>>(7)?
+                .and_then(|s| Decimal::from_str(&s).ok()),
+            stop_loss: row
+                .get::<_, Option<String>>(8)?
+                .and_then(|s| Decimal::from_str(&s).ok()),
         })
     })?;
 
@@ -1193,6 +1238,31 @@ pub fn get_redemption_fee_rate(
     }
 }
 
+pub fn get_next_redemption_fee_tier(
+    conn: &Connection,
+    fund_code: &str,
+    holding_days: i32,
+) -> Result<Option<(i32, Decimal)>> {
+    let mut stmt = conn.prepare(
+        "SELECT min_days, fee_rate
+         FROM redemption_fee_tiers
+         WHERE fund_code = ?1
+           AND min_days > ?2
+         ORDER BY min_days ASC
+         LIMIT 1",
+    )?;
+
+    let mut rows = stmt.query(rusqlite::params![fund_code, holding_days])?;
+    if let Some(row) = rows.next()? {
+        let min_days: i32 = row.get(0)?;
+        let fee_rate: String = row.get(1)?;
+        let rate = Decimal::from_str(&fee_rate).unwrap_or_default();
+        Ok(Some((min_days, rate)))
+    } else {
+        Ok(None)
+    }
+}
+
 pub fn get_fund_tradability(conn: &Connection, fund_code: &str) -> Result<Option<FundTradability>> {
     let mut stmt = conn.prepare(
         "SELECT
@@ -1231,6 +1301,7 @@ pub fn get_fund_tradability(conn: &Connection, fund_code: &str) -> Result<Option
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -1468,6 +1539,50 @@ mod tests {
             get_redemption_fee_rate(&conn, "000300", 120).unwrap(),
             Decimal::from_str("0.000").ok()
         );
+    }
+
+    #[test]
+    fn test_get_next_redemption_fee_tier() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path();
+        init_db(path).expect("Failed to init DB");
+        let conn = Connection::open(path).unwrap();
+
+        add_fund(
+            &conn,
+            "000300",
+            "沪深300",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to add fund");
+
+        let tiers = vec![
+            (0, Some(6), dec!(0.015)),
+            (7, Some(29), dec!(0.005)),
+            (30, None, dec!(0.000)),
+        ];
+        replace_redemption_fee_tiers(&conn, "000300", &tiers).unwrap();
+
+        // current 3 days -> next is 7 days
+        let next = get_next_redemption_fee_tier(&conn, "000300", 3).unwrap().unwrap();
+        assert_eq!(next.0, 7);
+        assert_eq!(next.1, dec!(0.005));
+
+        // current 10 days -> next is 30 days
+        let next = get_next_redemption_fee_tier(&conn, "000300", 10).unwrap().unwrap();
+        assert_eq!(next.0, 30);
+        assert_eq!(next.1, dec!(0.000));
+
+        // current 40 days -> none
+        assert!(get_next_redemption_fee_tier(&conn, "000300", 40).unwrap().is_none());
     }
 
     #[test]

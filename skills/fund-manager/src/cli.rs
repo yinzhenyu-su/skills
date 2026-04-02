@@ -365,6 +365,12 @@ pub enum FundCommands {
         fund: String,
         /// 设置分红方式 (cash: 现金分红, reinvest: 红利再投)
         #[arg(long, value_parser = ["cash", "reinvest"])]
-        dividend_mode: String,
+        dividend_mode: Option<String>,
+        /// 设置止盈目标（百分比，例如 "15%"）
+        #[arg(long)]
+        target_profit: Option<String>,
+        /// 设置止损目标（百分比，例如 "10%"）
+        #[arg(long)]
+        stop_loss: Option<String>,
     },
 }

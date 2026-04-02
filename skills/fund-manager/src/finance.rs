@@ -46,6 +46,61 @@ pub fn calculate_sell(shares: Decimal, nav: Decimal, fee_rate: Decimal) -> SellR
     SellResult { money, fee }
 }
 
+/// Calculate the breakeven NAV (where sell money equals cost).
+/// Formula: cost = shares * nav * (1 - fee_rate)
+/// => nav = cost / (shares * (1 - fee_rate))
+pub fn calculate_breakeven_nav(
+    cost: Decimal,
+    shares: Decimal,
+    redemption_fee_rate: Decimal,
+) -> Decimal {
+    if shares.is_zero() {
+        return Decimal::ZERO;
+    }
+    let one = dec!(1);
+    let denominator = shares * (one - redemption_fee_rate);
+    if denominator.is_zero() {
+        return Decimal::ZERO;
+    }
+    (cost / denominator).round_dp(4)
+}
+
+pub struct OptimizationAdvice {
+    pub current_days: i64,
+    pub next_tier_days: i32,
+    pub days_remaining: i32,
+    pub current_fee_rate: Decimal,
+    pub next_fee_rate: Decimal,
+    pub saved_money: Decimal,
+}
+
+pub fn detect_optimization(
+    current_days: i64,
+    total_valuation: Decimal,
+    current_fee_rate: Decimal,
+    next_tier: Option<(i32, Decimal)>,
+) -> Option<OptimizationAdvice> {
+    let (next_days, next_rate) = next_tier?;
+    let remaining = next_days - (current_days as i32);
+
+    if remaining > 0 && remaining <= 7 {
+        let current_fee = (total_valuation * current_fee_rate).round_dp(2);
+        let next_fee = (total_valuation * next_rate).round_dp(2);
+        let saved = (current_fee - next_fee).round_dp(2);
+
+        Some(OptimizationAdvice {
+            current_days,
+            next_tier_days: next_days,
+            days_remaining: remaining,
+            current_fee_rate,
+            next_fee_rate: next_rate,
+            saved_money: saved,
+        })
+    } else {
+        None
+    }
+}
+
 /// Parses a percentage rate string (e.g. "0.15%") into a Decimal (e.g. 0.0015).
 pub fn parse_percentage_rate(input: &str) -> Decimal {
     let input = input.trim();
@@ -320,5 +375,40 @@ mod tests {
             .format("%Y-%m-%d")
             .to_string();
         assert_eq!(days_since(&future), -3);
+    }
+
+    #[test]
+    fn test_calculate_breakeven_nav() {
+        // cost 1000, shares 1000, fee 0.5%
+        // nav = 1000 / (1000 * 0.995) = 1.005025... -> 1.0050
+        assert_eq!(
+            calculate_breakeven_nav(dec!(1000), dec!(1000), dec!(0.005)),
+            dec!(1.0050)
+        );
+        // cost 1000, shares 1000, fee 0%
+        assert_eq!(
+            calculate_breakeven_nav(dec!(1000), dec!(1000), dec!(0)),
+            dec!(1.0000)
+        );
+    }
+
+    #[test]
+    fn test_detect_optimization() {
+        // current 6 days, next tier 7 days, valuation 10000, current fee 1.5%, next fee 0.5%
+        let advice = detect_optimization(
+            6,
+            dec!(10000),
+            dec!(0.015),
+            Some((7, dec!(0.005))),
+        )
+        .unwrap();
+        assert_eq!(advice.days_remaining, 1);
+        assert_eq!(advice.saved_money, dec!(100)); // 150 - 50 = 100
+
+        // current 8 days, next tier 7 days -> None
+        assert!(detect_optimization(8, dec!(10000), dec!(0.015), Some((7, dec!(0.005)))).is_none());
+
+        // remaining > 7 days -> None
+        assert!(detect_optimization(1, dec!(10000), dec!(0.015), Some((10, dec!(0.005)))).is_none());
     }
 }

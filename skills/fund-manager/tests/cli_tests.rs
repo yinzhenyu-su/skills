@@ -984,9 +984,9 @@ fn test_fund_457001_profit_loss_calculation() {
             [],
         )
         .unwrap();
-        // 当前净值
+        // 当前净值 (使用未来日期确保它是最新的)
         conn.execute(
-            "INSERT INTO nav_history (fund_code, date, nav) VALUES ('457001', '2026-03-16', '2.1146')",
+            "INSERT INTO nav_history (fund_code, date, nav) VALUES ('457001', '2026-12-31', '2.1146')",
             [],
         )
         .unwrap();
@@ -1017,6 +1017,7 @@ fn test_fund_457001_profit_loss_calculation() {
         .stdout(predicate::str::contains("4421.48"))
         .stdout(predicate::str::contains("10000"))
         .stdout(predicate::str::contains("2.1146"))
+        .stdout(predicate::str::contains("2.2617")) // 保本净值
         .stdout(predicate::str::contains("-6.50%"));
 
     // 5. 边界测试：执行卖出操作
@@ -1028,7 +1029,7 @@ fn test_fund_457001_profit_loss_calculation() {
         .arg("--money")
         .arg("5000")
         .arg("--date")
-        .arg("2026-03-16")
+        .arg("2026-12-31")
         .arg("-y")
         .assert()
         .success();
@@ -1043,10 +1044,10 @@ fn test_fund_457001_profit_loss_calculation() {
         .success()
         // 剩余份额约 2056.97
         .stdout(predicate::str::contains("2056"))
-        // 持仓成本约 5000
-        .stdout(predicate::str::contains("5000"))
+        // 持仓成本约 5025
+        .stdout(predicate::str::contains("5025"))
         // 盈亏率约 -13%
-        .stdout(predicate::str::contains("-13.0"));
+        .stdout(predicate::str::contains("-13.4"));
 }
 
 #[test]
@@ -1093,13 +1094,13 @@ fn test_missing_required_argument_format() {
 }
 
 #[test]
-fn test_index_command() {
-    let ctx = TestContext::new("index-command");
-    ctx.cmd().arg("index").assert().success();
+fn test_market_command() {
+    let ctx = TestContext::new("market-command");
+    ctx.cmd().arg("market").assert().success();
 }
 
 #[test]
-fn test_status_columns_holding_days_fee_allocation() {
+fn test_status_columns_advisor_and_breakeven() {
     let temp_app_dir = env::temp_dir().join("fund-manager-test-status-cols");
     if temp_app_dir.exists() {
         fs::remove_dir_all(&temp_app_dir).unwrap();
@@ -1153,6 +1154,8 @@ fn test_status_columns_holding_days_fee_allocation() {
         .success()
         .stdout(predicate::str::contains("持有天数"))
         .stdout(predicate::str::contains("赎回费率"))
+        .stdout(predicate::str::contains("保本净值"))
+        .stdout(predicate::str::contains("提醒"))
         .stdout(predicate::str::contains("仓位占比"));
 }
 

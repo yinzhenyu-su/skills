@@ -1109,6 +1109,20 @@ async fn handle_preview_sell(
     println!("│   成本: {} → {}", current_cost, new_total_cost);
     println!("│   均价: {} → {}", current_avg_cost, new_avg_cost);
     println!("└─────────────────────────────────────────────────────────┘");
+
+    // 展示决策优化建议
+    if let Some(days) = holding_days_for_fee {
+        let valuation = (sell_shares * nav_value).round_dp(2);
+        let next_tier = db::get_next_redemption_fee_tier(conn, &fund_obj.code, days as i32).unwrap_or(None);
+        
+        if let Some(advice) = finance::detect_optimization(days, valuation, fee_rate, next_tier) {
+            println!("\n💡 策略建议：");
+            println!("   该基金目前临近费率降档（还差 {} 天）。", advice.days_remaining);
+            println!("   如果推迟到 {} 天后（累计持有 {} 天）再卖出：", advice.days_remaining, advice.next_tier_days);
+            println!("   - 赎回费率将从 {:.2}% 降至 {:.2}%", advice.current_fee_rate * dec!(100), advice.next_fee_rate * dec!(100));
+            println!("   - 预计可节省手续费约：￥{}", advice.saved_money);
+        }
+    }
 }
 
 fn handle_clap_error(err: clap::Error) {
@@ -1465,6 +1479,8 @@ async fn main() {
             FundCommands::Config {
                 fund,
                 dividend_mode,
+                target_profit,
+                stop_loss,
             } => {
                 let wallet_id = resolve_wallet_id(&conn, None);
                 let fund_input = require_fund_or_exit(&conn, Some(fund), wallet_id, "fund config");
@@ -1476,21 +1492,75 @@ async fn main() {
                     }
                 };
 
-                db::update_fund_dividend_mode(&conn, &fund_obj.code, &dividend_mode).unwrap_or_else(
-                    |e| {
-                        eprintln!("❌ 无法更新基金配置：{}", e);
+                if let Some(mode) = dividend_mode {
+                    db::update_fund_dividend_mode(&conn, &fund_obj.code, &mode).unwrap_or_else(
+                        |e| {
+                            eprintln!("❌ 无法更新分红方式：{}", e);
+                            std::process::exit(1);
+                        },
+                    );
+                    let mode_zh = if mode == "cash" { "现金分红" } else { "红利再投" };
+                    println!(
+                        "✅ 成功将基金 {} ({}) 的分红方式设置为：{}",
+                        fund_obj.name, fund_obj.code, mode_zh
+                    );
+                }
+
+                if target_profit.is_some() || stop_loss.is_some() {
+                    let tp_val = target_profit.as_deref().map(|s| {
+                        if s.to_lowercase() == "none" {
+                            ""
+                        } else {
+                            s
+                        }
+                    });
+                    let sl_val = stop_loss.as_deref().map(|s| {
+                        if s.to_lowercase() == "none" {
+                            ""
+                        } else {
+                            s
+                        }
+                    });
+
+                    // Parse to validate if not empty
+                    let mut final_tp = None;
+                    if let Some(s) = tp_val {
+                        if !s.is_empty() {
+                            let rate = finance::parse_percentage_rate(s);
+                            final_tp = Some(rate.to_string());
+                        } else {
+                            final_tp = Some("".to_string());
+                        }
+                    }
+
+                    let mut final_sl = None;
+                    if let Some(s) = sl_val {
+                        if !s.is_empty() {
+                            let rate = finance::parse_percentage_rate(s);
+                            final_sl = Some(rate.to_string());
+                        } else {
+                            final_sl = Some("".to_string());
+                        }
+                    }
+
+                    db::update_fund_goals(
+                        &conn,
+                        &fund_obj.code,
+                        final_tp.as_deref(),
+                        final_sl.as_deref(),
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("❌ 无法更新投资目标：{}", e);
                         std::process::exit(1);
-                    },
-                );
-                let mode_zh = if dividend_mode == "cash" {
-                    "现金分红"
-                } else {
-                    "红利再投"
-                };
-                println!(
-                    "✅ 成功将基金 {} ({}) 的分红方式设置为：{}",
-                    fund_obj.name, fund_obj.code, mode_zh
-                );
+                    });
+
+                    if let Some(tp) = target_profit {
+                        println!("✅ 止盈目标已更新为：{}", tp);
+                    }
+                    if let Some(sl) = stop_loss {
+                        println!("✅ 止损目标已更新为：{}", sl);
+                    }
+                }
             }
         },
         Commands::Reset => {
@@ -1541,18 +1611,20 @@ async fn main() {
                 "份额",
                 "持有天数",
                 "赎回费率",
+                "保本净值",
                 "持仓成本",
-                "累计分红",
                 "当前净值",
                 "当前市值",
                 "盈亏额",
                 "收益率",
+                "提醒",
                 "仓位占比",
             ]);
 
             let mut sum_cost = Decimal::ZERO;
             let mut sum_valuation = Decimal::ZERO;
             let mut sum_pl = Decimal::ZERO;
+            let mut advices = Vec::new();
 
             for h in holdings {
                 let shares = h.shares;
@@ -1560,14 +1632,16 @@ async fn main() {
                 let dividend = h.cumulative_dividend;
                 let nav = h.latest_nav.unwrap_or_default();
                 let holding_days_val = h.holding_days;
-                let holding_days = holding_days_val
+                let holding_days_str = holding_days_val
                     .map(|d| d.to_string())
                     .unwrap_or_else(|| "-".to_string());
 
                 // 查询赎回费率
+                let mut current_fee_rate = Decimal::ZERO;
                 let redemption_fee_str = if let Some(days) = holding_days_val {
                     match db::get_redemption_fee_rate(&conn, &h.fund_code, days as i32) {
                         Ok(Some(rate)) => {
+                            current_fee_rate = rate;
                             let pct = rate * dec!(100);
                             format!("{:.2}%", pct)
                         }
@@ -1577,10 +1651,27 @@ async fn main() {
                     "-".to_string()
                 };
 
-                let allocation_pct = h
-                    .allocation_pct
-                    .map(|p| format!("{:.2}%", p))
-                    .unwrap_or_else(|| "-".to_string());
+                // 保本净值
+                let breakeven_nav = finance::calculate_breakeven_nav(cost, shares, current_fee_rate);
+                let breakeven_nav_str = if breakeven_nav.is_zero() {
+                    "-".to_string()
+                } else {
+                    breakeven_nav.to_string()
+                };
+
+                // 决策提醒与跳档检测
+                let mut indicator = String::new();
+                if let Some(days) = holding_days_val {
+                    let valuation = (shares * nav).round_dp(2);
+                    let next_tier = db::get_next_redemption_fee_tier(&conn, &h.fund_code, days as i32).unwrap_or(None);
+                    if let Some(advice) = finance::detect_optimization(days, valuation, current_fee_rate, next_tier) {
+                        indicator.push_str("💡");
+                        advices.push(format!(
+                            "💡 [{}]: 再持有 {} 天，费率由 {:.2}% 降至 {:.2}%，可节省 ￥{}",
+                            h.fund_name, advice.days_remaining, advice.current_fee_rate * dec!(100), advice.next_fee_rate * dec!(100), advice.saved_money
+                        ));
+                    }
+                }
 
                 let valuation = (shares * nav).round_dp(2);
                 let pl = (valuation - cost).round_dp(2);
@@ -1590,22 +1681,45 @@ async fn main() {
                     ((pl / cost) * dec!(100)).round_dp(2)
                 };
 
+                // 盈亏目标报警
+                let mut pl_pct_cell = Cell::new(format!("{:.2}%", pl_pct));
+                if let Some(target) = h.target_profit {
+                    if !target.is_zero() && pl_pct >= target * dec!(100) {
+                        indicator.push_str("🎯");
+                        pl_pct_cell = pl_pct_cell.fg(Color::Green);
+                        advices.push(format!("🎯 [{}]: 已达到止盈目标 {:.2}%", h.fund_name, target * dec!(100)));
+                    }
+                }
+                if let Some(loss) = h.stop_loss {
+                    if !loss.is_zero() && pl_pct <= -(loss * dec!(100)) {
+                        indicator.push_str("⚠️");
+                        pl_pct_cell = pl_pct_cell.fg(Color::Red);
+                        advices.push(format!("⚠️ [{}]: 已触发止损警戒 {:.2}%", h.fund_name, loss * dec!(100)));
+                    }
+                }
+
+                let allocation_pct = h
+                    .allocation_pct
+                    .map(|p| format!("{:.2}%", p))
+                    .unwrap_or_else(|| "-".to_string());
+
                 sum_cost += cost;
                 sum_valuation += valuation;
                 sum_pl += pl;
 
                 table.add_row(vec![
-                    format!("{} ({})", h.fund_name, h.fund_code),
-                    shares.to_string(),
-                    holding_days,
-                    redemption_fee_str,
-                    cost.to_string(),
-                    dividend.to_string(),
-                    nav.to_string(),
-                    valuation.to_string(),
-                    pl.to_string(),
-                    format!("{:.2}%", pl_pct),
-                    allocation_pct,
+                    Cell::new(format!("{} ({})", h.fund_name, h.fund_code)),
+                    Cell::new(shares.to_string()),
+                    Cell::new(holding_days_str),
+                    Cell::new(redemption_fee_str),
+                    Cell::new(breakeven_nav_str),
+                    Cell::new(cost.to_string()),
+                    Cell::new(nav.to_string()),
+                    Cell::new(valuation.to_string()),
+                    Cell::new(pl.to_string()),
+                    pl_pct_cell,
+                    Cell::new(indicator),
+                    Cell::new(allocation_pct),
                 ]);
             }
 
@@ -1616,19 +1730,27 @@ async fn main() {
             };
 
             table.add_row(vec![
-                "合计".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-                sum_cost.round_dp(2).to_string(),
-                "-".to_string(),
-                "-".to_string(),
-                sum_valuation.round_dp(2).to_string(),
-                sum_pl.round_dp(2).to_string(),
-                format!("{:.2}%", sum_pl_pct),
-                "100.00%".to_string(),
+                Cell::new("合计".to_string()),
+                Cell::new("-".to_string()),
+                Cell::new("-".to_string()),
+                Cell::new("-".to_string()),
+                Cell::new("-".to_string()),
+                Cell::new(sum_cost.round_dp(2).to_string()),
+                Cell::new("-".to_string()),
+                Cell::new(sum_valuation.round_dp(2).to_string()),
+                Cell::new(sum_pl.round_dp(2).to_string()),
+                Cell::new(format!("{:.2}%", sum_pl_pct)),
+                Cell::new("-".to_string()),
+                Cell::new("100.00%".to_string()),
             ]);
             println!("{table}");
+
+            if !advices.is_empty() {
+                println!("");
+                for advice in advices {
+                    println!("{}", advice);
+                }
+            }
         }
         Commands::History {
             fund,
