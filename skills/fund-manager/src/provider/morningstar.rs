@@ -15,6 +15,10 @@ struct PerformanceResponse {
 struct PerformanceData {
     #[serde(rename = "categoryName")]
     category_name: Option<String>,
+    #[serde(rename = "benchmarkId")]
+    benchmark_id: Option<String>,
+    #[serde(rename = "benchmarkName")]
+    benchmark_name: Option<String>,
     rating: Option<Rating>,
     risk: Option<RiskPeriods>,
     #[serde(rename = "investorReturn")]
@@ -104,8 +108,6 @@ struct FeesData {
     min_investment: Option<Value>,
     #[serde(rename = "frontLoadFee", default)]
     front_load_fee: Vec<FeeTierRaw>,
-    #[serde(rename = "deferLoadFee", default)]
-    defer_load_fee: Vec<FeeTierRaw>,
     #[serde(rename = "redemptionFee", default)]
     redemption_fee: Vec<FeeTierRaw>,
     #[serde(rename = "purchaseAndRedeem")]
@@ -239,6 +241,8 @@ impl Provider for MorningstarProvider {
                 if let Ok(body) = resp.json::<PerformanceResponse>().await {
                     let d = body.data;
                     data.fund_type = d.category_name;
+                    data.benchmark_id = d.benchmark_id;
+                    data.benchmark_name = d.benchmark_name;
                     if let Some(rating) = d.rating {
                         data.rating_3y = rating.y3.and_then(|s| s.parse().ok());
                         data.rating_5y = rating.y5.and_then(|s| s.parse().ok());
@@ -325,6 +329,8 @@ mod tests {
         let json = r#"{
             "data": {
                 "categoryName": "大盘成长股票",
+                "benchmarkId": "F00001LXG9",
+                "benchmarkName": "沪深300全收益指数",
                 "rating": { "Y3": "5", "Y5": "4" },
                 "risk": { "Y3": { "risk": { "sharpeRatio": 1.25, "maxDrawdown": -22.4 } } },
                 "investorReturn": { "Y3": { "investorReturn": 10.0, "return": 15.0 } }
@@ -335,6 +341,8 @@ mod tests {
         let d = body.data;
 
         assert_eq!(d.category_name.unwrap(), "大盘成长股票");
+        assert_eq!(d.benchmark_id.unwrap(), "F00001LXG9");
+        assert_eq!(d.benchmark_name.unwrap(), "沪深300全收益指数");
         assert_eq!(d.rating.unwrap().y3.unwrap(), "5");
     }
 

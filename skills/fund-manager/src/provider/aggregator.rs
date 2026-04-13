@@ -51,6 +51,12 @@ impl Aggregator {
                     if data.name.is_some() {
                         final_data.name = data.name;
                     }
+                    if data.benchmark_id.is_some() {
+                        final_data.benchmark_id = data.benchmark_id;
+                    }
+                    if data.benchmark_name.is_some() {
+                        final_data.benchmark_name = data.benchmark_name;
+                    }
                     if data.nav.is_some() {
                         final_data.nav = data.nav;
                     }

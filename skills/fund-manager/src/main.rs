@@ -5,6 +5,7 @@ use fund_manager::cli::{Cli, Commands, FundCommands, PreviewCommands, WalletComm
 use fund_manager::db;
 use fund_manager::finance;
 use fund_manager::provider::{morningstar_market, Provider, eastmoney_lsjz::EastmoneyLsjzProvider};
+use fund_manager::valuation::{self, RealtimeValuationStatus};
 use fund_manager::{config, resolver, sync};
 use rusqlite::Connection;
 use rust_decimal::Decimal;
@@ -31,6 +32,37 @@ struct HoldingImportResult {
 
 fn get_today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+fn format_decimal(value: Decimal, scale: u32) -> String {
+    let rounded = value.round_dp(scale);
+    let negative = rounded.is_sign_negative();
+    let abs_string = format!("{:.*}", scale as usize, rounded.abs());
+    let mut parts = abs_string.split('.');
+    let int_part = parts.next().unwrap_or("0");
+    let frac_part = parts.next();
+
+    let mut grouped_rev = String::new();
+    for (idx, ch) in int_part.chars().rev().enumerate() {
+        if idx > 0 && idx % 3 == 0 {
+            grouped_rev.push(',');
+        }
+        grouped_rev.push(ch);
+    }
+    let grouped: String = grouped_rev.chars().rev().collect();
+
+    let mut output = if negative {
+        format!("-{}", grouped)
+    } else {
+        grouped
+    };
+
+    if scale > 0 {
+        output.push('.');
+        output.push_str(frac_part.unwrap_or("0"));
+    }
+
+    output
 }
 
 fn render_sparkline(data: &[f64]) -> String {
@@ -1586,9 +1618,25 @@ async fn main() {
 
             let mut holdings = db::get_holdings(&conn, Some(wallet_id), None).expect("数据库错误");
 
+            let realtime_valuations = match valuation::estimate_holdings(&holdings).await {
+                Ok(values) => values,
+                Err(e) => {
+                    eprintln!("⚠️ 警告：无法计算实时估值：{}", e);
+                    eprintln!("当前市值将继续使用确认净值。",);
+                    std::collections::HashMap::new()
+                }
+            };
+
             let total_valuation = holdings
                 .iter()
-                .map(|h| h.shares * h.latest_nav.unwrap_or_default())
+                .map(|h| {
+                    realtime_valuations
+                        .get(&h.fund_code)
+                        .and_then(|valuation| valuation.estimated_value)
+                        .unwrap_or_else(|| {
+                            (h.shares * h.latest_nav.unwrap_or_default()).round_dp(2)
+                        })
+                })
                 .fold(Decimal::ZERO, |acc, v| acc + v);
 
             for h in &mut holdings {
@@ -1597,7 +1645,10 @@ async fn main() {
                     .flatten()
                     .map(|d| finance::days_since(&d));
 
-                let valuation = h.shares * h.latest_nav.unwrap_or_default();
+                let valuation = realtime_valuations
+                    .get(&h.fund_code)
+                    .and_then(|valuation| valuation.estimated_value)
+                    .unwrap_or_else(|| (h.shares * h.latest_nav.unwrap_or_default()).round_dp(2));
                 h.allocation_pct = if total_valuation.is_zero() {
                     None
                 } else {
@@ -1609,60 +1660,58 @@ async fn main() {
             table.set_header(vec![
                 "基金",
                 "份额",
-                "持有天数",
-                "赎回费率",
                 "保本净值",
                 "持仓成本",
-                "当前净值",
+                "确认净值",
+                "实时估值",
                 "当前市值",
+                "当日盈亏",
+                "当日涨跌",
                 "盈亏额",
                 "收益率",
                 "提醒",
+                "估值状态",
                 "仓位占比",
             ]);
 
             let mut sum_cost = Decimal::ZERO;
             let mut sum_valuation = Decimal::ZERO;
+            let mut sum_intraday_pl = Decimal::ZERO;
+            let mut sum_intraday_base = Decimal::ZERO;
+            let total_holding_count = holdings.len();
+            let mut estimated_holding_count = 0usize;
             let mut sum_pl = Decimal::ZERO;
             let mut advices = Vec::new();
 
             for h in holdings {
                 let shares = h.shares;
                 let cost = h.net_cost;
-                let dividend = h.cumulative_dividend;
-                let nav = h.latest_nav.unwrap_or_default();
+                let confirmed_nav = h.latest_nav.unwrap_or_default();
+                let realtime = realtime_valuations.get(&h.fund_code);
                 let holding_days_val = h.holding_days;
-                let holding_days_str = holding_days_val
-                    .map(|d| d.to_string())
-                    .unwrap_or_else(|| "-".to_string());
 
-                // 查询赎回费率
+                // 查询赎回费率（用于保本净值和跳档检测）
                 let mut current_fee_rate = Decimal::ZERO;
-                let redemption_fee_str = if let Some(days) = holding_days_val {
-                    match db::get_redemption_fee_rate(&conn, &h.fund_code, days as i32) {
-                        Ok(Some(rate)) => {
-                            current_fee_rate = rate;
-                            let pct = rate * dec!(100);
-                            format!("{:.2}%", pct)
-                        }
-                        _ => "-".to_string(),
+                if let Some(days) = holding_days_val {
+                    if let Ok(Some(rate)) = db::get_redemption_fee_rate(&conn, &h.fund_code, days as i32) {
+                        current_fee_rate = rate;
                     }
-                } else {
-                    "-".to_string()
-                };
+                }
 
                 // 保本净值
                 let breakeven_nav = finance::calculate_breakeven_nav(cost, shares, current_fee_rate);
                 let breakeven_nav_str = if breakeven_nav.is_zero() {
                     "-".to_string()
                 } else {
-                    breakeven_nav.to_string()
+                    format_decimal(breakeven_nav, 4)
                 };
 
                 // 决策提醒与跳档检测
                 let mut indicator = String::new();
                 if let Some(days) = holding_days_val {
-                    let valuation = (shares * nav).round_dp(2);
+                    let valuation = realtime
+                        .and_then(|value| value.estimated_value)
+                        .unwrap_or((shares * confirmed_nav).round_dp(2));
                     let next_tier = db::get_next_redemption_fee_tier(&conn, &h.fund_code, days as i32).unwrap_or(None);
                     if let Some(advice) = finance::detect_optimization(days, valuation, current_fee_rate, next_tier) {
                         indicator.push_str("💡");
@@ -1673,7 +1722,9 @@ async fn main() {
                     }
                 }
 
-                let valuation = (shares * nav).round_dp(2);
+                let valuation = realtime
+                    .and_then(|value| value.estimated_value)
+                    .unwrap_or((shares * confirmed_nav).round_dp(2));
                 let pl = (valuation - cost).round_dp(2);
                 let pl_pct = if cost.is_zero() {
                     dec!(0.00)
@@ -1703,25 +1754,69 @@ async fn main() {
                     .map(|p| format!("{:.2}%", p))
                     .unwrap_or_else(|| "-".to_string());
 
+                let confirmed_nav_str = if h.latest_nav.is_some() {
+                    format_decimal(confirmed_nav, 4)
+                } else {
+                    "-".to_string()
+                };
+                let estimated_nav_str = match realtime {
+                    Some(value) if value.status == RealtimeValuationStatus::Estimated => {
+                        format_decimal(value.estimated_nav.unwrap_or_default(), 4)
+                    }
+                    _ => "-".to_string(),
+                };
+                let valuation_status = realtime.map_or_else(
+                    || "仅确认净值".to_string(),
+                    |value| value.note.clone(),
+                );
+                let intraday_pl = realtime.and_then(|value| value.intraday_profit);
+                let intraday_pl_pct = realtime.and_then(|value| value.intraday_profit_pct);
+                let intraday_pl_str = intraday_pl
+                    .map(|value| format_decimal(value, 2))
+                    .unwrap_or_else(|| "-".to_string());
+                let intraday_pl_pct_str = intraday_pl_pct
+                    .map(|value| format!("{:.2}%", value))
+                    .unwrap_or_else(|| "-".to_string());
+                let intraday_color = if intraday_pl.unwrap_or(Decimal::ZERO) > Decimal::ZERO {
+                    Color::Red
+                } else if intraday_pl.unwrap_or(Decimal::ZERO) < Decimal::ZERO {
+                    Color::Green
+                } else {
+                    Color::Reset
+                };
+
                 sum_cost += cost;
                 sum_valuation += valuation;
+                if let Some(value) = intraday_pl {
+                    estimated_holding_count += 1;
+                    sum_intraday_pl += value;
+                    sum_intraday_base += (shares * confirmed_nav).round_dp(2);
+                }
                 sum_pl += pl;
 
                 table.add_row(vec![
                     Cell::new(format!("{} ({})", h.fund_name, h.fund_code)),
-                    Cell::new(shares.to_string()),
-                    Cell::new(holding_days_str),
-                    Cell::new(redemption_fee_str),
+                    Cell::new(format_decimal(shares, 2)),
                     Cell::new(breakeven_nav_str),
-                    Cell::new(cost.to_string()),
-                    Cell::new(nav.to_string()),
-                    Cell::new(valuation.to_string()),
-                    Cell::new(pl.to_string()),
+                    Cell::new(format_decimal(cost, 2)),
+                    Cell::new(confirmed_nav_str),
+                    Cell::new(estimated_nav_str),
+                    Cell::new(format_decimal(valuation, 2)),
+                    Cell::new(intraday_pl_str).fg(intraday_color),
+                    Cell::new(intraday_pl_pct_str).fg(intraday_color),
+                    Cell::new(format_decimal(pl, 2)),
                     pl_pct_cell,
                     Cell::new(indicator),
+                    Cell::new(valuation_status),
                     Cell::new(allocation_pct),
                 ]);
             }
+
+            let sum_intraday_pct = if sum_intraday_base.is_zero() {
+                None
+            } else {
+                Some(((sum_intraday_pl / sum_intraday_base) * dec!(100)).round_dp(2))
+            };
 
             let sum_pl_pct = if sum_cost.is_zero() {
                 dec!(0.00)
@@ -1729,18 +1824,29 @@ async fn main() {
                 ((sum_pl / sum_cost) * dec!(100)).round_dp(2)
             };
 
+            let sum_intraday_color = if sum_intraday_pl > Decimal::ZERO {
+                Color::Red
+            } else if sum_intraday_pl < Decimal::ZERO {
+                Color::Green
+            } else {
+                Color::Reset
+            };
+            let partial_intraday = estimated_holding_count < total_holding_count;
+
             table.add_row(vec![
                 Cell::new("合计".to_string()),
                 Cell::new("-".to_string()),
                 Cell::new("-".to_string()),
+                Cell::new(format_decimal(sum_cost, 2)),
                 Cell::new("-".to_string()),
                 Cell::new("-".to_string()),
-                Cell::new(sum_cost.round_dp(2).to_string()),
-                Cell::new("-".to_string()),
-                Cell::new(sum_valuation.round_dp(2).to_string()),
-                Cell::new(sum_pl.round_dp(2).to_string()),
+                Cell::new(format_decimal(sum_valuation, 2)),
+                Cell::new(if sum_intraday_base.is_zero() { "-".to_string() } else { format_decimal(sum_intraday_pl, 2) }).fg(sum_intraday_color),
+                Cell::new(sum_intraday_pct.map(|value| format!("{:.2}%", value)).unwrap_or_else(|| "-".to_string())).fg(sum_intraday_color),
+                Cell::new(format_decimal(sum_pl, 2)),
                 Cell::new(format!("{:.2}%", sum_pl_pct)),
                 Cell::new("-".to_string()),
+                Cell::new(if partial_intraday { "部分基金无实时估算".to_string() } else { "-".to_string() }),
                 Cell::new("100.00%".to_string()),
             ]);
             println!("{table}");

@@ -150,6 +150,16 @@ pub async fn fetch_market_data(
     Ok(items)
 }
 
+pub async fn fetch_market_items_by_names(names: &[String]) -> Result<Vec<MarketItem>, String> {
+    fetch_market_data(Some(names), None).await
+}
+
+pub async fn fetch_market_item_by_name(name: &str) -> Result<Option<MarketItem>, String> {
+    let names = vec![name.to_string()];
+    let mut items = fetch_market_items_by_names(&names).await?;
+    Ok(items.pop())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

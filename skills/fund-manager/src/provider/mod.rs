@@ -5,6 +5,8 @@ use rust_decimal::Decimal;
 pub struct FundData {
     pub code: String,
     pub name: Option<String>,
+    pub benchmark_id: Option<String>,
+    pub benchmark_name: Option<String>,
     pub nav: Option<Decimal>,
     pub acc_nav: Option<Decimal>,
     pub fee_rate: Option<Decimal>,
