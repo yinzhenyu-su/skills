@@ -1,42 +1,58 @@
-# Qrypt - 夸克网盘加密挂载工具
+# Qrypt - 夸克网盘 rclone 兼容加密挂载工具
 
-Qrypt 是一个专为 macOS 优化的夸克网盘加密挂载工具。它通过 FUSE 将夸克网盘挂载为本地磁盘，并支持实时加解密、LRU 分块缓存和元数据过滤。
+Qrypt 是一个面向 macOS 的 Quark Drive 挂载工具。它通过 macFUSE 将夸克网盘目录挂载到本地，并兼容 rclone crypt 的核心加密逻辑。
 
 ## 特性
 
-- **透明加密**: 采用 AES-GCM (64KB 分块) 实时加解密。
-- **macOS 优化**: 过滤 `.DS_Store` 等无用请求，提升 Finder 响应速度。
-- **高效缓存**: 支持本地磁盘分块缓存，采用 LRU 清理策略（支持高低水位线）。
-- **高性能驱动**: 基于 Go 语言实现，支持分块并行下载和上传。
+- rclone 兼容加解密：支持 scrypt 派生、EME-AES 文件名处理、NaCl Secretbox 分块内容处理。
+- 路径挂载：支持通过 `--root-path` 指定网盘子目录作为挂载根。
+- 本地缓存：支持分块缓存与元数据持久化（SQLite）。
+- macOS 适配：过滤 `.DS_Store` 等元数据请求，减少无效云端操作。
+- 上传闭环：支持分片上传后的 hash 上报与完成确认流程。
 
-## 安装
+## 环境要求
 
-1.  **安装 macFUSE**:
-    - 前往 [macfuse.io](https://macfuse.github.io/) 下载并安装。
-    - 在 Apple Silicon 芯片上，可能需要重启并进入恢复模式以允许内核扩展。
-2.  **编译 Qrypt**:
-    ```bash
-    git clone ...
-    cd skills/qrypt
-    go build ./cmd/qrypt
-    ```
+1. 安装 macFUSE（<https://macfuse.github.io/）。>
+2. Go 1.22+（建议与项目 `go.mod` 保持一致）。
 
-## 使用方法
-
-### 挂载
+## 构建
 
 ```bash
-./qrypt mount -c "你的Cookie" -k "你的加密密钥" -m "/Users/你的用户名/QuarkDrive"
+cd skills/qrypt
+go build -o qrypt ./cmd/qrypt
 ```
 
-参数说明：
-- `-c, --cookie`: 夸克网盘的 Cookie（需从浏览器抓取）。
-- `-k, --key`: 16 字符以上的加密密钥。
-- `-m, --mount`: 本地挂载点。
-- `-a, --cache`: (可选) 本地缓存目录，默认 `./cache`。
+## 用法
 
-## 注意事项
+### 挂载命令
 
-- **加解密兼容性**: Qrypt 采用独立的分块加密格式，不保证与其他工具（如 rclone crypt）直接互通。
-- **秒传限制**: 由于采用全量加密，上传过程不支持夸克原生的秒传功能。
-- **性能**: 4K 视频播放建议配置较大的 LRU 缓存空间。
+```bash
+./qrypt mount \
+    --cookie "<QUARK_COOKIE>" \
+    --password "<RCLONE_PASSWORD>" \
+    --salt "<RCLONE_SALT_OPTIONAL>" \
+    --root-path "/Encrypt" \
+    --mount "/Users/<you>/Qrypt" \
+    --cache "./cache"
+```
+
+### 参数说明
+
+- `-c, --cookie`：夸克 Cookie（必填）。
+- `-p, --password`：rclone password（必填）。
+- `-s, --salt`：rclone salt（可选）。
+- `-r, --root-path`：要挂载的网盘路径，默认 `/`。
+- `-m, --mount`：本地挂载点（必填）。
+- `-a, --cache`：本地缓存目录，默认 `./cache`。
+
+## 验证
+
+```bash
+go test ./...
+./qrypt --help
+```
+
+## 已知限制
+
+- 在部分 macOS 环境中，复制到挂载目录可能出现 `Operation not permitted`，通常与系统权限或 FUSE 策略相关。
+- 若写入受限，请优先检查终端/IDE/macFUSE 权限与系统安全策略。

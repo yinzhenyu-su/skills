@@ -2,8 +2,10 @@ package crypt
 
 import (
 	"crypto/aes"
+	"crypto/rand"
 	"encoding/base32"
 	"errors"
+	"io"
 	"strings"
 
 	"github.com/rfjakob/eme"
@@ -70,6 +72,32 @@ func (c *RcloneCipher) DecryptBlock(ciphertext []byte, blockIndex uint64, fileNo
 	}
 
 	return plaintext, nil
+}
+
+// EncryptBlock 加密一个 rclone 分块
+func (c *RcloneCipher) EncryptBlock(plaintext []byte, blockIndex uint64, fileNonce [24]byte) ([]byte, error) {
+	// 1. 计算当前块的 Nonce (FileNonce + blockIndex)
+	var nonce [24]byte
+	copy(nonce[:], fileNonce[:])
+	u := blockIndex
+	for i := 0; i < 8 && u > 0; i++ {
+		u += uint64(nonce[i])
+		nonce[i] = byte(u)
+		u >>= 8
+	}
+
+	// 2. 加密
+	// secretbox.Seal appends the MAC (16B) to the ciphertext.
+	// rclone format: [MAC(16B)][Data(N)]
+	ciphertext := secretbox.Seal(nil, plaintext, &nonce, &c.dataKey)
+	return ciphertext, nil
+}
+
+// GenerateRandomNonce 生成一个新的随机 24 字节 Nonce
+func (c *RcloneCipher) GenerateRandomNonce() ([24]byte, error) {
+	var nonce [24]byte
+	_, err := io.ReadFull(rand.Reader, nonce[:])
+	return nonce, err
 }
 
 // EncryptSegment 加密单个路径段（如文件名或文件夹名）

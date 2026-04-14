@@ -1,3 +1,5 @@
 *.db
+/cache/
 */qrypt/cache
 skills/qrypt/qrypt
+skills/qrypt/mount-quark.sh

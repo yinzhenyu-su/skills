@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/winfsp/cgofuse/fuse"
 	"github.com/spf13/cobra"
+	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/driver"
@@ -52,7 +52,7 @@ func main() {
 			rootFid := "0"
 			if rootPath != "/" && rootPath != "" {
 				fmt.Printf("Resolving plaintext path: %s...\n", rootPath)
-				
+
 				// 注意：这里使用 ResolvePath 直接解析明文路径
 				fid, err := d.ResolvePath(rootPath)
 				if err != nil {
@@ -74,7 +74,13 @@ func main() {
 			// 5. 挂载
 			fs := vfs.NewQryptFS(d, cm, rootFid, cipher)
 			host := fuse.NewFileSystemHost(fs)
-			host.Mount(mountPoint, nil)
+
+			// 设置挂载参数：rw (读写), allow_other (可选), defer_permissions (macOS 推荐)
+			options := []string{
+				"-o", "rw",
+				"-o", "volname=QuarkDrive",
+			}
+			host.Mount(mountPoint, options)
 		},
 	}
 

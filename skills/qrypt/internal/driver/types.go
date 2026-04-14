@@ -1,6 +1,7 @@
 package driver
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -48,6 +49,19 @@ type DownResp struct {
 	} `json:"data"`
 }
 
+type UploadCallback struct {
+	CallbackUrl  string `json:"callbackUrl"`
+	CallbackBody string `json:"callbackBody"`
+}
+
+type HashResp struct {
+	Resp
+	Data struct {
+		Finish bool `json:"finish"`
+		Fid    string `json:"fid"`
+	} `json:"data"`
+}
+
 type UpPreResp struct {
 	Resp
 	Data struct {
@@ -56,11 +70,9 @@ type UpPreResp struct {
 		ObjKey    string `json:"obj_key"`
 		UploadUrl string `json:"upload_url"`
 		Fid       string `json:"fid"`
+		Finish    bool   `json:"finish"` // 秒传标记
 		Bucket    string `json:"bucket"`
-		Callback  struct {
-			CallbackUrl  string `json:"callbackUrl"`
-			CallbackBody string `json:"callbackBody"`
-		} `json:"callback"`
+		Callback  json.RawMessage `json:"callback"`
 		AuthInfo string `json:"auth_info"`
 	} `json:"data"`
 	Metadata struct {

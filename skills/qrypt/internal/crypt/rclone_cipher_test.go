@@ -81,6 +81,31 @@ func TestRcloneCipher_BlockDecryption(t *testing.T) {
 	}
 }
 
+func TestRcloneCipher_BlockEncryption(t *testing.T) {
+	c, _ := NewRcloneCipher("password", "")
+
+	var fileNonce [24]byte
+	copy(fileNonce[:], []byte("123456789012345678901234"))
+
+	plaintext := []byte("hello rclone")
+
+	// 使用我们的 EncryptBlock
+	ciphertext, err := c.EncryptBlock(plaintext, 5, fileNonce)
+	if err != nil {
+		t.Fatalf("EncryptBlock failed: %v", err)
+	}
+
+	// 验证解密
+	gotPlaintext, err := c.DecryptBlock(ciphertext, 5, fileNonce)
+	if err != nil {
+		t.Fatalf("DecryptBlock failed: %v", err)
+	}
+
+	if !bytes.Equal(plaintext, gotPlaintext) {
+		t.Errorf("Plaintext mismatch! Expected: %s, Got: %s", string(plaintext), string(gotPlaintext))
+	}
+}
+
 func TestSizeMapping(t *testing.T) {
 	c, _ := NewRcloneCipher("p", "")
 	
