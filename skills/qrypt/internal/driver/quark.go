@@ -30,11 +30,19 @@ type QuarkDriver struct {
 	client   *http.Client
 	cookie   string
 	urlCache sync.Map // fid -> cachedURL
+	dirCache sync.Map // pdir_fid -> DirCache
+	negCache sync.Map // "parentFid:name" -> expiry
+	sem      chan struct{}
 }
 
 type cachedURL struct {
 	url    string
 	expiry time.Time
+}
+
+type DirCache struct {
+	Files  []File
+	Expiry time.Time
 }
 
 // NewQuarkDriver 创建一个新的驱动实例
@@ -44,6 +52,7 @@ func NewQuarkDriver(cookie string) *QuarkDriver {
 			Timeout: 30 * time.Second,
 		},
 		cookie: cookie,
+		sem:    make(chan struct{}, 10), // 限制最大 10 个并发请求
 	}
 }
 
@@ -97,6 +106,10 @@ func (d *QuarkDriver) requestWithBase(method, baseURL, path string, query map[st
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+
+	// 使用信号量限制并发
+	d.sem <- struct{}{}
+	defer func() { <-d.sem }()
 
 	resp, err := d.client.Do(req)
 	if err != nil {
@@ -496,41 +509,98 @@ func (d *QuarkDriver) Move(fids []string, toPdirFid string) error {
 
 // ListFiles 获取文件列表
 func (d *QuarkDriver) ListFiles(parentFid string) ([]File, error) {
-	var files []File
-	page := 1
-	size := 100
-
-	for {
-		var resp SortResp
-		err := d.request(http.MethodGet, "/file/sort", map[string]string{
-			"pdir_fid":             parentFid,
-			"_size":                strconv.Itoa(size),
-			"_page":                strconv.Itoa(page),
-			"_fetch_total":         "1",
-			"fetch_all_file":       "1",
-			"fetch_risk_file_name": "1",
-		}, nil, &resp)
-		if err != nil {
-			return nil, err
+	// 1. 检查缓存
+	if val, ok := d.dirCache.Load(parentFid); ok {
+		c := val.(DirCache)
+		if time.Now().Before(c.Expiry) {
+			return c.Files, nil
 		}
-
-		if resp.Status >= 400 || resp.Code != 0 {
-			return nil, errors.New(resp.Message)
-		}
-
-		files = append(files, resp.Data.List...)
-
-		if page*size >= resp.Metadata.Total {
-			break
-		}
-		page++
 	}
 
-	return files, nil
+	size := 100
+	var firstResp SortResp
+	err := d.request(http.MethodGet, "/file/sort", map[string]string{
+		"pdir_fid":             parentFid,
+		"_size":                strconv.Itoa(size),
+		"_page":                "1",
+		"_fetch_total":         "1",
+		"fetch_all_file":       "1",
+		"fetch_risk_file_name": "1",
+	}, nil, &firstResp)
+	if err != nil {
+		return nil, err
+	}
+
+	if firstResp.Status >= 400 || firstResp.Code != 0 {
+		return nil, errors.New(firstResp.Message)
+	}
+
+	total := firstResp.Metadata.Total
+	allFiles := make([]File, total)
+	copy(allFiles, firstResp.Data.List)
+	
+	// 如果有多页，并行抓取
+	if total > size {
+		totalPages := (total + size - 1) / size
+		var wg sync.WaitGroup
+		var errOnce sync.Once
+		var lastErr error
+
+		for p := 2; p <= totalPages; p++ {
+			wg.Add(1)
+			go func(page int) {
+				defer wg.Done()
+				var resp SortResp
+				err := d.request(http.MethodGet, "/file/sort", map[string]string{
+					"pdir_fid":             parentFid,
+					"_size":                strconv.Itoa(size),
+					"_page":                strconv.Itoa(page),
+					"fetch_all_file":       "1",
+					"fetch_risk_file_name": "1",
+				}, nil, &resp)
+				
+				if err != nil {
+					errOnce.Do(func() { lastErr = err })
+					return
+				}
+				if resp.Status >= 400 || resp.Code != 0 {
+					errOnce.Do(func() { lastErr = errors.New(resp.Message) })
+					return
+				}
+
+				offset := (page - 1) * size
+				if offset < len(allFiles) {
+					copy(allFiles[offset:], resp.Data.List)
+				}
+			}(p)
+		}
+		wg.Wait()
+		if lastErr != nil {
+			return nil, lastErr
+		}
+	} else {
+		allFiles = allFiles[:len(firstResp.Data.List)]
+	}
+
+	// 2. 存入缓存 (有效期 60 秒)
+	d.dirCache.Store(parentFid, DirCache{
+		Files:  allFiles,
+		Expiry: time.Now().Add(60 * time.Second),
+	})
+
+	return allFiles, nil
 }
 
 // FindChildByName 查找子节点
 func (d *QuarkDriver) FindChildByName(parentFid, name string) (string, error) {
+	key := parentFid + ":" + name
+	if val, ok := d.negCache.Load(key); ok {
+		expiry := val.(time.Time)
+		if time.Now().Before(expiry) {
+			return "", fmt.Errorf("child not found (cached): %s", name)
+		}
+	}
+
 	files, err := d.ListFiles(parentFid)
 	if err != nil {
 		return "", err
@@ -539,10 +609,14 @@ func (d *QuarkDriver) FindChildByName(parentFid, name string) (string, error) {
 	fmt.Printf("Debug: Searching for '%s' in FID '%s'. Found %d items:\n", name, parentFid, len(files))
 	for _, f := range files {
 		if f.FileName == name {
+			// 如果命中，确保清除负缓存（防止在短时间内创建同名文件的情况）
+			d.negCache.Delete(key)
 			return f.Fid, nil
 		}
 	}
 
+	// 存入负缓存 (有效期 60 秒)
+	d.negCache.Store(key, time.Now().Add(60*time.Second))
 	return "", fmt.Errorf("child not found: %s", name)
 }
 

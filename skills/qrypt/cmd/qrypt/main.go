@@ -78,6 +78,8 @@ func main() {
 			// 设置挂载参数：rw (读写), allow_other (可选), defer_permissions (macOS 推荐)
 			options := []string{
 				"-o", "rw",
+				"-o", "noappledouble",
+				"-o", "defer_permissions",
 				"-o", "volname=QuarkDrive",
 			}
 			host.Mount(mountPoint, options)

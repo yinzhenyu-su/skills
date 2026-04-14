@@ -28,15 +28,18 @@ const (
 var errNonRetryableSync = errors.New("non-retryable sync error")
 
 type node struct {
-	fid       string
-	name      string // 明文名称
-	size      int64  // 原始明文大小
-	encSize   int64  // 网盘上的加密大小
-	isFolder  bool
-	mtime     time.Time // 修改时间
-	fileNonce [24]byte
-	hasNonce  bool
-	isDirty   bool // 是否有未同步的修改
+	fid            string
+	name           string // 明文名称
+	size           int64  // 原始明文大小
+	encSize        int64  // 网盘上的加密大小
+	isFolder       bool
+	mtime          time.Time // 修改时间
+	fileNonce      [24]byte
+	hasNonce       bool
+	isDirty        bool  // 是否有未同步的修改
+	lastReadBlock  int64 // 上次读取的块索引
+	readSeqCount   int   // 连续顺序读取的块数
+	mu             sync.RWMutex
 }
 
 // QryptFS 实现了 fuse.FileSystem 接口
@@ -63,7 +66,7 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ci
 		cipher:     cipher,
 		uploadChan: make(chan string, 1000), // 允许排队 1000 个文件
 	}
-	fs.nodes.Store("/", &node{fid: rootFid, isFolder: true, mtime: time.Now()})
+	fs.nodes.Store("/", &node{fid: rootFid, isFolder: true, mtime: time.Now(), lastReadBlock: -1})
 
 	// 启动后台上传工作协程 (限制并发为 3)
 	for i := 0; i < 3; i++ {
@@ -353,6 +356,10 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 		}
 
 		stat := &fuse.Stat_t{}
+		uid, gid, _ := fuse.Getcontext()
+		stat.Uid = uid
+		stat.Gid = gid
+
 		decSize, _ := fs.cipher.DecryptedSize(f.Size)
 		modTime := f.ModTime()
 		if f.IsDir() {
@@ -490,6 +497,35 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 	oldNode.name = newName
 	fs.nodes.Store(newPath, oldNode)
 
+	if oldNode.isFolder {
+		// 递归更新所有子节点的路径
+		oldPrefix := oldPath
+		if !strings.HasSuffix(oldPrefix, "/") {
+			oldPrefix += "/"
+		}
+		newPrefix := newPath
+		if !strings.HasSuffix(newPrefix, "/") {
+			newPrefix += "/"
+		}
+
+		fs.nodes.Range(func(key, value interface{}) bool {
+			path, ok := key.(string)
+			if !ok {
+				return true
+			}
+			if strings.HasPrefix(path, oldPrefix) {
+				childNode := value.(*node)
+				relative := strings.TrimPrefix(path, oldPrefix)
+				newChildPath := newPrefix + relative
+				
+				// 标记为删除旧路径，存入新路径
+				fs.nodes.Delete(path)
+				fs.nodes.Store(newChildPath, childNode)
+			}
+			return true
+		})
+	}
+
 	return 0
 }
 
@@ -555,6 +591,9 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 	if errc != 0 {
 		return 0
 	}
+
+	node.mu.Lock()
+	defer node.mu.Unlock()
 
 	// 1. 更新节点信息
 	if ofst+int64(len(buff)) > node.size {
@@ -644,6 +683,10 @@ func (fs *QryptFS) Truncate(path string, size int64, fh uint64) (errc int) {
 	if size < 0 {
 		return -fuse.EINVAL
 	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	n.size = size
 	n.isDirty = true
 	n.mtime = time.Now()
@@ -698,6 +741,10 @@ func (fs *QryptFS) Utimens(path string, tmsp []fuse.Timespec) (errc int) {
 	if errc != 0 {
 		return errc
 	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	if len(tmsp) > 1 {
 		n.mtime = tmsp[1].Time()
 	} else {
@@ -748,7 +795,17 @@ func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 }
 
 func (fs *QryptFS) syncFile(path string, n *node) error {
-	fmt.Printf("Syncing file (Parallel): %s (size %d)\n", n.name, n.size)
+	n.mu.Lock()
+	if !n.isDirty {
+		n.mu.Unlock()
+		return nil
+	}
+	snapshotSize := n.size
+	snapshotName := n.name
+	n.isDirty = false
+	n.mu.Unlock()
+
+	fmt.Printf("Syncing file (Parallel): %s (size %d)\n", snapshotName, snapshotSize)
 
 	parentPath := filepath.Dir(path)
 	parentNode, parentErr := fs.lookup(parentPath)
@@ -757,26 +814,27 @@ func (fs *QryptFS) syncFile(path string, n *node) error {
 	}
 
 	newNonce, _ := fs.cipher.GenerateRandomNonce()
-	encName := fs.cipher.EncryptSegment(n.name)
-	pre, err := fs.driver.UploadPre(encName, parentNode.fid, fs.cipher.EncryptedSize(n.size))
+	encName := fs.cipher.EncryptSegment(snapshotName)
+	pre, err := fs.driver.UploadPre(encName, parentNode.fid, fs.cipher.EncryptedSize(snapshotSize))
 	if err != nil {
 		return err
 	}
 
 	// 检查秒传
 	if pre.Data.Finish {
-		fmt.Printf("Rapid Upload (秒传) triggered for %s\n", n.name)
+		fmt.Printf("Rapid Upload (秒传) triggered for %s\n", snapshotName)
+		n.mu.Lock()
 		n.fid = pre.Data.Fid
-		n.isDirty = false
 		if fs.cache != nil {
 			_ = fs.cache.RemovePendingNode(path)
 		}
+		n.mu.Unlock()
 		return nil
 	}
 
 	// 计算总块数 (rclone blocks)
-	totalRcloneBlocks := (n.size + crypt.BlockDataSize - 1) / crypt.BlockDataSize
-	if n.size == 0 {
+	totalRcloneBlocks := (snapshotSize + crypt.BlockDataSize - 1) / crypt.BlockDataSize
+	if snapshotSize == 0 {
 		totalRcloneBlocks = 0
 	}
 
@@ -846,7 +904,7 @@ func (fs *QryptFS) syncFile(path string, n *node) error {
 		return <-errChan
 	}
 
-	md5Hex, sha1Hex, err := fs.computeEncryptedHashes(n, newNonce)
+	md5Hex, sha1Hex, err := fs.computeEncryptedHashes(n, newNonce, snapshotSize)
 	if err != nil {
 		return err
 	}
@@ -856,6 +914,10 @@ func (fs *QryptFS) syncFile(path string, n *node) error {
 		fmt.Printf("[DEBUG] UpdateHash error: %v\n", err)
 		return err
 	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	if finish {
 		fmt.Printf("[DEBUG] UpdateHash finish=true for %s, skip commit fallback\n", path)
 		if fid != "" {
@@ -863,10 +925,9 @@ func (fs *QryptFS) syncFile(path string, n *node) error {
 		} else {
 			n.fid = pre.Data.Fid
 		}
-		n.isDirty = false
 		n.fileNonce = newNonce
 		n.hasNonce = true
-		n.encSize = fs.cipher.EncryptedSize(n.size)
+		n.encSize = fs.cipher.EncryptedSize(snapshotSize)
 		if fs.cache != nil {
 			_ = fs.cache.RemovePendingNode(path)
 		}
@@ -890,10 +951,9 @@ func (fs *QryptFS) syncFile(path string, n *node) error {
 
 	// 5. 更新状态
 	n.fid = pre.Data.Fid
-	n.isDirty = false
 	n.fileNonce = newNonce
 	n.hasNonce = true
-	n.encSize = fs.cipher.EncryptedSize(n.size)
+	n.encSize = fs.cipher.EncryptedSize(snapshotSize)
 
 	// 6. 从持久化队列移除
 	if fs.cache != nil {
@@ -903,7 +963,7 @@ func (fs *QryptFS) syncFile(path string, n *node) error {
 	return nil
 }
 
-func (fs *QryptFS) computeEncryptedHashes(n *node, newNonce [24]byte) (string, string, error) {
+func (fs *QryptFS) computeEncryptedHashes(n *node, newNonce [24]byte, snapshotSize int64) (string, string, error) {
 	md5h := md5.New()
 	sha1h := sha1.New()
 
@@ -911,7 +971,7 @@ func (fs *QryptFS) computeEncryptedHashes(n *node, newNonce [24]byte) (string, s
 	_, _ = md5h.Write(header)
 	_, _ = sha1h.Write(header)
 
-	totalRcloneBlocks := (n.size + crypt.BlockDataSize - 1) / crypt.BlockDataSize
+	totalRcloneBlocks := (snapshotSize + crypt.BlockDataSize - 1) / crypt.BlockDataSize
 	for i := int64(0); i < totalRcloneBlocks; i++ {
 		plaintext, err := fs.getDecryptedChunk(n, uint64(i))
 		if err != nil {
@@ -943,9 +1003,21 @@ func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int)
 	startChunk := ofst / crypt.BlockDataSize
 	endChunk := (ofst + int64(len(buff)) - 1) / crypt.BlockDataSize
 
-	// 启动后台预取：如果读到当前 batch 的末尾，预取下一个 batch
-	nextBatchIdx := (uint64(endChunk) / FetchBatchBlocks) + 1
-	go fs.prefetchBatch(node, nextBatchIdx)
+	// 检测顺序读取：
+	// 如果本次读取开始于上次读取结束的下一块，则视为顺序读取
+	if startChunk == node.lastReadBlock+1 {
+		node.readSeqCount += int(endChunk - startChunk + 1)
+	} else {
+		node.readSeqCount = int(endChunk - startChunk + 1)
+	}
+	node.lastReadBlock = endChunk
+
+	// 启动后台预取：
+	// 只有在满足顺序读取条件（比如连续读了 2 个块以上）时才触发预取
+	if node.readSeqCount >= 2 {
+		nextBatchIdx := (uint64(endChunk) / FetchBatchBlocks) + 1
+		go fs.prefetchBatch(node, nextBatchIdx)
+	}
 
 	totalRead := 0
 	for i := startChunk; i <= endChunk; i++ {
@@ -981,14 +1053,22 @@ func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int)
 	return totalRead
 }
 
-// prefetchBatch 异步下载下一个 8MB 批次
+// prefetchBatch 异步下载批次 (支持根据顺序读取长度进行动态调整)
 func (fs *QryptFS) prefetchBatch(n *node, batchIdx uint64) {
-	// 检查是否超出文件范围
+	// 1. 基础预取：预取当前批次
 	if int64(batchIdx)*FetchBatchBlocks*crypt.BlockDataSize >= n.size {
 		return
 	}
 	// 尝试获取该批次的第一个块，会自动触发整个批次的下载
 	_, _ = fs.getDecryptedChunk(n, batchIdx*FetchBatchBlocks)
+
+	// 2. 动态调整：如果顺序读取长度超过一个批次 (8MB)，则多预取一个批次
+	if n.readSeqCount > FetchBatchBlocks {
+		extraBatchIdx := batchIdx + 1
+		if int64(extraBatchIdx)*FetchBatchBlocks*crypt.BlockDataSize < n.size {
+			_, _ = fs.getDecryptedChunk(n, extraBatchIdx*FetchBatchBlocks)
+		}
+	}
 }
 
 // getDecryptedChunk 核心逻辑：获取、解密并缓存分块 (支持内存/磁盘双层缓存)
