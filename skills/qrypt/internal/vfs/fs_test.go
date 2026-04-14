@@ -5,11 +5,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/driver"
 )
@@ -281,49 +283,32 @@ func TestRenameDuringPendingSync_Regression(t *testing.T) {
 	}
 
 	n := &node{
-		fid:       "test_fid",
-		parentFid: "root",
-		name:      "old.txt",
-		size:      10,
-		isDirty:   true,
-		isFolder:  false,
+		fid:         "test_fid",
+		parentFid:   "root",
+		name:        "old.txt",
+		currentPath: "/old.txt",
+		size:        10,
+		isDirty:     true,
+		isFolder:    false,
 	}
 
-	fs.nodes.Store("/", &node{fid: "root", isFolder: true})
-	fs.nodes.Store("/old.txt", n)
+	fs.storeNode("/", &node{fid: "root", currentPath: "/", isFolder: true})
+	fs.storeNode("/old.txt", n)
 
 	// 模拟已加入队列
-	fs.uploadChan <- syncTask{node: n, path: "/old.txt"}
+	fs.uploadChan <- syncTask{node: n}
 
 	// 模拟在 worker 处理前发生重命名
-	fs.nodes.Delete("/old.txt")
 	n.name = "new.txt"
-	fs.nodes.Store("/new.txt", n)
+	fs.replaceNodePath("/old.txt", "/new.txt", n)
 
-	// 启动 uploadWorker (手动模拟其部分逻辑)
 	task := <-fs.uploadChan
 
-	// 模拟 worker 的路径解析逻辑
-	p := task.path
-	nodeToSync := task.node
-
-	actualNode, ok := fs.nodes.Load(p)
-	if !ok || actualNode != nodeToSync {
-		// 路径已失效，寻找新路径
-		found := false
-		fs.nodes.Range(func(key, value interface{}) bool {
-			if value == nodeToSync {
-				p = key.(string)
-				found = true
-				return false
-			}
-			return true
-		})
-		if !found {
-			t.Fatal("Node lost after rename")
-		}
+	if task.node != n {
+		t.Fatal("unexpected node dequeued")
 	}
 
+	p := fs.currentPathForNode(task.node)
 	if p != "/new.txt" {
 		t.Errorf("Expected path /new.txt, got %s", p)
 	}
@@ -411,31 +396,19 @@ func TestFlush_DeduplicatesSyncTasks_Regression(t *testing.T) {
 	}
 
 	n := &node{
-		fid:     "test_fid",
-		name:    "test.txt",
-		isDirty: true,
+		fid:         "test_fid",
+		name:        "test.txt",
+		currentPath: "/test.txt",
+		localPath:   "/tmp/test_staging",
+		isDirty:     true,
 	}
-	fs.nodes.Store("/test.txt", n)
+	fs.storeNode("/test.txt", n)
 
 	// 1. 模拟第一次 Flush
-	n.mu.Lock()
-	if n.isDirty && !n.syncQueued {
-		n.syncQueued = true
-		n.mu.Unlock()
-		fs.uploadChan <- syncTask{node: n, path: "/test.txt"}
-	} else {
-		n.mu.Unlock()
-	}
+	fs.enqueueSync(n)
 
 	// 2. 模拟第二次 Flush（重复触发）
-	n.mu.Lock()
-	if n.isDirty && !n.syncQueued {
-		n.syncQueued = true
-		n.mu.Unlock()
-		fs.uploadChan <- syncTask{node: n, path: "/test.txt"}
-	} else {
-		n.mu.Unlock()
-	}
+	fs.enqueueSync(n)
 
 	// 3. 验证队列中只有一个任务
 	if len(fs.uploadChan) != 1 {
@@ -462,12 +435,73 @@ func TestFlush_DeduplicatesSyncTasks_Regression(t *testing.T) {
 	if n.isDirty && !n.syncQueued {
 		n.syncQueued = true
 		n.mu.Unlock()
-		fs.uploadChan <- syncTask{node: n, path: "/test.txt"}
+		fs.uploadChan <- syncTask{node: n}
 	} else {
 		n.mu.Unlock()
 	}
 
 	if len(fs.uploadChan) != 1 {
 		t.Errorf("Expected 1 task in queue after reset, got %d", len(fs.uploadChan))
+	}
+}
+
+func TestRenameSubtreeUpdatesPendingPaths_Regression(t *testing.T) {
+	cacheDir := t.TempDir()
+	cm, err := cache.NewCacheManager(cacheDir, filepath.Join(cacheDir, "qrypt_test.db"), 1<<20)
+	if err != nil {
+		t.Fatalf("cache init failed: %v", err)
+	}
+	defer cm.Close()
+
+	fs := &QryptFS{cache: cm}
+	root := &node{fid: "dir_fid", name: "A", currentPath: "/A", isFolder: true}
+	child := &node{
+		fid:         "local_child",
+		parentFid:   "dir_fid",
+		name:        "b.txt",
+		currentPath: "/A/b.txt",
+		localPath:   filepath.Join(cacheDir, "staging-file"),
+		isDirty:     true,
+	}
+
+	fs.storeNode("/A", root)
+	fs.storeNode("/A/b.txt", child)
+	fs.persistPendingPath("", "/A/b.txt", child)
+
+	fs.renameSubtreePaths("/A", "/X")
+
+	pending, err := cm.GetPendingNodes()
+	if err != nil {
+		t.Fatalf("failed to load pending nodes: %v", err)
+	}
+	if len(pending) != 1 || pending[0].Path != "/X/b.txt" {
+		t.Fatalf("expected pending path to move to /X/b.txt, got %+v", pending)
+	}
+	if path := fs.currentPathForNode(child); path != "/X/b.txt" {
+		t.Fatalf("expected child current path to be /X/b.txt, got %s", path)
+	}
+	if _, ok := fs.nodes.Load("/A/b.txt"); ok {
+		t.Fatal("expected old child path to be removed")
+	}
+}
+
+func TestCleanupLocalUploadStateRemovesDirectorySubtree_Regression(t *testing.T) {
+	fs := &QryptFS{}
+	root := &node{fid: "dir", name: "dir", currentPath: "/dir", isFolder: true}
+	child := &node{fid: "file", name: "file.txt", currentPath: "/dir/file.txt"}
+
+	fs.storeNode("/dir", root)
+	fs.storeNode("/dir/file.txt", child)
+
+	fs.cleanupLocalUploadState("/dir", root, true)
+
+	if _, ok := fs.nodes.Load("/dir"); ok {
+		t.Fatal("expected directory root to be removed")
+	}
+	if _, ok := fs.nodes.Load("/dir/file.txt"); ok {
+		t.Fatal("expected directory child to be removed")
+	}
+	if path := fs.currentPathForNode(child); path != "" {
+		t.Fatalf("expected child path to be cleared, got %s", path)
 	}
 }

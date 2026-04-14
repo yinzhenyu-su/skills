@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: File modification MUST follow write-back state transitions
 
@@ -8,20 +8,6 @@ The system MUST track modified files as dirty after write, MUST persist the modi
 
 - **WHEN** a file receives write operations and then flush is triggered
 - **THEN** the system marks the file dirty, updates its file-level staging source, and enqueues a sync task
-
-### Requirement: Upload sync MUST prefer hash completion before commit fallback
-
-After multipart upload, the system MUST report encrypted object hashes and MUST treat finish=true as a successful terminal state; only when finish is false MAY it fallback to commit and upload finish APIs.
-
-#### Scenario: Hash path completes upload
-
-- **WHEN** multipart parts are uploaded and hash update returns finish=true
-- **THEN** the system MUST finalize file state without requiring commit
-
-#### Scenario: Hash path requires fallback
-
-- **WHEN** multipart parts are uploaded and hash update returns finish=false
-- **THEN** the system MUST execute commit and upload finish flow before finalizing file state
 
 ### Requirement: Successful sync MUST clear dirty and pending markers
 
@@ -40,13 +26,6 @@ On synchronization failure, the system MUST preserve enough file-level local sta
 
 - **WHEN** upload sync fails at hash, multipart upload, commit, or finish stage
 - **THEN** the system keeps file-level pending state and local staged plaintext required to schedule or allow retry without data loss
-
-### Requirement: 并发写入一致性
-当文件处于同步上传状态（`syncing`）时，系统必须协调新的 `Write` 请求。在同步开始前，系统应当对文件的脏分块索引进行快照，或者在同步过程中阻塞冲突块的修改。
-
-#### Scenario: 同步中的并发写入
-- **WHEN** 正在后台上传 `file.dat` 的分块 5, 6, 7
-- **THEN** 此时对分块 8 的写入应当排队或成功记录，且不会破坏正在进行的上传
 
 ### Requirement: 同步锁机制
 

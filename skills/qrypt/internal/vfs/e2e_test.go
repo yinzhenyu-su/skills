@@ -151,7 +151,7 @@ func setupQryptFSInternal(t *testing.T, config *e2eConfig, clearCache bool) (*Qr
 			if err == nil {
 				for _, f := range files {
 					decName, _ := cipher.DecryptSegment(f.FileName)
-					if decName == "it_test_dir" || decName == "upload_5mb.bin" || decName == "upload_perf_5mb.bin" || decName == "upload_perf_200mb.bin" || decName == "xattr_test.txt" || decName == "stress_test" {
+					if decName == "it_test_dir" || decName == "upload_5mb.bin" || decName == "upload_perf_5mb.bin" || decName == "upload_perf_200mb.bin" || decName == "xattr_test.txt" || decName == "stress_test" || decName == "create_sync.txt" || decName == "delete_after_sync.txt" {
 						d.Delete([]string{f.Fid})
 					}
 				}
@@ -353,6 +353,63 @@ func TestE2E_Lifecycle(t *testing.T) {
 	}
 
 	_ = fs2
+}
+
+func TestE2E_CreateAndSync(t *testing.T) {
+	config := loadE2EConfig(t)
+
+	const fileName = "create_sync.txt"
+	testFile := filepath.Join(config.mountPoint, fileName)
+	_ = os.Remove(testFile)
+
+	fs, host, err := setupQryptFSInternal(t, config, true)
+	if err != nil {
+		t.Fatalf("Failed to setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host.Unmount()
+
+	// 1. Create file and write content
+	content := []byte("hello, this is a test file content")
+	if err := os.WriteFile(testFile, content, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	waitForSync(t, fs, "/"+fileName)
+
+	// 2. Verify content is correct locally
+	readContent, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !bytes.Equal(content, readContent) {
+		t.Fatalf("Content mismatch. Expected %q, got %q", string(content), string(readContent))
+	}
+
+	// 3. Remount and verify content persisted to remote
+	host.Unmount()
+	unmount(config.mountPoint)
+	time.Sleep(3 * time.Second)
+
+	_, host2, err := setupQryptFSInternal(t, config, false)
+	if err != nil {
+		t.Fatalf("Failed to re-setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host2.Unmount()
+
+	// Read from remote via remounted filesystem
+	readContent2, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("ReadFile after remount failed: %v", err)
+	}
+	if !bytes.Equal(content, readContent2) {
+		t.Fatalf("Content mismatch after remount. Expected %q, got %q", string(content), string(readContent2))
+	}
+
+	// Cleanup
+	if err := os.Remove(testFile); err != nil {
+		t.Fatalf("Remove file failed: %v", err)
+	}
 }
 
 func TestE2E_DeleteSyncedFileRemovesRemote(t *testing.T) {

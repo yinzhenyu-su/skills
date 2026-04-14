@@ -44,18 +44,18 @@ On synchronization failure, the system MUST preserve enough file-level local sta
 ## ADDED Requirements
 
 ### Requirement: Modified files MUST be staged as file-level local sources
-The system MUST persist each modified file into a single local staging file that can be reopened for hashing and upload, rather than requiring chunk metadata reconstruction to build upload input.
+The system MUST persist each modified file into a single local staging file that can be reopened for hashing and upload, and this staged file MUST remain the canonical upload source regardless of how VFS read cache or module boundaries are organized internally.
 
 #### Scenario: Create and modify a file
 - **WHEN** a user creates or modifies a file in the mounted filesystem
-- **THEN** the system stores the modified plaintext in a file-level local staging source associated with that path
+- **THEN** the system stores the modified plaintext in a file-level local staging source associated with that file's current pending state
 
 #### Scenario: Flush schedules upload from staged file
 - **WHEN** flush or release queues synchronization for a modified file
-- **THEN** the upload pipeline uses the staged file as the canonical plaintext source for hash computation and upload
+- **THEN** the upload pipeline uses the staged file or its snapshot as the canonical plaintext source for hash computation and upload
 
 ### Requirement: Encryption MUST be exposed as a sequential byte stream
-The system MUST transform a plaintext staging file into an rclone-compatible encrypted byte stream during upload, including the file header and sequential encrypted content blocks.
+The system MUST transform a plaintext staging file into an rclone-compatible encrypted byte stream during upload, including the file header and sequential encrypted content blocks, and MUST preserve that byte-stream format after VFS module extraction.
 
 #### Scenario: Upload starts from plaintext source
 - **WHEN** the upload manager begins multipart upload for a staged file
@@ -73,15 +73,11 @@ The system MUST size multipart upload buffers from the part size returned by Qua
 - **THEN** the uploader reads encrypted bytes into part buffers using that server-provided size
 
 ### Requirement: Upload orchestration MUST keep qrypt-compatible multipart completion ordering
-The system MUST orchestrate uploads in the order `UploadPre -> multipart upload -> UpdateHash verification -> Commit fallback -> Finish`, while sending encrypted content instead of plaintext content.
+The system MUST orchestrate uploads in the order `UploadPre -> multipart upload -> UpdateHash verification -> Commit fallback -> Finish`, while accepting staged-file snapshots from the write-back layer and sending rclone-compatible encrypted content.
 
 #### Scenario: Multipart upload required
 - **WHEN** upload preparation succeeds and encrypted multipart data has been uploaded
 - **THEN** the system sequentially uploads multipart parts, collects returned ETags, commits the multipart upload, and sends the finish request
-
-#### Scenario: Multipart upload consumes encrypted stream
-- **WHEN** a multipart part is uploaded
-- **THEN** the uploaded bytes are read from the encryption stream rather than from a chunk-reassembly buffer
 
 #### Scenario: Hash verification skips commit fallback
 - **WHEN** encrypted multipart data has been uploaded and hash verification returns `finish=true`

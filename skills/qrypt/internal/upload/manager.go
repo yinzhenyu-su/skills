@@ -45,6 +45,40 @@ func NewManager(d *driver.QuarkDriver, c *crypt.RcloneCipher, s *staging.Store) 
 	return &Manager{driver: d, cipher: c, staging: s}
 }
 
+// deleteExistingFileByName lists files in parentFid and deletes any file with matching encrypted name.
+// This prevents duplicate files with (1) suffix when re-uploading an edited file.
+func (m *Manager) deleteExistingFileByName(parentFid, encName string) error {
+	// Skip for root directory or empty parent
+	if parentFid == "" || parentFid == "0" || parentFid == "root" {
+		return nil
+	}
+
+	// Recover from panics (e.g., mock drivers in tests may not implement ListFiles fully)
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Printf("deleteExistingFileByName: recovered from panic: %v\n", r)
+		}
+	}()
+
+	files, err := m.driver.ListFiles(parentFid)
+	if err != nil {
+		driver.Log.Printf("deleteExistingFileByName: warning: failed to list files in parent %s: %v\n", parentFid, err)
+		return nil // Don't fail the sync if we can't check for duplicates
+	}
+
+	for _, f := range files {
+		if f.FileName == encName {
+			driver.Log.Printf("deleteExistingFileByName: found existing file %s (fid=%s), deleting before re-upload\n", encName, f.Fid)
+			if err := m.driver.Delete([]string{f.Fid}); err != nil {
+				driver.Log.Printf("deleteExistingFileByName: warning: failed to delete existing file: %v\n", err)
+				return nil // Don't fail the sync if delete fails
+			}
+			return nil // Only delete first match
+		}
+	}
+	return nil
+}
+
 func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	var result SyncResult
 	if req.LocalPath == "" {
@@ -60,6 +94,12 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	encSize := m.cipher.EncryptedSize(req.PlainSize)
 	result.Nonce = nonce
 	result.EncryptedSize = encSize
+
+	// Check if file with same name already exists in parent directory.
+	// If so, delete it first to avoid duplicate files with (1) suffix.
+	if err := m.deleteExistingFileByName(req.ParentFid, encName); err != nil {
+		driver.Log.Printf("Sync: warning: failed to check/delete existing file %s in parent %s: %v\n", encName, req.ParentFid, err)
+	}
 
 	preStart := time.Now()
 	pre, err := m.driver.UploadPre(encName, req.ParentFid, encSize)

@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Recursive Path Cache Update
 When a directory is renamed or moved, the system SHALL recursively update the path keys in its in-memory node cache for all child files and directories, and SHALL rewrite any pending sync path metadata needed so queued or retried uploads can continue against the relocated tree.
