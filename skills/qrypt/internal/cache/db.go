@@ -36,6 +36,7 @@ func NewCacheDB(dbPath string) (*CacheDB, error) {
 		fid TEXT,
 		parent_fid TEXT,
 		name TEXT,
+		local_path TEXT,
 		size INTEGER,
 		is_folder BOOLEAN,
 		file_nonce BLOB,
@@ -57,6 +58,7 @@ func NewCacheDB(dbPath string) (*CacheDB, error) {
 
 	// 简单的数据库迁移：如果 pending_nodes 表已经存在但没有 parent_fid 列，则添加它。
 	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN parent_fid TEXT")
+	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN local_path TEXT")
 
 	return &CacheDB{db: db}, nil
 }
@@ -144,9 +146,9 @@ func (c *CacheDB) DeleteChunk(fid string, chunkIndex int64) error {
 }
 
 // SavePendingNode 持久化未完成的文件节点
-func (c *CacheDB) SavePendingNode(path, fid, parentFid, name string, size int64, isFolder bool, nonce []byte) error {
-	query := `INSERT OR REPLACE INTO pending_nodes (path, fid, parent_fid, name, size, is_folder, file_nonce) VALUES (?, ?, ?, ?, ?, ?, ?)`
-	_, err := c.db.Exec(query, path, fid, parentFid, name, size, isFolder, nonce)
+func (c *CacheDB) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte) error {
+	query := `INSERT OR REPLACE INTO pending_nodes (path, fid, parent_fid, name, local_path, size, is_folder, file_nonce) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err := c.db.Exec(query, path, fid, parentFid, name, localPath, size, isFolder, nonce)
 	return err
 }
 
@@ -185,6 +187,7 @@ type PendingNode struct {
 	Fid       string
 	ParentFid string
 	Name      string
+	LocalPath string
 	Size      int64
 	IsFolder  bool
 	Nonce     []byte
@@ -192,7 +195,7 @@ type PendingNode struct {
 
 // GetPendingNodes 获取所有待同步的节点
 func (c *CacheDB) GetPendingNodes() ([]PendingNode, error) {
-	rows, err := c.db.Query("SELECT path, fid, parent_fid, name, size, is_folder, file_nonce FROM pending_nodes")
+	rows, err := c.db.Query("SELECT path, fid, parent_fid, name, local_path, size, is_folder, file_nonce FROM pending_nodes")
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +204,7 @@ func (c *CacheDB) GetPendingNodes() ([]PendingNode, error) {
 	var nodes []PendingNode
 	for rows.Next() {
 		var n PendingNode
-		if err := rows.Scan(&n.Path, &n.Fid, &n.ParentFid, &n.Name, &n.Size, &n.IsFolder, &n.Nonce); err != nil {
+		if err := rows.Scan(&n.Path, &n.Fid, &n.ParentFid, &n.Name, &n.LocalPath, &n.Size, &n.IsFolder, &n.Nonce); err != nil {
 			return nil, err
 		}
 		nodes = append(nodes, n)

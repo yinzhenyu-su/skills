@@ -2,11 +2,14 @@ package vfs
 
 import (
 	"bytes"
+	"crypto/rand"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +37,55 @@ type testLogger struct {
 
 func (l *testLogger) Printf(format string, v ...interface{}) {
 	l.t.Logf(format, v...)
+}
+
+type perfTestLogger struct {
+	t *testing.T
+}
+
+func (l *perfTestLogger) Printf(format string, v ...interface{}) {
+	if strings.HasPrefix(format, "[FUSE] Write:") || strings.HasPrefix(format, "[FUSE] Read:") {
+		return
+	}
+	l.t.Logf(format, v...)
+}
+
+func writePatternFile(path string, totalSize int64, chunk []byte) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	for written := int64(0); written < totalSize; {
+		buf := chunk
+		remaining := totalSize - written
+		if remaining < int64(len(buf)) {
+			buf = buf[:remaining]
+		}
+		n, err := f.Write(buf)
+		if err != nil {
+			return err
+		}
+		written += int64(n)
+	}
+
+	return f.Sync()
+}
+
+func readFileSample(path string, offset int64, size int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	buf := make([]byte, size)
+	n, err := f.ReadAt(buf, offset)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return buf[:n], nil
 }
 
 func loadE2EConfig(t *testing.T) *e2eConfig {
@@ -91,7 +143,7 @@ func setupQryptFSInternal(t *testing.T, config *e2eConfig, clearCache bool) (*Qr
 
 	if clearCache {
 		d.RemoveDirCache("0")
-		
+
 		// 递归清理远程测试目录中的残留
 		rootFid, err := d.ResolvePath(config.remotePath)
 		if err == nil {
@@ -99,7 +151,7 @@ func setupQryptFSInternal(t *testing.T, config *e2eConfig, clearCache bool) (*Qr
 			if err == nil {
 				for _, f := range files {
 					decName, _ := cipher.DecryptSegment(f.FileName)
-					if decName == "it_test_dir" || decName == "xattr_test.txt" || decName == "stress_test" {
+					if decName == "it_test_dir" || decName == "upload_5mb.bin" || decName == "upload_perf_5mb.bin" || decName == "upload_perf_200mb.bin" || decName == "xattr_test.txt" || decName == "stress_test" {
 						d.Delete([]string{f.Fid})
 					}
 				}
@@ -171,9 +223,71 @@ func waitForSync(t *testing.T, fs *QryptFS, path string) {
 	t.Fatalf("Timeout waiting for sync: %s", path)
 }
 
+func remoteEntryExists(config *e2eConfig, relPath string) (bool, error) {
+	cipher, err := crypt.NewRcloneCipher(config.password, config.salt)
+	if err != nil {
+		return false, err
+	}
+
+	d := driver.NewQuarkDriver(config.cookie)
+	if err := d.Auth(); err != nil {
+		return false, err
+	}
+
+	currentFid, err := d.ResolvePath(config.remotePath)
+	if err != nil {
+		return false, err
+	}
+
+	parts := strings.Split(strings.Trim(relPath, "/"), "/")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		d.RemoveDirCache(currentFid)
+		files, err := d.ListFiles(currentFid)
+		if err != nil {
+			return false, err
+		}
+
+		found := false
+		for _, f := range files {
+			decName, _ := cipher.DecryptSegment(f.FileName)
+			if decName != part {
+				continue
+			}
+			if i == len(parts)-1 {
+				return true, nil
+			}
+			currentFid = f.Fid
+			found = true
+			break
+		}
+		if !found {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+func waitForRemoteEntryState(t *testing.T, config *e2eConfig, relPath string, wantExists bool) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		exists, err := remoteEntryExists(config, relPath)
+		if err == nil && exists == wantExists {
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+	t.Fatalf("Timeout waiting for remote path state %q => %t", relPath, wantExists)
+}
+
 func TestE2E_Lifecycle(t *testing.T) {
 	config := loadE2EConfig(t)
-	
+
 	// Pre-cleanup in case of previous failures
 	os.RemoveAll(filepath.Join(config.mountPoint, "it_test_dir"))
 	time.Sleep(1 * time.Second)
@@ -239,6 +353,183 @@ func TestE2E_Lifecycle(t *testing.T) {
 	}
 
 	_ = fs2
+}
+
+func TestE2E_DeleteSyncedFileRemovesRemote(t *testing.T) {
+	config := loadE2EConfig(t)
+
+	const fileName = "delete_after_sync.txt"
+	testFile := filepath.Join(config.mountPoint, fileName)
+	_ = os.Remove(testFile)
+
+	fs, host, err := setupQryptFSInternal(t, config, true)
+	if err != nil {
+		t.Fatalf("Failed to setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host.Unmount()
+
+	content := []byte("delete-after-sync")
+	if err := os.WriteFile(testFile, content, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	waitForSync(t, fs, "/"+fileName)
+	waitForRemoteEntryState(t, config, fileName, true)
+
+	if err := os.Remove(testFile); err != nil {
+		t.Fatalf("Remove file failed: %v", err)
+	}
+
+	waitForRemoteEntryState(t, config, fileName, false)
+}
+
+func TestE2E_Upload5MBFile(t *testing.T) {
+	config := loadE2EConfig(t)
+
+	const fileName = "upload_5mb.bin"
+	testFile := filepath.Join(config.mountPoint, fileName)
+	_ = os.Remove(testFile)
+
+	fs, host, err := setupQryptFSInternal(t, config, true)
+	if err != nil {
+		t.Fatalf("Failed to setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host.Unmount()
+
+	content := make([]byte, 5*1024*1024)
+	if _, err := rand.Read(content); err != nil {
+		t.Fatalf("Failed to generate test content: %v", err)
+	}
+
+	if err := os.WriteFile(testFile, content, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	waitForSync(t, fs, "/"+fileName)
+
+	readContent, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !bytes.Equal(content, readContent) {
+		t.Fatalf("Content mismatch before remount")
+	}
+
+	host.Unmount()
+	unmount(config.mountPoint)
+	time.Sleep(3 * time.Second)
+
+	_, host2, err := setupQryptFSInternal(t, config, false)
+	if err != nil {
+		t.Fatalf("Failed to re-setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host2.Unmount()
+
+	remountedFile := filepath.Join(config.mountPoint, fileName)
+	readContentAfterRemount, err := os.ReadFile(remountedFile)
+	if err != nil {
+		t.Fatalf("ReadFile after remount failed: %v", err)
+	}
+	if !bytes.Equal(content, readContentAfterRemount) {
+		t.Fatalf("Content mismatch after remount")
+	}
+
+	if err := os.Remove(remountedFile); err != nil {
+		t.Fatalf("Remove file failed: %v", err)
+	}
+}
+
+func TestE2E_UploadPerf200MB(t *testing.T) {
+	config := loadE2EConfig(t)
+
+	const (
+		fileName   = "upload_perf_200mb.bin"
+		totalSize  = 200 * 1024 * 1024
+		chunkSize  = 1 * 1024 * 1024
+		sampleSize = 4 * 1024
+	)
+	testFile := filepath.Join(config.mountPoint, fileName)
+	_ = os.Remove(testFile)
+
+	fs, host, err := setupQryptFSInternal(t, config, true)
+	if err != nil {
+		t.Fatalf("Failed to setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host.Unmount()
+	driver.Log = &perfTestLogger{t: t}
+
+	recorder := newSyncPerfRecorder()
+	fs.syncObserver = recorder
+
+	chunk := make([]byte, chunkSize)
+	if _, err := rand.Read(chunk); err != nil {
+		t.Fatalf("Failed to generate test chunk: %v", err)
+	}
+	expectedStart := append([]byte(nil), chunk[:sampleSize]...)
+	expectedEnd := append([]byte(nil), chunk[chunkSize-sampleSize:]...)
+
+	writeStartedAt := time.Now()
+	if err := writePatternFile(testFile, totalSize, chunk); err != nil {
+		t.Fatalf("Write pattern file failed: %v", err)
+	}
+
+	obs := recorder.Wait(t, 10*time.Minute)
+	if obs.Err != nil {
+		t.Fatalf("Background sync failed: %v", obs.Err)
+	}
+
+	endToEnd := obs.FinishedAt.Sub(writeStartedAt)
+	throughputMiBS := float64(totalSize) / endToEnd.Seconds() / 1024 / 1024
+	queueDelay := time.Duration(0)
+	if !obs.StartedAt.IsZero() {
+		queueDelay = obs.StartedAt.Sub(writeStartedAt)
+	}
+
+	info, err := os.Stat(testFile)
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+	if info.Size() != totalSize {
+		t.Fatalf("Size mismatch after perf upload: expected %d, got %d", totalSize, info.Size())
+	}
+
+	startSample, err := readFileSample(testFile, 0, sampleSize)
+	if err != nil {
+		t.Fatalf("Read start sample failed: %v", err)
+	}
+	if !bytes.Equal(expectedStart, startSample) {
+		t.Fatalf("Start sample mismatch after perf upload")
+	}
+
+	endSample, err := readFileSample(testFile, totalSize-sampleSize, sampleSize)
+	if err != nil {
+		t.Fatalf("Read end sample failed: %v", err)
+	}
+	if !bytes.Equal(expectedEnd, endSample) {
+		t.Fatalf("End sample mismatch after perf upload")
+	}
+
+	t.Logf("e2e upload 200MiB: queue=%s sync=%s total=%s throughput=%.2f MiB/s pre=%s upload=%s update_hash=%s commit=%s finish=%s parts=%d uploaded=%d",
+		queueDelay,
+		obs.Snapshot.TotalDuration,
+		endToEnd,
+		throughputMiBS,
+		obs.Snapshot.PreDuration,
+		obs.Snapshot.UploadPartDuration,
+		obs.Snapshot.UpdateHashDuration,
+		obs.Snapshot.CommitDuration,
+		obs.Snapshot.FinishDuration,
+		obs.Snapshot.PartCount,
+		obs.Snapshot.UploadedBytes,
+	)
+
+	if err := os.Remove(testFile); err != nil {
+		t.Fatalf("Remove file failed: %v", err)
+	}
 }
 
 func TestE2E_XAttr(t *testing.T) {

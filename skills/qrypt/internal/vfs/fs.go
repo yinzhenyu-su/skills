@@ -1,10 +1,6 @@
 package vfs
 
 import (
-	"bytes"
-	"crypto/md5"
-	"crypto/sha1"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,31 +14,69 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/driver"
+	"github.com/yinzhenyu/skills/qrypt/internal/staging"
+	uploadpkg "github.com/yinzhenyu/skills/qrypt/internal/upload"
 )
 
 const (
 	// FetchBatchBlocks 定义了一次批量下载的块数 (128 * 64KB = 8MB)
-	FetchBatchBlocks     = 128
-	maxAutoRetryAttempts = 5
+	FetchBatchBlocks        = 128
+	maxAutoRetryAttempts    = 5
+	pendingNodeSaveInterval = 250 * time.Millisecond
+	pendingNodeSaveSizeStep = 1 * 1024 * 1024
 )
 
 var errNonRetryableSync = errors.New("non-retryable sync error")
 
+func isFinderTrashDir(path string) bool {
+	clean := filepath.Clean(path)
+	if clean == "/.Trash" || clean == "/.Trashes" {
+		return true
+	}
+
+	parts := strings.Split(strings.Trim(clean, "/"), "/")
+	return len(parts) == 2 && (parts[0] == ".Trash" || parts[0] == ".Trashes")
+}
+
+func isFinderTrashPath(path string) bool {
+	for _, part := range strings.Split(strings.Trim(filepath.Clean(path), "/"), "/") {
+		if part == ".Trash" || part == ".Trashes" {
+			return true
+		}
+	}
+	return false
+}
+
+func fillVirtualTrashStat(stat *fuse.Stat_t) {
+	uid, gid, _ := fuse.Getcontext()
+	now := fuse.NewTimespec(time.Now())
+	stat.Uid = uid
+	stat.Gid = gid
+	stat.Mode = fuse.S_IFDIR | 0755
+	stat.Nlink = 2
+	stat.Mtim = now
+	stat.Atim = now
+	stat.Ctim = now
+}
+
 type node struct {
-	fid            string
-	parentFid      string // 父目录 FID
-	name           string // 明文名称
-	size           int64  // 原始明文大小
-	encSize        int64  // 网盘上的加密大小
-	isFolder       bool
-	mtime          time.Time // 修改时间
-	fileNonce      [24]byte
-	hasNonce       bool
-	isDirty        bool  // 是否有未同步的修改
-	syncQueued     bool  // 是否已在同步队列中
-	lastReadBlock  int64 // 上次读取的块索引
-	readSeqCount   int   // 连续顺序读取的块数
-	mu             sync.RWMutex
+	fid             string
+	parentFid       string // 父目录 FID
+	name            string // 明文名称
+	size            int64  // 原始明文大小
+	encSize         int64  // 网盘上的加密大小
+	localPath       string // 本地 staging 文件
+	isFolder        bool
+	mtime           time.Time // 修改时间
+	fileNonce       [24]byte
+	hasNonce        bool
+	isDirty         bool  // 是否有未同步的修改
+	syncQueued      bool  // 是否已在同步队列中
+	lastReadBlock   int64 // 上次读取的块索引
+	readSeqCount    int   // 连续顺序读取的块数
+	lastPendingSave time.Time
+	lastPendingSize int64
+	mu              sync.RWMutex
 }
 
 type syncTask struct {
@@ -50,30 +84,63 @@ type syncTask struct {
 	path string
 }
 
+type syncPerformanceSnapshot struct {
+	Path               string
+	SnapshotSize       int64
+	PartCount          int
+	UploadedBytes      int64
+	PreDuration        time.Duration
+	UploadPartDuration time.Duration
+	UpdateHashDuration time.Duration
+	CommitDuration     time.Duration
+	FinishDuration     time.Duration
+	TotalDuration      time.Duration
+}
+
+type syncObserver interface {
+	OnSyncStart(path string, snapshotSize int64)
+	OnSyncFinish(snapshot syncPerformanceSnapshot, err error)
+}
+
 // QryptFS 实现了 fuse.FileSystem 接口
 type QryptFS struct {
 	fuse.FileSystemBase
-	driver     *driver.QuarkDriver
-	cache      *cache.CacheManager
-	cipher     *crypt.RcloneCipher
-	rootFid    string
-	nodes      sync.Map // path -> *node
-	fetching   sync.Map // batchKey -> chan struct{} (用于合并请求)
-	memCache   sync.Map // fid_idx -> []byte (内存二级缓存)
-	uploadChan chan syncTask
-	syncing    sync.Map // *node -> struct{} (防止并发同步同一节点)
-	retryState sync.Map // *node -> int (基于节点的自动重试次数)
+	driver       *driver.QuarkDriver
+	cache        *cache.CacheManager
+	cipher       *crypt.RcloneCipher
+	rootFid      string
+	nodes        sync.Map // path -> *node
+	fetching     sync.Map // batchKey -> chan struct{} (用于合并请求)
+	memCache     sync.Map // fid_idx -> []byte (内存二级缓存)
+	uploadChan   chan syncTask
+	syncing      sync.Map // *node -> struct{} (防止并发同步同一节点)
+	retryState   sync.Map // *node -> int (基于节点的自动重试次数)
+	syncObserver syncObserver
+	staging      *staging.Store
+	uploader     *uploadpkg.Manager
 }
-
 
 // NewQryptFS 创建新的文件系统实例
 func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, cipher *crypt.RcloneCipher) *QryptFS {
+	var stagingStore *staging.Store
+	if c != nil {
+		s, err := staging.NewStore(c.StagingDir())
+		if err != nil {
+			driver.Log.Printf("Failed to initialize staging store: %v\n", err)
+		} else {
+			stagingStore = s
+		}
+	}
 	fs := &QryptFS{
 		driver:     d,
 		cache:      c,
 		rootFid:    rootFid,
 		cipher:     cipher,
 		uploadChan: make(chan syncTask, 1000), // 允许排队 1000 个文件
+		staging:    stagingStore,
+	}
+	if stagingStore != nil {
+		fs.uploader = uploadpkg.NewManager(d, cipher, stagingStore)
 	}
 	fs.nodes.Store("/", &node{fid: rootFid, isFolder: true, mtime: time.Now(), lastReadBlock: -1})
 
@@ -99,7 +166,7 @@ func (fs *QryptFS) recoverDirtyFiles() {
 	}
 
 	for _, p := range pending {
-		if p.Path == "" || !strings.HasPrefix(p.Path, "/") || p.Fid == "" || p.Name == "" || p.IsFolder {
+		if p.Path == "" || !strings.HasPrefix(p.Path, "/") || p.Fid == "" || p.Name == "" || p.IsFolder || p.LocalPath == "" {
 			driver.Log.Printf("Drop invalid pending entry: path=%q fid=%q\n", p.Path, p.Fid)
 			_ = fs.cache.RemovePendingNode(p.Path)
 			if p.Fid != "" {
@@ -108,11 +175,17 @@ func (fs *QryptFS) recoverDirtyFiles() {
 			}
 			continue
 		}
+		if fs.staging == nil || !fs.staging.Exists(p.LocalPath) {
+			driver.Log.Printf("Drop pending entry with missing staging file: path=%q localPath=%q\n", p.Path, p.LocalPath)
+			_ = fs.cache.RemovePendingNode(p.Path)
+			continue
+		}
 
 		n := &node{
 			fid:       p.Fid,
 			parentFid: p.ParentFid,
 			name:      p.Name,
+			localPath: p.LocalPath,
 			size:      p.Size,
 			isFolder:  p.IsFolder,
 			mtime:     time.Now(),
@@ -168,6 +241,7 @@ func (fs *QryptFS) uploadWorker() {
 
 			// 3.1 改进日志，包含 FID
 			driver.Log.Printf("Background Sync Start: %s (fid=%s)\n", p, n.fid)
+			fs.notifySyncStart(p, n)
 
 			err := fs.syncFile(p, n)
 
@@ -186,7 +260,7 @@ func (fs *QryptFS) uploadWorker() {
 				if strings.Contains(err.Error(), errNonRetryableSync.Error()) {
 					driver.Log.Printf("Background Sync Non-Retryable for %s (fid=%s): %v\n", p, n.fid, err)
 					fs.retryState.Delete(n)
-					fs.cleanupLocalUploadState(p, n.fid, false)
+					fs.cleanupLocalUploadState(p, n, false)
 					return
 				}
 
@@ -223,17 +297,76 @@ func (fs *QryptFS) uploadWorker() {
 	}
 }
 
-func (fs *QryptFS) cleanupLocalUploadState(path, fid string, isDir bool) {
+func (fs *QryptFS) cleanupLocalUploadState(path string, n *node, isDir bool) {
 	fs.nodes.Delete(path)
 	if fs.cache != nil {
 		if isDir {
+			if fs.staging != nil {
+				pending, err := fs.cache.GetPendingNodes()
+				if err == nil {
+					prefix := path
+					if !strings.HasSuffix(prefix, "/") {
+						prefix += "/"
+					}
+					for _, entry := range pending {
+						if entry.Path == path || strings.HasPrefix(entry.Path, prefix) {
+							_ = fs.staging.Remove(entry.LocalPath)
+						}
+					}
+				}
+			}
 			_ = fs.cache.RemovePendingNodesByPrefix(path)
 		} else {
 			_ = fs.cache.RemovePendingNode(path)
-			_ = fs.cache.RemovePendingNodesByFid(fid)
-			_ = fs.cache.RemoveChunksByFid(fid)
+			_ = fs.cache.RemovePendingNodesByFid(n.fid)
+			_ = fs.cache.RemoveChunksByFid(n.fid)
 		}
 	}
+	if fs.staging != nil && !isDir {
+		_ = fs.staging.Remove(n.localPath)
+	}
+}
+
+func (fs *QryptFS) maybeSavePendingNodeLocked(path string, n *node, force bool) {
+	if fs.cache == nil {
+		return
+	}
+
+	now := time.Now()
+	needSave := force || n.lastPendingSave.IsZero() || now.Sub(n.lastPendingSave) >= pendingNodeSaveInterval
+	sizeDelta := n.size - n.lastPendingSize
+	if sizeDelta < 0 {
+		sizeDelta = -sizeDelta
+	}
+	if sizeDelta >= pendingNodeSaveSizeStep {
+		needSave = true
+	}
+	if !needSave {
+		return
+	}
+
+	if err := fs.cache.SavePendingNode(path, n.fid, n.parentFid, n.name, n.localPath, n.size, n.isFolder, n.fileNonce[:]); err == nil {
+		n.lastPendingSave = now
+		n.lastPendingSize = n.size
+	}
+}
+
+func (fs *QryptFS) notifySyncStart(path string, n *node) {
+	if fs.syncObserver == nil {
+		return
+	}
+
+	n.mu.RLock()
+	size := n.size
+	n.mu.RUnlock()
+	fs.syncObserver.OnSyncStart(path, size)
+}
+
+func (fs *QryptFS) notifySyncFinish(snapshot syncPerformanceSnapshot, err error) {
+	if fs.syncObserver == nil {
+		return
+	}
+	fs.syncObserver.OnSyncFinish(snapshot, err)
 }
 
 func (fs *QryptFS) lookup(path string) (*node, int) {
@@ -257,7 +390,6 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 			currentFid = v.(*node).fid
 			continue
 		}
-
 
 		// 否则，列出父目录内容来寻找
 		files, err := fs.driver.ListFiles(currentFid)
@@ -317,6 +449,10 @@ func (fs *QryptFS) Getattr(path string, stat *fuse.Stat_t, fh uint64) (errc int)
 	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
 		return -fuse.ENOENT
 	}
+	if isFinderTrashDir(path) {
+		fillVirtualTrashStat(stat)
+		return 0
+	}
 
 	n, errc := fs.lookup(path)
 	if errc != 0 {
@@ -345,6 +481,15 @@ func (fs *QryptFS) Getattr(path string, stat *fuse.Stat_t, fh uint64) (errc int)
 func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t, ofst int64) bool, ofst int64, fh uint64) (errc int) {
 	fill(".", nil, 0)
 	fill("..", nil, 0)
+	if isFinderTrashDir(path) {
+		if filepath.Clean(path) == "/.Trashes" {
+			uid, _, _ := fuse.Getcontext()
+			stat := &fuse.Stat_t{}
+			fillVirtualTrashStat(stat)
+			fill(fmt.Sprint(uid), stat, 0)
+		}
+		return 0
+	}
 
 	n, errc := fs.lookup(path)
 	if errc != 0 {
@@ -413,12 +558,12 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 
 		if !skipStore {
 			fs.nodes.Store(childPath, &node{
-				fid:      f.Fid,
+				fid:       f.Fid,
 				parentFid: n.fid,
-				name:     decName,
-				size:     decSize,
-				isFolder: f.IsDir(),
-				mtime:    modTime,
+				name:      decName,
+				size:      decSize,
+				isFolder:  f.IsDir(),
+				mtime:     modTime,
 			})
 		}
 
@@ -436,7 +581,7 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 		if !ok || !strings.HasPrefix(childPath, prefix) || childPath == prefix {
 			return true
 		}
-		
+
 		relPath := strings.TrimPrefix(childPath, prefix)
 		if strings.Contains(relPath, "/") {
 			return true // 深度超过一级
@@ -473,6 +618,9 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 // Mkdir 创建文件夹
 func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 	driver.Log.Printf("[FUSE] Mkdir: path=%s, mode=%o\n", path, mode)
+	if isFinderTrashPath(path) {
+		return 0
+	}
 	parentPath := filepath.Dir(path)
 	name := filepath.Base(path)
 
@@ -505,6 +653,9 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 // Unlink 删除文件
 func (fs *QryptFS) Unlink(path string) (errc int) {
 	driver.Log.Printf("[FUSE] Unlink: path=%s\n", path)
+	if isFinderTrashPath(path) {
+		return 0
+	}
 	n, errc := fs.lookup(path)
 	if errc != 0 {
 		return errc
@@ -522,7 +673,7 @@ func (fs *QryptFS) Unlink(path string) (errc int) {
 		}
 	}
 
-	fs.cleanupLocalUploadState(path, n.fid, false)
+	fs.cleanupLocalUploadState(path, n, false)
 	fs.nodes.Delete(path)
 	// 清理父目录缓存
 	fs.driver.RemoveDirCache(n.parentFid)
@@ -532,6 +683,9 @@ func (fs *QryptFS) Unlink(path string) (errc int) {
 // Rmdir 删除文件夹
 func (fs *QryptFS) Rmdir(path string) (errc int) {
 	driver.Log.Printf("[FUSE] Rmdir: path=%s\n", path)
+	if isFinderTrashDir(path) {
+		return 0
+	}
 	n, errc := fs.lookup(path)
 	if errc != 0 {
 		return errc
@@ -549,7 +703,7 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 		}
 	}
 
-	fs.cleanupLocalUploadState(path, n.fid, true)
+	fs.cleanupLocalUploadState(path, n, true)
 	fs.nodes.Delete(path)
 	// 清理父目录缓存
 	fs.driver.RemoveDirCache(n.parentFid)
@@ -562,6 +716,12 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 	oldNode, errc := fs.lookup(oldPath)
 	if errc != 0 {
 		return errc
+	}
+	if isFinderTrashPath(newPath) {
+		if oldNode.isFolder {
+			return fs.Rmdir(oldPath)
+		}
+		return fs.Unlink(oldPath)
 	}
 
 	oldParent := filepath.Dir(oldPath)
@@ -626,7 +786,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 	// 如果是本地节点，同步更新持久化缓存中的路径
 	if isLocal && fs.cache != nil {
 		oldNode.mu.RLock()
-		_ = fs.cache.SavePendingNode(newPath, oldNode.fid, oldNode.parentFid, oldNode.name, oldNode.size, oldNode.isFolder, oldNode.fileNonce[:])
+		_ = fs.cache.SavePendingNode(newPath, oldNode.fid, oldNode.parentFid, oldNode.name, oldNode.localPath, oldNode.size, oldNode.isFolder, oldNode.fileNonce[:])
 		oldNode.mu.RUnlock()
 		_ = fs.cache.RemovePendingNode(oldPath)
 	}
@@ -651,7 +811,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 				childNode := value.(*node)
 				relative := strings.TrimPrefix(path, oldPrefix)
 				newChildPath := newPrefix + relative
-				
+
 				// 标记为删除旧路径，存入新路径
 				fs.nodes.Delete(path)
 				fs.nodes.Store(newChildPath, childNode)
@@ -676,6 +836,9 @@ func (fs *QryptFS) Open(path string, flags int) (errc int, fh uint64) {
 func (fs *QryptFS) Access(path string, mask uint32) (errc int) {
 	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
 		return -fuse.ENOENT
+	}
+	if isFinderTrashDir(path) {
+		return 0
 	}
 	_, errc = fs.lookup(path)
 	if errc != 0 {
@@ -713,10 +876,18 @@ func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uin
 		n.fileNonce = nonce
 		n.hasNonce = true
 	}
+	if fs.staging == nil {
+		return -fuse.EIO, 0
+	}
+	localPath, err := fs.staging.Create(n.fid)
+	if err != nil {
+		return -fuse.EIO, 0
+	}
+	n.localPath = localPath
 
 	fs.nodes.Store(path, n)
 	if fs.cache != nil {
-		_ = fs.cache.SavePendingNode(path, n.fid, n.parentFid, n.name, n.size, n.isFolder, n.fileNonce[:])
+		fs.maybeSavePendingNodeLocked(path, n, true)
 	}
 	return 0, uint64(uintptr(unsafe.Pointer(n)))
 }
@@ -741,80 +912,28 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
-	// 1. 更新节点信息
-	if ofst+int64(len(buff)) > node.size {
-		node.size = ofst + int64(len(buff))
+	if fs.staging == nil || node.localPath == "" {
+		return 0
 	}
+
+	// 1. 更新节点信息
+	now := time.Now()
 	node.isDirty = true
-	node.mtime = time.Now()
-
-	// 2. 写入分块缓存
-	startChunk := ofst / crypt.BlockDataSize
-	endChunk := (ofst + int64(len(buff)) - 1) / crypt.BlockDataSize
-
-	totalWritten := 0
-	for i := startChunk; i <= endChunk; i++ {
-		// 获取原有块内容（如果需要部分写入）
-		var chunkData []byte
-		if ofst%crypt.BlockDataSize != 0 || int64(len(buff)) < crypt.BlockDataSize {
-			// 需要读取原始块
-			orig, err := fs.getDecryptedChunk(node, uint64(i))
-			if err == nil {
-				chunkData = orig
-			}
-		}
-
-		if chunkData == nil {
-			chunkData = make([]byte, 0, crypt.BlockDataSize)
-		}
-
-		// 填充或截断 chunkData 到当前写入位置
-		relOffset := int64(0)
-		if i == startChunk {
-			relOffset = ofst % crypt.BlockDataSize
-		}
-
-		// 确保 chunkData 长度足够
-		if int64(len(chunkData)) < relOffset {
-			newChunk := make([]byte, relOffset)
-			copy(newChunk, chunkData)
-			chunkData = newChunk
-		}
-
-		// 准备写入的数据
-		writeStart := int64(totalWritten)
-		writeEnd := writeStart + (crypt.BlockDataSize - relOffset)
-		if writeEnd > int64(len(buff)) {
-			writeEnd = int64(len(buff))
-		}
-
-		payload := buff[writeStart:writeEnd]
-
-		// 合并到 chunkData
-		if int64(len(chunkData)) < relOffset+int64(len(payload)) {
-			newChunk := make([]byte, relOffset+int64(len(payload)))
-			copy(newChunk, chunkData)
-			chunkData = newChunk
-		}
-		copy(chunkData[relOffset:], payload)
-
-		// 存入缓存并标记为脏
-		if fs.cache != nil {
-			_ = fs.cache.PutChunk(node.fid, int64(i), chunkData, true)
-		}
-		// 同时存入内存缓存
-		mKey := fmt.Sprintf("%s_%d", node.fid, i)
-		fs.memCache.Store(mKey, chunkData)
-
-		totalWritten += len(payload)
+	node.mtime = now
+	written, err := fs.staging.WriteAt(node.localPath, buff, ofst)
+	if err != nil {
+		return 0
+	}
+	if ofst+int64(written) > node.size {
+		node.size = ofst + int64(written)
 	}
 
 	// 持久化节点元数据
 	if fs.cache != nil {
-		_ = fs.cache.SavePendingNode(path, node.fid, node.parentFid, node.name, node.size, node.isFolder, node.fileNonce[:])
+		fs.maybeSavePendingNodeLocked(path, node, false)
 	}
 
-	return totalWritten
+	return written
 }
 
 // Truncate 调整文件大小（用于 cp/touch 等写入前截断流程）
@@ -836,8 +955,14 @@ func (fs *QryptFS) Truncate(path string, size int64, fh uint64) (errc int) {
 	n.size = size
 	n.isDirty = true
 	n.mtime = time.Now()
+	if fs.staging == nil || n.localPath == "" {
+		return -fuse.EIO
+	}
+	if err := fs.staging.Truncate(n.localPath, size); err != nil {
+		return -fuse.EIO
+	}
 	if fs.cache != nil {
-		_ = fs.cache.SavePendingNode(path, n.fid, n.parentFid, n.name, n.size, n.isFolder, n.fileNonce[:])
+		fs.maybeSavePendingNodeLocked(path, n, true)
 	}
 	return 0
 }
@@ -851,6 +976,7 @@ func (fs *QryptFS) Flush(path string, fh uint64) (errc int) {
 
 	node.mu.Lock()
 	if node.isDirty && !node.syncQueued {
+		fs.maybeSavePendingNodeLocked(path, node, true)
 		node.syncQueued = true
 		node.mu.Unlock()
 
@@ -946,7 +1072,14 @@ func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 	return fs.Flush(path, fh)
 }
 
-func (fs *QryptFS) syncFile(path string, n *node) error {
+func (fs *QryptFS) syncFile(path string, n *node) (err error) {
+	startedAt := time.Now()
+	stats := syncPerformanceSnapshot{Path: path}
+	defer func() {
+		stats.TotalDuration = time.Since(startedAt)
+		fs.notifySyncFinish(stats, err)
+	}()
+
 	n.mu.Lock()
 	if !n.isDirty {
 		n.mu.Unlock()
@@ -956,196 +1089,59 @@ func (fs *QryptFS) syncFile(path string, n *node) error {
 	snapshotName := n.name
 	snapshotMtime := n.mtime
 	parentFid := n.parentFid
+	localPath := n.localPath
 	n.mu.Unlock()
+	stats.SnapshotSize = snapshotSize
 
-	driver.Log.Printf("Syncing file (Parallel): %s (size %d, parentFid %s)\n", snapshotName, snapshotSize, parentFid)
-
-	newNonce, _ := fs.cipher.GenerateRandomNonce()
-	encName := fs.cipher.EncryptSegment(snapshotName)
-	pre, err := fs.driver.UploadPre(encName, parentFid, fs.cipher.EncryptedSize(snapshotSize))
+	if fs.staging == nil || fs.uploader == nil || localPath == "" {
+		return fmt.Errorf("missing staging state for %s", path)
+	}
+	snapshotPath, err := fs.staging.Snapshot(localPath)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = fs.staging.Remove(snapshotPath) }()
 
-	// 检查秒传
-	if pre.Data.Finish {
-		driver.Log.Printf("Rapid Upload (秒传) triggered for %s\n", snapshotName)
-		n.mu.Lock()
-		n.fid = pre.Data.Fid
-		if n.mtime.Equal(snapshotMtime) {
-			n.isDirty = false
-		}
-		if fs.cache != nil && !n.isDirty {
-			_ = fs.cache.RemovePendingNode(path)
-		}
-		n.mu.Unlock()
-		return nil
-	}
-
-	// 计算总块数 (rclone blocks)
-	totalRcloneBlocks := (snapshotSize + crypt.BlockDataSize - 1) / crypt.BlockDataSize
-	if snapshotSize == 0 {
-		totalRcloneBlocks = 0
-	}
-
-	// 策略：每 64 个 rclone block (约 4MB) 作为一个 Quark Part 上传
-	blocksPerPart := 64
-	numParts := (int(totalRcloneBlocks) + blocksPerPart - 1) / blocksPerPart
-	if numParts == 0 {
-		numParts = 1
-	}
-
-	// OSS 要求除最后一个 part 外都满足最小大小限制，因此将 rclone header 并入第一个数据 part。
-	etags := make([]string, numParts)
-	var wg sync.WaitGroup
-	errChan := make(chan error, numParts)
-
-	// 限制单个文件的并发上传数为 4
-	semaphore := make(chan struct{}, 4)
-
-	// 并发上传分块；第一个 OSS part 携带 rclone header，避免产生过小的非末尾分片。
-	for p := 0; p < numParts; p++ {
-		wg.Add(1)
-		go func(partIdx int) {
-			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-
-			var partBuffer bytes.Buffer
-			if partIdx == 0 {
-				partBuffer.Write([]byte(crypt.FileMagic))
-				partBuffer.Write(newNonce[:])
-			}
-			startBlock := int64(partIdx * blocksPerPart)
-			endBlock := startBlock + int64(blocksPerPart)
-			if endBlock > totalRcloneBlocks {
-				endBlock = totalRcloneBlocks
-			}
-
-			// 读取并加密该 Part 内的所有 blocks
-			for i := startBlock; i < endBlock; i++ {
-				plaintext, err := fs.getDecryptedChunk(n, uint64(i))
-				if err != nil {
-					errChan <- err
-					return
-				}
-				ciphertext, err := fs.cipher.EncryptBlock(plaintext, uint64(i), newNonce)
-				if err != nil {
-					errChan <- err
-					return
-				}
-				partBuffer.Write(ciphertext)
-			}
-
-			partNum := partIdx + 1
-			etag, err := fs.driver.UploadPart(pre, partNum, partBuffer.Bytes())
-			if err != nil {
-				errChan <- err
-				return
-			}
-			etags[partIdx] = etag
-		}(p)
-	}
-
-	wg.Wait()
-	close(errChan)
-
-	if len(errChan) > 0 {
-		return <-errChan
-	}
-
-	md5Hex, sha1Hex, err := fs.computeEncryptedHashes(n, newNonce, snapshotSize)
+	driver.Log.Printf("Syncing file (Staged): %s (size %d, parentFid %s)\n", snapshotName, snapshotSize, parentFid)
+	result, err := fs.uploader.Sync(uploadpkg.SyncRequest{
+		Path:      path,
+		Name:      snapshotName,
+		ParentFid: parentFid,
+		LocalPath: snapshotPath,
+		PlainSize: snapshotSize,
+	})
+	stats.PreDuration = result.PreDuration
+	stats.UpdateHashDuration = result.UpdateHashDuration
+	stats.UploadPartDuration = result.UploadPartDuration
+	stats.CommitDuration = result.CommitDuration
+	stats.FinishDuration = result.FinishDuration
+	stats.PartCount = result.PartCount
+	stats.UploadedBytes = result.UploadedBytes
 	if err != nil {
-		return err
-	}
-
-	finish, fid, err := fs.driver.UpdateHash(strings.ToUpper(md5Hex), strings.ToUpper(sha1Hex), pre.Data.TaskId)
-	if err != nil {
-		driver.Log.Printf("[DEBUG] UpdateHash error: %v\n", err)
-		return err
-	}
-
-	n.mu.Lock()
-	if finish {
-		driver.Log.Printf("[DEBUG] UpdateHash finish=true for %s, skip commit fallback\n", path)
-		if fid != "" {
-			n.fid = fid
-		} else {
-			n.fid = pre.Data.Fid
-		}
-		n.fileNonce = newNonce
-		n.hasNonce = true
-		n.encSize = fs.cipher.EncryptedSize(snapshotSize)
-		if n.mtime.Equal(snapshotMtime) {
-			n.isDirty = false
-		}
-		if fs.cache != nil {
-			_ = fs.cache.RemovePendingNode(path)
-		}
-		n.mu.Unlock()
-		return nil
-	}
-	n.mu.Unlock()
-
-	driver.Log.Printf("[DEBUG] UpdateHash finish=false for %s, fallback to commit/finish\n", path)
-
-	// 4. 提交
-	driver.Log.Printf("[DEBUG] UploadCommit: etags=%v\n", etags)
-	err = fs.driver.UploadCommit(pre, etags)
-	if err != nil {
-		driver.Log.Printf("[DEBUG] UploadCommit error: %v\n", err)
-		return err
-	}
-	driver.Log.Printf("[DEBUG] UploadFinish: objKey=%s, taskId=%s\n", pre.Data.ObjKey, pre.Data.TaskId)
-	err = fs.driver.UploadFinish(pre)
-	if err != nil {
-		driver.Log.Printf("[DEBUG] UploadFinish error: %v\n", err)
 		return err
 	}
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// 5. 更新状态
-	n.fid = pre.Data.Fid
-	n.fileNonce = newNonce
+	n.fid = result.Fid
+	n.fileNonce = result.Nonce
 	n.hasNonce = true
-	n.encSize = fs.cipher.EncryptedSize(snapshotSize)
+	n.encSize = result.EncryptedSize
 	if n.mtime.Equal(snapshotMtime) {
 		n.isDirty = false
 	}
-
-	// 6. 从持久化队列移除 (仅当不再是脏节点时)
 	if fs.cache != nil && !n.isDirty {
 		_ = fs.cache.RemovePendingNode(path)
 	}
-
-	return nil
-}
-
-func (fs *QryptFS) computeEncryptedHashes(n *node, newNonce [24]byte, snapshotSize int64) (string, string, error) {
-	md5h := md5.New()
-	sha1h := sha1.New()
-
-	header := append([]byte(crypt.FileMagic), newNonce[:]...)
-	_, _ = md5h.Write(header)
-	_, _ = sha1h.Write(header)
-
-	totalRcloneBlocks := (snapshotSize + crypt.BlockDataSize - 1) / crypt.BlockDataSize
-	for i := int64(0); i < totalRcloneBlocks; i++ {
-		plaintext, err := fs.getDecryptedChunk(n, uint64(i))
-		if err != nil {
-			return "", "", err
+	if !n.isDirty {
+		if fs.staging != nil {
+			_ = fs.staging.Remove(n.localPath)
 		}
-		ciphertext, err := fs.cipher.EncryptBlock(plaintext, uint64(i), newNonce)
-		if err != nil {
-			return "", "", err
-		}
-		_, _ = md5h.Write(ciphertext)
-		_, _ = sha1h.Write(ciphertext)
+		n.localPath = ""
 	}
 
-	return hex.EncodeToString(md5h.Sum(nil)), hex.EncodeToString(sha1h.Sum(nil)), nil
+	return nil
 }
 
 // Read 读取文件内容
@@ -1158,6 +1154,18 @@ func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int)
 
 	if ofst >= node.size {
 		return 0
+	}
+	node.mu.RLock()
+	localPath := node.localPath
+	node.mu.RUnlock()
+	if localPath != "" && fs.staging != nil {
+		nRead, err := fs.staging.ReadAt(localPath, buff, ofst)
+		if err == io.EOF {
+			return nRead
+		}
+		if err == nil || nRead > 0 {
+			return nRead
+		}
 	}
 
 	// 计算涉及的分块

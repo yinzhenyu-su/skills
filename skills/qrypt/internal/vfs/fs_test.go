@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,9 +14,87 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/driver"
 )
 
+func TestFinderTrashPathHelpers(t *testing.T) {
+	if !isFinderTrashDir("/.Trashes") {
+		t.Fatal("expected /.Trashes to be treated as virtual trash dir")
+	}
+	if !isFinderTrashDir("/.Trashes/501") {
+		t.Fatal("expected /.Trashes/<uid> to be treated as virtual trash dir")
+	}
+	if !isFinderTrashPath("/.Trashes/501/file.txt") {
+		t.Fatal("expected Finder trash file path to be detected")
+	}
+	if isFinderTrashPath("/regular/path.txt") {
+		t.Fatal("regular path should not be treated as Finder trash")
+	}
+}
+
+func TestQryptFS_RenameToFinderTrashDeletesRemote(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		deleteCalls int
+		deleteBody  string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/delete" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		mu.Lock()
+		deleteCalls++
+		deleteBody = string(body)
+		mu.Unlock()
+		fmt.Fprint(w, `{"status":200,"code":0,"message":"ok"}`)
+	}))
+	defer server.Close()
+
+	oldBaseURL := driver.QuarkBaseURL
+	oldV2URL := driver.QuarkV2URL
+	oldAltURL := driver.QuarkV2AltURL
+	driver.QuarkBaseURL = server.URL
+	driver.QuarkV2URL = server.URL
+	driver.QuarkV2AltURL = server.URL
+	defer func() {
+		driver.QuarkBaseURL = oldBaseURL
+		driver.QuarkV2URL = oldV2URL
+		driver.QuarkV2AltURL = oldAltURL
+	}()
+
+	d := driver.NewQuarkDriver("mock_cookie")
+	d.SetClient(server.Client())
+
+	fs := &QryptFS{driver: d}
+	fs.nodes.Store("/doc.txt", &node{
+		fid:       "remote-fid",
+		parentFid: "root",
+		name:      "doc.txt",
+	})
+
+	if errc := fs.Rename("/doc.txt", "/.Trashes/501/doc.txt"); errc != 0 {
+		t.Fatalf("expected trash rename to succeed, got %d", errc)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if deleteCalls != 1 {
+		t.Fatalf("expected exactly one remote delete call, got %d", deleteCalls)
+	}
+	if !strings.Contains(deleteBody, `"filelist":["remote-fid"]`) {
+		t.Fatalf("expected delete request to include remote fid, got %s", deleteBody)
+	}
+	if _, ok := fs.nodes.Load("/doc.txt"); ok {
+		t.Fatal("expected original path to be removed from node cache")
+	}
+}
+
 func TestQryptFS_RenameRecursiveCache(t *testing.T) {
 	fs := &QryptFS{}
-	
+
 	// 准备测试数据
 	fs.nodes.Store("/", &node{fid: "root", isFolder: true})
 	fs.nodes.Store("/A", &node{fid: "fid_a", name: "A", isFolder: true})
@@ -28,10 +107,10 @@ func TestQryptFS_RenameRecursiveCache(t *testing.T) {
 	oldPath := "/A"
 	newPath := "/X"
 	newName := "X"
-	
+
 	v, _ := fs.nodes.Load(oldPath)
 	oldNode := v.(*node)
-	
+
 	// 执行重命名逻辑 (手动模拟 fs.Rename 中的缓存更新部分)
 	fs.nodes.Delete(oldPath)
 	oldNode.name = newName
@@ -56,7 +135,7 @@ func TestQryptFS_RenameRecursiveCache(t *testing.T) {
 				childNode := value.(*node)
 				relative := strings.TrimPrefix(path, oldPrefix)
 				newChildPath := newPrefix + relative
-				
+
 				fs.nodes.Delete(path)
 				fs.nodes.Store(newChildPath, childNode)
 			}
@@ -73,20 +152,20 @@ func TestQryptFS_RenameRecursiveCache(t *testing.T) {
 		"/X/Sub/c.dat",
 		"/Other",
 	}
-	
+
 	for _, p := range expectedPaths {
 		if _, ok := fs.nodes.Load(p); !ok {
 			t.Errorf("Expected path %s not found in cache", p)
 		}
 	}
-	
+
 	unexpectedPaths := []string{
 		"/A",
 		"/A/b.txt",
 		"/A/Sub",
 		"/A/Sub/c.dat",
 	}
-	
+
 	for _, p := range unexpectedPaths {
 		if _, ok := fs.nodes.Load(p); ok {
 			t.Errorf("Path %s should have been removed from cache", p)
@@ -125,7 +204,7 @@ func TestQryptFS_WriteSyncCoordination(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		time.Sleep(10 * time.Millisecond) // 模拟同步中的延迟
-		
+
 		n.mu.Lock()
 		n.size = 200
 		n.isDirty = true
@@ -200,7 +279,7 @@ func TestRenameDuringPendingSync_Regression(t *testing.T) {
 	fs := &QryptFS{
 		uploadChan: make(chan syncTask, 10),
 	}
-	
+
 	n := &node{
 		fid:       "test_fid",
 		parentFid: "root",
@@ -209,25 +288,25 @@ func TestRenameDuringPendingSync_Regression(t *testing.T) {
 		isDirty:   true,
 		isFolder:  false,
 	}
-	
+
 	fs.nodes.Store("/", &node{fid: "root", isFolder: true})
 	fs.nodes.Store("/old.txt", n)
-	
+
 	// 模拟已加入队列
 	fs.uploadChan <- syncTask{node: n, path: "/old.txt"}
-	
+
 	// 模拟在 worker 处理前发生重命名
 	fs.nodes.Delete("/old.txt")
 	n.name = "new.txt"
 	fs.nodes.Store("/new.txt", n)
-	
+
 	// 启动 uploadWorker (手动模拟其部分逻辑)
 	task := <-fs.uploadChan
-	
+
 	// 模拟 worker 的路径解析逻辑
 	p := task.path
 	nodeToSync := task.node
-	
+
 	actualNode, ok := fs.nodes.Load(p)
 	if !ok || actualNode != nodeToSync {
 		// 路径已失效，寻找新路径
@@ -244,7 +323,7 @@ func TestRenameDuringPendingSync_Regression(t *testing.T) {
 			t.Fatal("Node lost after rename")
 		}
 	}
-	
+
 	if p != "/new.txt" {
 		t.Errorf("Expected path /new.txt, got %s", p)
 	}
@@ -252,18 +331,18 @@ func TestRenameDuringPendingSync_Regression(t *testing.T) {
 
 func TestConcurrentSyncRequestsSameNodeDifferentPaths_Regression(t *testing.T) {
 	fs := &QryptFS{}
-	
+
 	n := &node{
-		fid:      "test_fid",
-		name:     "file.txt",
-		isDirty:  true,
+		fid:     "test_fid",
+		name:    "file.txt",
+		isDirty: true,
 	}
-	
+
 	// 现在逻辑：节点作为锁
 	if _, loaded := fs.syncing.LoadOrStore(n, struct{}{}); loaded {
 		t.Error("Should have been able to lock first time")
 	}
-	
+
 	if _, loaded := fs.syncing.LoadOrStore(n, struct{}{}); !loaded {
 		t.Error("BUG: Should have detected sync for same node")
 	}
@@ -277,12 +356,12 @@ func TestReaddir_ProtectsDirtyNodes_Regression(t *testing.T) {
 
 	// 1. 设置一个正在同步的 Dirty 节点
 	n := &node{
-		fid:       "local_fid",
-		name:      "uploading.txt",
-		size:      1000,
-		isDirty:   true,
-		isFolder:  false,
-		mtime:     time.Now(),
+		fid:      "local_fid",
+		name:     "uploading.txt",
+		size:     1000,
+		isDirty:  true,
+		isFolder: false,
+		mtime:    time.Now(),
 	}
 	fs.nodes.Store("/uploading.txt", n)
 
@@ -392,5 +471,3 @@ func TestFlush_DeduplicatesSyncTasks_Regression(t *testing.T) {
 		t.Errorf("Expected 1 task in queue after reset, got %d", len(fs.uploadChan))
 	}
 }
-
-

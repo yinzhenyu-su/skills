@@ -13,6 +13,14 @@ type CacheManager struct {
 	maxSize  int64
 }
 
+func (m *CacheManager) CacheDir() string {
+	return m.cacheDir
+}
+
+func (m *CacheManager) StagingDir() string {
+	return filepath.Join(m.cacheDir, "staging")
+}
+
 // NewCacheManager 创建缓存管理器
 func NewCacheManager(cacheDir string, dbPath string, maxSize int64) (*CacheManager, error) {
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
@@ -72,8 +80,8 @@ func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDir
 }
 
 // SavePendingNode 持久化未完成的文件节点
-func (m *CacheManager) SavePendingNode(path, fid, parentFid, name string, size int64, isFolder bool, nonce []byte) error {
-	return m.DB.SavePendingNode(path, fid, parentFid, name, size, isFolder, nonce)
+func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte) error {
+	return m.DB.SavePendingNode(path, fid, parentFid, name, localPath, size, isFolder, nonce)
 }
 
 // RemovePendingNode 移除已完成的文件节点
@@ -109,6 +117,7 @@ type CacheDBPendingNode struct {
 	Fid       string
 	ParentFid string
 	Name      string
+	LocalPath string
 	Size      int64
 	IsFolder  bool
 	Nonce     []byte

@@ -18,11 +18,11 @@ import (
 )
 
 var (
-	QuarkBaseURL = "https://drive.quark.cn/1/clouddrive"
-	QuarkV2URL   = "https://drive.quark.cn/api/v2"
+	QuarkBaseURL  = "https://drive.quark.cn/1/clouddrive"
+	QuarkV2URL    = "https://drive.quark.cn/api/v2"
 	QuarkV2AltURL = "https://drive.quark.cn/api/v2" // 修改为与 V2URL 一致，或移除不通的域名
-	QuarkReferer = "https://pan.quark.cn"
-	QuarkUA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
+	QuarkReferer  = "https://pan.quark.cn"
+	QuarkUA       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
 )
 
 // QuarkDriver 封装了与夸克网盘 API 的交互
@@ -45,12 +45,31 @@ type DirCache struct {
 	Expiry time.Time
 }
 
+func newHTTPClient() *http.Client {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+	}
+}
+
 // NewQuarkDriver 创建一个新的驱动实例
 func NewQuarkDriver(cookie string) *QuarkDriver {
 	return &QuarkDriver{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		client: newHTTPClient(),
 		cookie: cookie,
 		sem:    make(chan struct{}, 10), // 限制最大 10 个并发请求
 	}
@@ -377,7 +396,7 @@ func (d *QuarkDriver) UploadCommit(pre *UpPreResp, etags []string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// 与 Quark Web/AList 行为对齐：commit 签名包含 x-oss-user-agent
 	authMeta := fmt.Sprintf("POST\n%s\napplication/xml\n%s\nx-oss-callback:%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s/%s?uploadId=%s",
 		contentMd5, timeStr, callbackBase64, timeStr, pre.Data.Bucket, pre.Data.ObjKey, pre.Data.UploadId)
@@ -434,7 +453,6 @@ func (d *QuarkDriver) UploadFinish(pre *UpPreResp) error {
 	}
 	return d.request(http.MethodPost, "/file/upload/finish", nil, data, nil)
 }
-
 
 // CreateDir 创建文件夹
 func (d *QuarkDriver) CreateDir(pdirFid, name string) (string, error) {
@@ -546,7 +564,7 @@ func (d *QuarkDriver) ListFiles(parentFid string) ([]File, error) {
 	total := firstResp.Metadata.Total
 	allFiles := make([]File, total)
 	copy(allFiles, firstResp.Data.List)
-	
+
 	// 如果有多页，并行抓取
 	if total > size {
 		totalPages := (total + size - 1) / size
@@ -566,7 +584,7 @@ func (d *QuarkDriver) ListFiles(parentFid string) ([]File, error) {
 					"fetch_all_file":       "1",
 					"fetch_risk_file_name": "1",
 				}, nil, &resp)
-				
+
 				if err != nil {
 					errOnce.Do(func() { lastErr = err })
 					return
