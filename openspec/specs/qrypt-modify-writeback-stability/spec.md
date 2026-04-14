@@ -2,7 +2,7 @@
 
 ### Requirement: File modification MUST follow write-back state transitions
 
-The system MUST track modified files as dirty after write and MUST enqueue synchronization on flush/release-equivalent completion points.
+The system MUST track modified files as dirty after write, MUST persist the modified plaintext into a file-level local staging source, and MUST enqueue synchronization on flush/release-equivalent completion points.
 
 #### Scenario: File modified and flushed
 
@@ -25,7 +25,7 @@ After multipart upload, the system MUST report encrypted object hashes and MUST 
 
 ### Requirement: Successful sync MUST clear dirty and pending markers
 
-On successful upload finalization, the system MUST clear dirty markers and pending records, and MUST update node metadata to the latest fid/size/encryption nonce state.
+On successful upload finalization, the system MUST clear dirty markers and pending records, and MUST update node metadata to the latest fid/size/encryption nonce state, and MUST release file-level staging state that is no longer needed for retry.
 
 #### Scenario: Sync success cleanup
 
@@ -34,7 +34,7 @@ On successful upload finalization, the system MUST clear dirty markers and pendi
 
 ### Requirement: Sync failure MUST remain retryable
 
-On synchronization failure, the system MUST preserve enough local state for retry and MUST NOT falsely report completion.
+On synchronization failure, the system MUST preserve enough file-level local state for retry and MUST NOT falsely report completion.
 
 #### Scenario: Sync failure and retry
 
