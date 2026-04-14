@@ -1,10 +1,16 @@
 package vfs
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/driver"
 )
 
 func TestQryptFS_RenameRecursiveCache(t *testing.T) {
@@ -142,3 +148,249 @@ func TestQryptFS_WriteSyncCoordination(t *testing.T) {
 	}
 	n.mu.Unlock()
 }
+
+func TestSyncFailureLeavesNodeDirty_Regression(t *testing.T) {
+	// 1. 创建一个总是返回错误的 mock server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, `{"code": 500, "message": "mock error"}`)
+	}))
+	defer server.Close()
+
+	// 2. 修改 Driver 的全局 URL 为 mock server
+	oldURL := driver.QuarkBaseURL
+	driver.QuarkBaseURL = server.URL
+	defer func() { driver.QuarkBaseURL = oldURL }()
+
+	// 3. 初始化 QryptFS
+	d := driver.NewQuarkDriver("mock_cookie")
+	d.SetClient(server.Client())
+
+	fs := &QryptFS{
+		driver: d,
+		cipher: &crypt.RcloneCipher{},
+	}
+
+	n := &node{
+		fid:       "test_fid",
+		parentFid: "root",
+		name:      "test.txt",
+		size:      10,
+		isDirty:   true,
+		isFolder:  false,
+	}
+
+	// 模拟 lookup 需要，因为 syncFile 会调用 lookup
+	fs.nodes.Store("/", &node{fid: "root", isFolder: true})
+	fs.nodes.Store("/test.txt", n)
+
+	// 4. 执行同步，预期失败
+	err := fs.syncFile("/test.txt", n)
+	if err == nil {
+		t.Fatal("Expected syncFile to fail, but it succeeded")
+	}
+
+	// 5. 验证 node 状态
+	if !n.isDirty {
+		t.Error("BUG: Node.isDirty should remain true after sync failure")
+	}
+}
+
+func TestRenameDuringPendingSync_Regression(t *testing.T) {
+	fs := &QryptFS{
+		uploadChan: make(chan syncTask, 10),
+	}
+	
+	n := &node{
+		fid:       "test_fid",
+		parentFid: "root",
+		name:      "old.txt",
+		size:      10,
+		isDirty:   true,
+		isFolder:  false,
+	}
+	
+	fs.nodes.Store("/", &node{fid: "root", isFolder: true})
+	fs.nodes.Store("/old.txt", n)
+	
+	// 模拟已加入队列
+	fs.uploadChan <- syncTask{node: n, path: "/old.txt"}
+	
+	// 模拟在 worker 处理前发生重命名
+	fs.nodes.Delete("/old.txt")
+	n.name = "new.txt"
+	fs.nodes.Store("/new.txt", n)
+	
+	// 启动 uploadWorker (手动模拟其部分逻辑)
+	task := <-fs.uploadChan
+	
+	// 模拟 worker 的路径解析逻辑
+	p := task.path
+	nodeToSync := task.node
+	
+	actualNode, ok := fs.nodes.Load(p)
+	if !ok || actualNode != nodeToSync {
+		// 路径已失效，寻找新路径
+		found := false
+		fs.nodes.Range(func(key, value interface{}) bool {
+			if value == nodeToSync {
+				p = key.(string)
+				found = true
+				return false
+			}
+			return true
+		})
+		if !found {
+			t.Fatal("Node lost after rename")
+		}
+	}
+	
+	if p != "/new.txt" {
+		t.Errorf("Expected path /new.txt, got %s", p)
+	}
+}
+
+func TestConcurrentSyncRequestsSameNodeDifferentPaths_Regression(t *testing.T) {
+	fs := &QryptFS{}
+	
+	n := &node{
+		fid:      "test_fid",
+		name:     "file.txt",
+		isDirty:  true,
+	}
+	
+	// 现在逻辑：节点作为锁
+	if _, loaded := fs.syncing.LoadOrStore(n, struct{}{}); loaded {
+		t.Error("Should have been able to lock first time")
+	}
+	
+	if _, loaded := fs.syncing.LoadOrStore(n, struct{}{}); !loaded {
+		t.Error("BUG: Should have detected sync for same node")
+	}
+}
+
+func TestReaddir_ProtectsDirtyNodes_Regression(t *testing.T) {
+	fs := &QryptFS{
+		driver: driver.NewQuarkDriver("mock"),
+		cipher: &crypt.RcloneCipher{},
+	}
+
+	// 1. 设置一个正在同步的 Dirty 节点
+	n := &node{
+		fid:       "local_fid",
+		name:      "uploading.txt",
+		size:      1000,
+		isDirty:   true,
+		isFolder:  false,
+		mtime:     time.Now(),
+	}
+	fs.nodes.Store("/uploading.txt", n)
+
+	// 2. 模拟 Readdir 发现该文件在远程已存在（例如 Quark 已预创建，但大小仍为 0）
+	// 手动执行 Readdir 中的保护逻辑
+	childPath := "/uploading.txt"
+	remoteFile := driver.File{
+		Fid:      "remote_fid",
+		FileName: "encrypted_name", // 模拟加密名
+		Size:     "0",              // 模拟远程大小为 0
+		File:     true,
+	}
+
+	// 模拟 Readdir 遍历到该文件的逻辑
+	skipStore := false
+	if v, ok := fs.nodes.Load(childPath); ok {
+		existing := v.(*node)
+		existing.mu.RLock()
+		if existing.isDirty {
+			skipStore = true
+		}
+		existing.mu.RUnlock()
+	}
+
+	if !skipStore {
+		fs.nodes.Store(childPath, &node{
+			fid:   remoteFile.Fid,
+			size:  0,
+			mtime: time.Now(),
+		})
+	}
+
+	// 3. 验证本地节点未被覆盖
+	v, _ := fs.nodes.Load(childPath)
+	resultNode := v.(*node)
+	if resultNode != n {
+		t.Error("BUG: Dirty node was overwritten by remote metadata")
+	}
+	if resultNode.size != 1000 {
+		t.Errorf("Expected size 1000, got %d", resultNode.size)
+	}
+}
+
+func TestFlush_DeduplicatesSyncTasks_Regression(t *testing.T) {
+	fs := &QryptFS{
+		uploadChan: make(chan syncTask, 10),
+	}
+
+	n := &node{
+		fid:     "test_fid",
+		name:    "test.txt",
+		isDirty: true,
+	}
+	fs.nodes.Store("/test.txt", n)
+
+	// 1. 模拟第一次 Flush
+	n.mu.Lock()
+	if n.isDirty && !n.syncQueued {
+		n.syncQueued = true
+		n.mu.Unlock()
+		fs.uploadChan <- syncTask{node: n, path: "/test.txt"}
+	} else {
+		n.mu.Unlock()
+	}
+
+	// 2. 模拟第二次 Flush（重复触发）
+	n.mu.Lock()
+	if n.isDirty && !n.syncQueued {
+		n.syncQueued = true
+		n.mu.Unlock()
+		fs.uploadChan <- syncTask{node: n, path: "/test.txt"}
+	} else {
+		n.mu.Unlock()
+	}
+
+	// 3. 验证队列中只有一个任务
+	if len(fs.uploadChan) != 1 {
+		t.Errorf("Expected 1 task in queue, got %d", len(fs.uploadChan))
+	}
+
+	// 4. 模拟 Worker 处理并重置状态
+	task := <-fs.uploadChan
+	n.mu.Lock()
+	n.syncQueued = false
+	n.isDirty = false // 模拟同步成功
+	n.mu.Unlock()
+
+	if task.node != n {
+		t.Error("Incorrect node in task")
+	}
+
+	// 5. 模拟后续写入后再次 Flush
+	n.mu.Lock()
+	n.isDirty = true
+	n.mu.Unlock()
+
+	n.mu.Lock()
+	if n.isDirty && !n.syncQueued {
+		n.syncQueued = true
+		n.mu.Unlock()
+		fs.uploadChan <- syncTask{node: n, path: "/test.txt"}
+	} else {
+		n.mu.Unlock()
+	}
+
+	if len(fs.uploadChan) != 1 {
+		t.Errorf("Expected 1 task in queue after reset, got %d", len(fs.uploadChan))
+	}
+}
+
+

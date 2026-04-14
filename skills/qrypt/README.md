@@ -51,8 +51,3 @@ go build -o qrypt ./cmd/qrypt
 go test ./...
 ./qrypt --help
 ```
-
-## 已知限制
-
-- 在部分 macOS 环境中，复制到挂载目录可能出现 `Operation not permitted`，通常与系统权限或 FUSE 策略相关。
-- 若写入受限，请优先检查终端/IDE/macFUSE 权限与系统安全策略。

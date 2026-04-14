@@ -3,3 +3,4 @@
 */qrypt/cache
 skills/qrypt/qrypt
 skills/qrypt/mount-quark.sh
+.env.local

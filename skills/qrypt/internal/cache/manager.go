@@ -48,6 +48,12 @@ func (m *CacheManager) GetChunk(fid string, chunkIndex int64) ([]byte, error) {
 	return data, nil
 }
 
+// HasChunk 检查本地缓存是否存在指定分块
+func (m *CacheManager) HasChunk(fid string, chunkIndex int64) (bool, error) {
+	_, found, err := m.DB.GetChunk(fid, chunkIndex)
+	return found, err
+}
+
 // PutChunk 存储分块内容 (解密后的数据或待上传的数据)
 func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDirty bool) error {
 	suffix := ".dec.chunk"
@@ -66,8 +72,8 @@ func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDir
 }
 
 // SavePendingNode 持久化未完成的文件节点
-func (m *CacheManager) SavePendingNode(path, fid, name string, size int64, isFolder bool, nonce []byte) error {
-	return m.DB.SavePendingNode(path, fid, name, size, isFolder, nonce)
+func (m *CacheManager) SavePendingNode(path, fid, parentFid, name string, size int64, isFolder bool, nonce []byte) error {
+	return m.DB.SavePendingNode(path, fid, parentFid, name, size, isFolder, nonce)
 }
 
 // RemovePendingNode 移除已完成的文件节点
@@ -99,12 +105,13 @@ func (m *CacheManager) GetPendingNodes() ([]CacheDBPendingNode, error) {
 }
 
 type CacheDBPendingNode struct {
-	Path     string
-	Fid      string
-	Name     string
-	Size     int64
-	IsFolder bool
-	Nonce    []byte
+	Path      string
+	Fid       string
+	ParentFid string
+	Name      string
+	Size      int64
+	IsFolder  bool
+	Nonce     []byte
 }
 
 // GetDirtyChunks 获取文件的所有脏分块索引

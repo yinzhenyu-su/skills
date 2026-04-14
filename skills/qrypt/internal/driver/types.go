@@ -2,8 +2,21 @@ package driver
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
+
+type Logger interface {
+	Printf(format string, v ...interface{})
+}
+
+type StdLogger struct{}
+
+func (l *StdLogger) Printf(format string, v ...interface{}) {
+	fmt.Printf(format, v...)
+}
+
+var Log Logger = &StdLogger{}
 
 type Resp struct {
 	Status  int    `json:"status"`
@@ -15,10 +28,15 @@ type File struct {
 	Fid        string `json:"fid"`
 	FileName   string `json:"file_name"`
 	Category   int    `json:"category"`
-	Size       int64  `json:"size"`
+	Size       json.Number `json:"size"`
 	CreatedAt  int64  `json:"created_at"`
 	UpdatedAt  int64  `json:"updated_at"`
 	File       bool   `json:"file"`
+}
+
+func (f *File) Int64Size() int64 {
+	v, _ := f.Size.Int64()
+	return v
 }
 
 func (f *File) IsDir() bool {

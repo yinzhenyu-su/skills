@@ -17,10 +17,10 @@ import (
 	"time"
 )
 
-const (
+var (
 	QuarkBaseURL = "https://drive.quark.cn/1/clouddrive"
 	QuarkV2URL   = "https://drive.quark.cn/api/v2"
-	QuarkV2AltURL = "https://drive-api.quark.cn/api/v2"
+	QuarkV2AltURL = "https://drive.quark.cn/api/v2" // 修改为与 V2URL 一致，或移除不通的域名
 	QuarkReferer = "https://pan.quark.cn"
 	QuarkUA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
 )
@@ -56,10 +56,14 @@ func NewQuarkDriver(cookie string) *QuarkDriver {
 	}
 }
 
+// SetClient 用于测试，替换内部的 http.Client
+func (d *QuarkDriver) SetClient(c *http.Client) {
+	d.client = c
+}
+
 // request 发起 HTTP 请求并解析响应
 func (d *QuarkDriver) isMgmtPath(path string) bool {
-	return strings.HasPrefix(path, "/file/create_dir") ||
-		strings.HasPrefix(path, "/file/delete") ||
+	return strings.HasPrefix(path, "/file/delete") ||
 		strings.HasPrefix(path, "/file/rename") ||
 		strings.HasPrefix(path, "/file/move")
 }
@@ -435,8 +439,10 @@ func (d *QuarkDriver) UploadFinish(pre *UpPreResp) error {
 // CreateDir 创建文件夹
 func (d *QuarkDriver) CreateDir(pdirFid, name string) (string, error) {
 	data := map[string]interface{}{
-		"pdir_fid": pdirFid,
-		"dir_name": name,
+		"pdir_fid":      pdirFid,
+		"file_name":     name,
+		"dir_path":      "",
+		"dir_init_lock": false,
 	}
 	var resp struct {
 		Resp
@@ -444,12 +450,14 @@ func (d *QuarkDriver) CreateDir(pdirFid, name string) (string, error) {
 			Fid string `json:"fid"`
 		} `json:"data"`
 	}
-	// 注意：元数据操作通常使用 /api/v2 路径，这里根据调研结果尝试
-	err := d.request(http.MethodPost, "/file/create_dir", nil, data, &resp)
+	err := d.request(http.MethodPost, "/file", nil, data, &resp)
 	if err != nil {
+		Log.Printf("CreateDir API Error: %v\n", err)
 		return "", err
 	}
+
 	if resp.Status >= 400 || resp.Code != 0 {
+		Log.Printf("CreateDir Business Error: Status=%d, Code=%d, Message=%s\n", resp.Status, resp.Code, resp.Message)
 		return "", errors.New(resp.Message)
 	}
 	return resp.Data.Fid, nil
@@ -591,6 +599,18 @@ func (d *QuarkDriver) ListFiles(parentFid string) ([]File, error) {
 	return allFiles, nil
 }
 
+// RemoveDirCache 移除指定目录的缓存
+func (d *QuarkDriver) RemoveDirCache(parentFid string) {
+	d.dirCache.Delete(parentFid)
+	// 同时移除该目录下所有文件的负缓存（FindChildByName 使用）
+	d.negCache.Range(func(key, value interface{}) bool {
+		if k, ok := key.(string); ok && strings.HasPrefix(k, parentFid+":") {
+			d.negCache.Delete(key)
+		}
+		return true
+	})
+}
+
 // FindChildByName 查找子节点
 func (d *QuarkDriver) FindChildByName(parentFid, name string) (string, error) {
 	key := parentFid + ":" + name
@@ -606,7 +626,7 @@ func (d *QuarkDriver) FindChildByName(parentFid, name string) (string, error) {
 		return "", err
 	}
 
-	fmt.Printf("Debug: Searching for '%s' in FID '%s'. Found %d items:\n", name, parentFid, len(files))
+	Log.Printf("Debug: Searching for '%s' in FID '%s'. Found %d items:\n", name, parentFid, len(files))
 	for _, f := range files {
 		if f.FileName == name {
 			// 如果命中，确保清除负缓存（防止在短时间内创建同名文件的情况）
