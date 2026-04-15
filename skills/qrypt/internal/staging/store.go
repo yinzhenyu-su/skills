@@ -1,9 +1,11 @@
 package staging
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Store manages file-level local staging files used by the write-back path.
@@ -18,11 +20,59 @@ func NewStore(dir string) (*Store, error) {
 	return &Store{dir: dir}, nil
 }
 
+// diskSpaceThresholdWarn 磁盘空间警告阈值 (1GB)
+const diskSpaceThresholdWarn = 1 << 30
+// diskSpaceThresholdCrit 磁盘空间 critical 阈值 (100MB)
+const diskSpaceThresholdCrit = 100 << 20
+
+// checkDiskSpace 检查磁盘空间，返回 error 如果空间不足
+func (s *Store) checkDiskSpace() error {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(s.dir, &stat); err != nil {
+		return err
+	}
+	// Bsize is the block size on macOS; Frsize may not be available
+	blockSize := int64(stat.Bsize)
+	if blockSize == 0 {
+		blockSize = 4096 // fallback
+	}
+	avail := int64(stat.Bavail) * blockSize
+	if avail < diskSpaceThresholdCrit {
+		return &ErrDiskSpaceCritical{avail}
+	}
+	return nil
+}
+
+// ErrDiskSpaceCritical 磁盘空间严重不足
+type ErrDiskSpaceCritical struct {
+	Available int64
+}
+
+func (e *ErrDiskSpaceCritical) Error() string {
+	return "critical low disk space: available " + formatBytes(e.Available)
+}
+
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	exp := 0
+	for n >= unit {
+		n /= unit
+		exp++
+	}
+	return fmt.Sprintf("%d %cB", n, "KMGTPE"[exp])
+}
+
 func (s *Store) Path(fid string) string {
 	return filepath.Join(s.dir, fid+".staging")
 }
 
 func (s *Store) Create(fid string) (string, error) {
+	if err := s.checkDiskSpace(); err != nil {
+		return "", err
+	}
 	path := s.Path(fid)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -43,6 +93,9 @@ func (s *Store) Ensure(path string) error {
 }
 
 func (s *Store) WriteAt(path string, data []byte, off int64) (int, error) {
+	if err := s.checkDiskSpace(); err != nil {
+		return 0, err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return 0, err

@@ -96,7 +96,7 @@ func (fs *QryptFS) prefetch(n *node, startChunk uint64) {
 			}
 		}
 		mKey := fmt.Sprintf("%s_%d", n.fid, target)
-		if _, ok := fs.memCache.Load(mKey); ok {
+		if fs.memCache.Contains(mKey) {
 			continue
 		}
 
@@ -109,14 +109,14 @@ func (fs *QryptFS) prefetch(n *node, startChunk uint64) {
 func (fs *QryptFS) getDecryptedChunk(n *node, idx uint64) ([]byte, error) {
 	mKey := fmt.Sprintf("%s_%d", n.fid, idx)
 
-	if v, ok := fs.memCache.Load(mKey); ok {
-		return v.([]byte), nil
+	if v, ok := fs.memCache.Get(mKey); ok {
+		return v, nil
 	}
 
 	if fs.cache != nil {
 		data, err := fs.cache.GetChunk(n.fid, int64(idx))
 		if err == nil && len(data) > 0 {
-			fs.memCache.Store(mKey, data)
+			fs.memCache.Add(mKey, data)
 			return data, nil
 		}
 	}
@@ -131,8 +131,8 @@ func (fs *QryptFS) getDecryptedChunk(n *node, idx uint64) ([]byte, error) {
 	actual, loaded := fs.fetching.LoadOrStore(batchKey, make(chan struct{}))
 	if loaded {
 		<-actual.(chan struct{})
-		if v, ok := fs.memCache.Load(mKey); ok {
-			return v.([]byte), nil
+		if v, ok := fs.memCache.Get(mKey); ok {
+			return v, nil
 		}
 		if fs.cache != nil {
 			data, err := fs.cache.GetChunk(n.fid, int64(idx))
@@ -152,8 +152,8 @@ func (fs *QryptFS) getDecryptedChunk(n *node, idx uint64) ([]byte, error) {
 		return nil, err
 	}
 
-	if v, ok := fs.memCache.Load(mKey); ok {
-		return v.([]byte), nil
+	if v, ok := fs.memCache.Get(mKey); ok {
+		return v, nil
 	}
 	return make([]byte, 0, crypt.BlockDataSize), nil
 }
@@ -248,7 +248,7 @@ func (fs *QryptFS) fetchBatch(n *node, batchIdx uint64) error {
 		if fs.cache != nil {
 			_ = fs.cache.PutChunk(n.fid, int64(i), decBlock, false)
 		}
-		fs.memCache.Store(fmt.Sprintf("%s_%d", n.fid, i), decBlock)
+		fs.memCache.Add(fmt.Sprintf("%s_%d", n.fid, i), decBlock)
 	}
 
 	return nil

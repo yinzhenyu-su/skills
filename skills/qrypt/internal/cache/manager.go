@@ -22,6 +22,7 @@ func (m *CacheManager) StagingDir() string {
 }
 
 // NewCacheManager 创建缓存管理器
+// 注意：Maintenance() 需要在业务低峰期手动调用，详见 Maintenance() 文档
 func NewCacheManager(cacheDir string, dbPath string, maxSize int64) (*CacheManager, error) {
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return nil, err
@@ -167,9 +168,11 @@ func (m *CacheManager) EvictIfNeeded(lowWatermark int64) error {
 		return err
 	}
 
+	evicted := 0
 	for _, c := range chunks {
 		os.Remove(c.Path) // 忽略删除错误
 		m.DB.DeleteChunk(c.Fid, c.Index)
+		evicted++
 	}
 
 	return nil

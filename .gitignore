@@ -1,4 +1,6 @@
 *.db
+*.db-shm
+*.db-wal
 /cache/
 */qrypt/cache
 skills/qrypt/qrypt

@@ -4,9 +4,9 @@ As the volume of data handled by `qrypt` grows, current resource management stra
 
 ## What Changes
 
-- Implement a capacity-bounded LRU for the in-memory block cache (`memCache`).
-- Add automated SQLite maintenance (VACUUM, indexing optimization) and retention policies.
-- Introduce disk space monitoring and alerts for `dirty_chunks` to prevent disk exhaustion.
+- Replace unbounded `sync.Map` memCache with a capacity-bounded LRU using `golang-lru/v2`.
+- Add automated SQLite maintenance (VACUUM, retention policy) and disk-space checks for staging writes.
+- Introduce disk space monitoring for staging store to prevent disk exhaustion during dirty writes.
 
 ## Capabilities
 
@@ -14,10 +14,11 @@ As the volume of data handled by `qrypt` grows, current resource management stra
 - `sqlite-maintenance`: Periodic optimization and cleanup of the local metadata database.
 
 ### Modified Capabilities
-- `lru-cache`: Extend to support bounded in-memory caching in addition to disk-based LRU.
+- `lru-cache`: Extend to support bounded in-memory caching for decrypted block caching.
 
 ## Impact
 
-- `skills/qrypt/internal/cache/db.go`: Add maintenance methods.
-- `skills/qrypt/internal/vfs/fs.go`: Replace `sync.Map` with a bounded LRU for `memCache`.
-- `skills/qrypt/internal/cache/manager.go`: Integrate memory LRU into the caching lifecycle.
+- `skills/qrypt/internal/vfs/types.go`: Replace `sync.Map` with bounded `simplelru.LRU` for `memCache`.
+- `skills/qrypt/internal/vfs/read.go`: Update `getDecryptedChunk` and `fetchBatch` to use new LRU API.
+- `skills/qrypt/internal/cache/db.go`: Add `Maintenance()` method and retention policy.
+- `skills/qrypt/internal/staging/store.go`: Add disk space check before writes.

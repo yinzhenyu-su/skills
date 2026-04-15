@@ -3,6 +3,7 @@ package vfs
 import (
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2/simplelru"
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/driver"
@@ -21,6 +22,9 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ci
 			stagingStore = s
 		}
 	}
+
+	memCache, _ := simplelru.NewLRU[string, []byte](MemCacheMaxEntries, nil)
+
 	fs := &QryptFS{
 		driver:     d,
 		cache:      c,
@@ -28,6 +32,7 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ci
 		cipher:     cipher,
 		uploadChan: make(chan syncTask, 1000), // 允许排队 1000 个文件
 		staging:    stagingStore,
+		memCache:   memCache,
 	}
 	if stagingStore != nil {
 		fs.uploader = uploadpkg.NewManager(d, cipher, stagingStore)

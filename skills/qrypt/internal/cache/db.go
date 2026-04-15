@@ -2,8 +2,11 @@ package cache
 
 import (
 	"database/sql"
-	_ "modernc.org/sqlite"
+	"fmt"
 	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // CacheDB 管理缓存分块的元数据
@@ -13,9 +16,14 @@ type CacheDB struct {
 
 // NewCacheDB 初始化并返回数据库实例
 func NewCacheDB(dbPath string) (*CacheDB, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10000")
 	if err != nil {
 		return nil, err
+	}
+
+	// 启用 WAL 模式：允许读写并发，提升高并发场景下的性能
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		return nil, fmt.Errorf("failed to set WAL mode: %w", err)
 	}
 
 	// 创建元数据表
@@ -145,11 +153,29 @@ func (c *CacheDB) DeleteChunk(fid string, chunkIndex int64) error {
 	return err
 }
 
-// SavePendingNode 持久化未完成的文件节点
+// SavePendingNode 持久化未完成的文件节点（含 SQLITE_BUSY 重试）
 func (c *CacheDB) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte) error {
 	query := `INSERT OR REPLACE INTO pending_nodes (path, fid, parent_fid, name, local_path, size, is_folder, file_nonce) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := c.db.Exec(query, path, fid, parentFid, name, localPath, size, isFolder, nonce)
-	return err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(10<<uint(attempt-1)) * time.Millisecond)
+		}
+		_, err := c.db.Exec(query, path, fid, parentFid, name, localPath, size, isFolder, nonce)
+		if err == nil {
+			return nil
+		}
+		// Check if it's a SQLITE_BUSY error
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		lastErr = err
+	}
+	return fmt.Errorf("SavePendingNode exceeded retries: %w", lastErr)
+}
+
+func isSQLiteBusy(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "database is locked")
 }
 
 // RemovePendingNode 移除已完成的文件节点
@@ -288,4 +314,42 @@ func (c *CacheDB) SaveCachedName(fid, encryptedName, decryptedName string) error
 // Close 关闭数据库
 func (c *CacheDB) Close() error {
 	return c.db.Close()
+}
+
+// Maintenance 执行数据库维护：清理过期元数据并压缩空间
+func (c *CacheDB) Maintenance() error {
+	// 1. 删除 30 天未访问的非脏分块
+	result, err := c.db.Exec(`
+		DELETE FROM chunks
+		WHERE is_dirty = 0
+		AND access_time < datetime('now', '-30 days')
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to delete expired chunks: %w", err)
+	}
+	deleted, _ := result.RowsAffected()
+
+	// 2. 如果删除了大量数据，执行 VACUUM
+	if deleted > 100 {
+		if _, err := c.db.Exec("PRAGMA incremental_vacuum"); err != nil {
+			// fallback to regular VACUUM if incremental not supported
+			if _, err2 := c.db.Exec("VACUUM"); err2 != nil {
+				return fmt.Errorf("vacuum failed: %w (incremental: %v)", err2, err)
+			}
+		}
+	}
+
+	// 3. 优化查询计划 (非致命，忽略错误)
+	_, _ = c.db.Exec("PRAGMA optimize")
+
+	return nil
+}
+
+// MaintenanceStart 在后台启动维护任务
+func (c *CacheDB) MaintenanceStart() {
+	go func() {
+		if err := c.Maintenance(); err != nil {
+			fmt.Printf("Background maintenance failed: %v\n", err)
+		}
+	}()
 }

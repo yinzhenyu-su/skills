@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2/simplelru"
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
@@ -19,6 +20,8 @@ const (
 	maxAutoRetryAttempts    = 5
 	pendingNodeSaveInterval = 250 * time.Millisecond
 	pendingNodeSaveSizeStep = 1 * 1024 * 1024
+	// MemCacheMaxEntries 默认内存缓存条目数 (≈32MB，够4个prefetch batch)
+	MemCacheMaxEntries = 512
 )
 
 var errNonRetryableSync = errors.New("non-retryable sync error")
@@ -75,7 +78,7 @@ type QryptFS struct {
 	rootFid      string
 	nodes        sync.Map // path -> *node
 	fetching     sync.Map // batchKey -> chan struct{} (用于合并请求)
-	memCache     sync.Map // fid_idx -> []byte (内存二级缓存)
+	memCache     *simplelru.LRU[string, []byte] // fid_idx -> []byte (有界内存二级缓存)
 	uploadChan   chan syncTask
 	syncing      sync.Map // *node -> struct{} (防止并发同步同一节点)
 	retryState   sync.Map // *node -> int (基于节点的自动重试次数)

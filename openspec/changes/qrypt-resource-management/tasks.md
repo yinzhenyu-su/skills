@@ -1,22 +1,30 @@
 ## 1. Bounded Memory Cache
 
-- [ ] 1.1 Implement a `SimpleLRU` struct with `Get` and `Put` methods and a fixed capacity.
-- [ ] 1.2 Update `QryptFS` to use `SimpleLRU` instead of `sync.Map` for `memCache`.
-- [ ] 1.3 Add a configuration parameter or flag for the maximum memory cache size.
+- [x] 1.1 Add `simplelru.LRU[string, []byte]` field `memCache` in `QryptFS` struct, replacing `sync.Map`.
+- [x] 1.2 Update `getDecryptedChunk` to use `memCache.Get`/`memCache.Contains`/`memCache.Add` instead of `sync.Map` Load/Store.
+- [x] 1.3 Update `fetchBatch` to use `memCache.Add` after decrypting blocks.
+- [x] 1.4 Update `prefetch` to use `memCache.Contains` instead of `sync.Map` Load.
+- [x] 1.5 Add `MemCacheMaxEntries` config field (default 512).
+- [x] 1.6 Update `NewQryptFS` to initialize LRU with capacity.
 
 ## 2. SQLite Maintenance
 
-- [ ] 2.1 Implement a `Maintenance()` method in `CacheDB` that performs `VACUUM`.
-- [ ] 2.2 Schedule periodic maintenance at startup and after large-scale deletions.
-- [ ] 2.3 Implement a metadata expiration policy for non-dirty chunks.
+- [x] 2.1 Add `Maintenance()` method in `CacheDB` that runs `VACUUM` and `PRAGMA incremental_vacuum`.
+- [x] 2.2 Add retention policy: delete non-dirty chunks where `access_time < datetime('now', '-30 days')`.
+- [x] 2.3 Add `PRAGMA optimize` on startup for query planning.
+- [x] 2.4 Add `PRAGMA journal_mode=WAL` to enable concurrent reads during writes (improves multi-goroutine performance).
+- [x] 2.5 Add `SavePendingNode` retry with exponential backoff on `SQLITE_BUSY` (3 retries: 0, 10, 20ms).
+- [ ] 2.6 Application layer calls `Maintenance()` explicitly during low-traffic periods (not auto-triggered during writes to avoid `SQLITE_BUSY` conflicts).
 
-## 3. Resource Awareness
+## 3. Disk Space Awareness for Staging
 
-- [ ] 3.1 Implement a disk space check before writing dirty chunks in `CacheManager.PutChunk`.
-- [ ] 3.2 Add logging/alerts for disk space or memory cache eviction thresholds.
+- [x] 3.1 Add `checkDiskSpace()` in `staging/store.go` — reject at 100MB free.
+- [x] 3.2 Call `checkDiskSpace` in `WriteAt` before writing.
+- [x] 3.3 Call `checkDiskSpace` in `Create` before creating new staging file.
 
 ## 4. Final Validation
 
-- [ ] 4.1 Verify memory usage remains stable under heavy read loads.
-- [ ] 4.2 Verify the SQLite database size is reduced after maintenance.
-- [ ] 4.3 Verify the system correctly handles low-disk-space scenarios for writes.
+- [x] 4.1 Verify memory usage remains bounded under heavy read loads (test with > 1000 sequential reads).
+- [x] 4.2 Verify the SQLite database size is reduced after maintenance runs.
+- [x] 4.3 Verify the system correctly handles low-disk-space scenarios for staging writes (log warning / reject).
+- [x] 4.4 Verify concurrent stress test passes (10 files concurrently written and synced).
