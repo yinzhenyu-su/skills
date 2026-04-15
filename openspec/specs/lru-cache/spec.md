@@ -1,5 +1,12 @@
 ## ADDED Requirements
 
+### Requirement: Bounded In-Memory Block Cache
+The system MUST implement a capacity-bounded LRU cache for decrypted data blocks in memory (default max 512 entries ≈ ~32MB, enough for 4 prefetch batches of 128 blocks × 64KB each) to prevent excessive memory consumption.
+
+#### Scenario: Memory eviction
+- **WHEN** the in-memory cache reaches its entry limit and a new block is decrypted
+- **THEN** the least recently used block is evicted from memory (but may remain on disk cache if configured)
+
 ### Requirement: 本地磁盘分块存储
 系统必须将从云端下载或待上传的分块以文件形式存储在本地指定的缓存目录中。
 
