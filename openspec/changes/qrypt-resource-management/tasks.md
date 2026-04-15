@@ -22,9 +22,23 @@
 - [x] 3.2 Call `checkDiskSpace` in `WriteAt` before writing.
 - [x] 3.3 Call `checkDiskSpace` in `Create` before creating new staging file.
 
-## 4. Final Validation
+## 4. Staging Lifecycle Management
 
-- [x] 4.1 Verify memory usage remains bounded under heavy read loads (test with > 1000 sequential reads).
-- [x] 4.2 Verify the SQLite database size is reduced after maintenance runs.
-- [x] 4.3 Verify the system correctly handles low-disk-space scenarios for staging writes (log warning / reject).
-- [x] 4.4 Verify concurrent stress test passes (10 files concurrently written and synced).
+- [x] 4.1 Add `staging_meta` table in `CacheDB` (fid, local_path, created_at, updated_at, size, status).
+- [x] 4.2 Implement `SaveStagingMeta`, `UpdateStagingMeta`, `RemoveStagingMeta`, `GetStagingMeta` methods in `CacheDB`.
+- [x] 4.3 Add `MetaStore` interface to `staging.Store` and `SetMetaStore` setter.
+- [x] 4.4 Update `staging.Store.Create()` to call `SaveStagingMeta`.
+- [x] 4.5 Update `staging.Store.WriteAt()` and `Truncate()` to call `UpdateStagingMeta`.
+- [x] 4.6 Update `staging.Store.Remove()` to call `RemoveStagingMeta`.
+- [x] 4.7 Add `ListStagingFiles()` and `CleanupOrphanedStagingFiles()` to `staging.Store`.
+- [x] 4.8 Call `cleanupOrphanedStagingFiles()` in `NewCacheManager()` at startup.
+- [x] 4.9 Add `CleanupStagingMetas()` to `CacheManager` to clean abandoned > 24h.
+- [x] 4.10 Update `cleanupPendingEntry` in `sync.go` to also call `RemoveStagingMeta`.
+
+## 5. Final Validation
+
+- [x] 5.1 Verify memory usage remains bounded under heavy read loads (test with > 1000 sequential reads).
+- [x] 5.2 Verify the SQLite database size is reduced after maintenance runs.
+- [x] 5.3 Verify the system correctly handles low-disk-space scenarios for staging writes (log warning / reject).
+- [x] 5.4 Verify concurrent stress test passes (10 files concurrently written and synced).
+- [x] 5.5 Verify orphaned staging files are cleaned up at startup when no pending node exists.

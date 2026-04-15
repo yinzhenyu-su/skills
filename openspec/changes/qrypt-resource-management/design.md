@@ -30,6 +30,11 @@ As `qrypt` handles larger datasets, it needs more robust resource lifecycle mana
 - **Decision**: In `staging.Store.WriteAt()`, check available disk space before writing. Return error if critically low (below 100MB).
 - **Rationale**: Prevents partial/corrupt staging files if the host disk is full. Staging files hold user data before upload, so running out of disk here causes data loss.
 
+### 4. Staging File Lifecycle Management
+- **Decision**: Introduce a `staging_meta` table to track the lifecycle of every staging file (`fid`, `local_path`, `created_at`, `updated_at`, `size`, `status`). The staging store calls back into `CacheDB` to update metadata on every create, write, truncate, and remove operation.
+- **Rationale**: Without explicit lifecycle tracking, cancelled or interrupted uploads leave orphaned `.staging` files on disk indefinitely. This wastes space and creates confusion during recovery. Tracking status (`active`, `syncing`, `abandoned`) allows fine-grained cleanup policies.
+- **Cleanup Policy**: At startup (`NewCacheManager`), orphaned staging files (no corresponding `pending_node`) are deleted immediately. During `Maintenance()`, `staging_meta` entries with `status = 'abandoned'` and `updated_at` older than 24 hours are deleted along with their physical files.
+
 ## Risks / Trade-offs
 
 - [Risk] **Memory Eviction causing Thrashing** → [Mitigation] Ensure the memory cache is large enough for a typical working set (≥512 entries ≈ 32MB, covering 4 prefetch batches).

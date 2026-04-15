@@ -71,6 +71,7 @@ func (fs *QryptFS) cleanupPendingEntry(p cache.CacheDBPendingNode) {
 	if p.Fid != "" {
 		_ = fs.cache.RemovePendingNodesByFid(p.Fid)
 		_ = fs.cache.RemoveChunksByFid(p.Fid)
+		_ = fs.cache.RemoveStagingMeta(p.Fid)
 	}
 }
 

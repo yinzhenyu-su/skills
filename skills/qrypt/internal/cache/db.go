@@ -3,6 +3,7 @@ package cache
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -58,6 +59,15 @@ func NewCacheDB(dbPath string) (*CacheDB, error) {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_name_cache_encrypted_name ON name_cache(encrypted_name);
+
+	CREATE TABLE IF NOT EXISTS staging_meta (
+		fid TEXT PRIMARY KEY,
+		local_path TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		size INTEGER DEFAULT 0,
+		status TEXT DEFAULT 'active'
+	);
 	`
 	_, err = db.Exec(query)
 	if err != nil {
@@ -94,7 +104,7 @@ func (c *CacheDB) GetChunk(fid string, chunkIndex int64) (string, bool, error) {
 
 // InsertChunk 插入新分块
 func (c *CacheDB) InsertChunk(fid string, chunkIndex int64, filePath string, size int64, isDirty bool) error {
-	query := `INSERT OR REPLACE INTO chunks (fid, chunk_index, file_path, size, is_dirty, access_time) 
+	query := `INSERT OR REPLACE INTO chunks (fid, chunk_index, file_path, size, is_dirty, access_time)
 			  VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
 	_, err := c.db.Exec(query, fid, chunkIndex, filePath, size, isDirty)
 	return err
@@ -352,4 +362,125 @@ func (c *CacheDB) MaintenanceStart() {
 			fmt.Printf("Background maintenance failed: %v\n", err)
 		}
 	}()
+}
+
+// --- Staging Meta 管理 ---
+
+// StagingMeta 表示一个 staging 文件的元数据
+type StagingMeta struct {
+	Fid       string
+	LocalPath string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Size      int64
+	Status    string // "active", "syncing", "abandoned"
+}
+
+// SaveStagingMeta 保存或更新 staging 文件元数据
+func (c *CacheDB) SaveStagingMeta(fid, localPath string, size int64) error {
+	query := `INSERT INTO staging_meta (fid, local_path, size, updated_at, status)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'active')
+		ON CONFLICT(fid) DO UPDATE SET
+			local_path = excluded.local_path,
+			size = excluded.size,
+			updated_at = CURRENT_TIMESTAMP,
+			status = CASE WHEN status = 'abandoned' THEN 'active' ELSE status END`
+	_, err := c.db.Exec(query, fid, localPath, size)
+	return err
+}
+
+// UpdateStagingMeta 更新 staging 文件的 size 和 updated_at
+func (c *CacheDB) UpdateStagingMeta(fid string, size int64) error {
+	query := `UPDATE staging_meta SET size = ?, updated_at = CURRENT_TIMESTAMP WHERE fid = ?`
+	_, err := c.db.Exec(query, size, fid)
+	return err
+}
+
+// GetStagingMeta 获取 staging 文件元数据
+func (c *CacheDB) GetStagingMeta(fid string) (*StagingMeta, error) {
+	query := `SELECT fid, local_path, created_at, updated_at, size, status FROM staging_meta WHERE fid = ?`
+	var m StagingMeta
+	err := c.db.QueryRow(query, fid).Scan(&m.Fid, &m.LocalPath, &m.CreatedAt, &m.UpdatedAt, &m.Size, &m.Status)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// GetStagingMetasByStatus 获取指定状态的所有 staging 元数据
+func (c *CacheDB) GetStagingMetasByStatus(status string) ([]StagingMeta, error) {
+	query := `SELECT fid, local_path, created_at, updated_at, size, status FROM staging_meta WHERE status = ?`
+	rows, err := c.db.Query(query, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var metas []StagingMeta
+	for rows.Next() {
+		var m StagingMeta
+		if err := rows.Scan(&m.Fid, &m.LocalPath, &m.CreatedAt, &m.UpdatedAt, &m.Size, &m.Status); err != nil {
+			return nil, err
+		}
+		metas = append(metas, m)
+	}
+	return metas, nil
+}
+
+// UpdateStagingStatus 更新 staging 文件状态
+func (c *CacheDB) UpdateStagingStatus(fid, status string) error {
+	query := `UPDATE staging_meta SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE fid = ?`
+	_, err := c.db.Exec(query, status, fid)
+	return err
+}
+
+// RemoveStagingMeta 删除 staging 元数据
+func (c *CacheDB) RemoveStagingMeta(fid string) error {
+	_, err := c.db.Exec("DELETE FROM staging_meta WHERE fid = ?", fid)
+	return err
+}
+
+// CleanupStagingMetas 清理过期的 staging 记录和孤立文件
+// maxAge: abandoned 状态超过此时间则删除
+// orphanStagingFiles: staging 目录中存在的文件但没有对应 pending node
+func (c *CacheDB) CleanupStagingMetas(maxAge time.Duration, orphanFids []string) error {
+	cutoff := time.Now().Add(-maxAge)
+	cutoffStr := cutoff.Format("2006-01-02 15:04:05")
+
+	// 1. 删除 abandoned 超过 maxAge 的记录
+	rows, err := c.db.Query(`
+		SELECT fid, local_path FROM staging_meta
+		WHERE status = 'abandoned' AND updated_at < ?
+	`, cutoffStr)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var fid, localPath string
+		if err := rows.Scan(&fid, &localPath); err != nil {
+			continue
+		}
+		// 删除物理文件
+		if localPath != "" {
+			os.Remove(localPath)
+		}
+		// 删除元数据
+		c.RemoveStagingMeta(fid)
+	}
+
+	// 2. 删除孤立的 staging 文件（无 pending node 关联）
+	for _, fid := range orphanFids {
+		meta, _ := c.GetStagingMeta(fid)
+		if meta != nil && meta.Status == "active" {
+			// 标记为 abandoned，等待下次清理
+			c.UpdateStagingStatus(fid, "abandoned")
+		}
+	}
+
+	return nil
 }

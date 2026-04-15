@@ -4,13 +4,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/yinzhenyu/skills/qrypt/internal/staging"
 )
 
 // CacheManager 协调磁盘存储和元数据数据库
 type CacheManager struct {
-	DB       *CacheDB
-	cacheDir string
-	maxSize  int64
+	DB          *CacheDB
+	cacheDir    string
+	maxSize     int64
+	staging     *staging.Store
+}
+
+// CacheDBPendingNode 定义待同步的节点（兼容 db.go 的 PendingNode）
+type CacheDBPendingNode struct {
+	Path      string
+	Fid       string
+	ParentFid string
+	Name      string
+	LocalPath string
+	Size      int64
+	IsFolder  bool
+	Nonce     []byte
 }
 
 func (m *CacheManager) CacheDir() string {
@@ -19,6 +35,11 @@ func (m *CacheManager) CacheDir() string {
 
 func (m *CacheManager) StagingDir() string {
 	return filepath.Join(m.cacheDir, "staging")
+}
+
+// Staging 返回 staging store 实例
+func (m *CacheManager) Staging() *staging.Store {
+	return m.staging
 }
 
 // NewCacheManager 创建缓存管理器
@@ -33,12 +54,75 @@ func NewCacheManager(cacheDir string, dbPath string, maxSize int64) (*CacheManag
 		return nil, err
 	}
 
-	return &CacheManager{
+	m := &CacheManager{
 		DB:       db,
 		cacheDir: cacheDir,
 		maxSize:  maxSize,
-	}, nil
+	}
+
+	// 初始化 staging store
+	stagingDir := filepath.Join(cacheDir, "staging")
+	store, err := staging.NewStore(stagingDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create staging store: %w", err)
+	}
+	// 设置元数据存储回调
+	store.SetMetaStore(m)
+	m.staging = store
+
+	// 启动时清理孤立的 staging 文件
+	m.cleanupOrphanedStagingFiles()
+
+	return m, nil
 }
+
+// cleanupOrphanedStagingFiles 清理孤立的 staging 文件
+// 孤立文件：staging 目录中存在但没有对应 pending node 的文件
+func (m *CacheManager) cleanupOrphanedStagingFiles() {
+	// 获取所有 pending nodes 关联的 fid
+	pendingNodes, err := m.DB.GetPendingNodes()
+	if err != nil {
+		fmt.Printf("cleanupOrphanedStagingFiles: failed to get pending nodes: %v\n", err)
+		return
+	}
+
+	activeFids := make(map[string]bool)
+	for _, n := range pendingNodes {
+		if n.Fid != "" {
+			activeFids[n.Fid] = true
+		}
+	}
+
+	// 清理孤立文件
+	cleaned, err := m.staging.CleanupOrphanedStagingFiles(activeFids)
+	if err != nil {
+		fmt.Printf("cleanupOrphanedStagingFiles: failed: %v\n", err)
+		return
+	}
+
+	if len(cleaned) > 0 {
+		fmt.Printf("cleanupOrphanedStagingFiles: removed %d orphaned staging files\n", len(cleaned))
+	}
+}
+
+// --- MetaStore 接口实现 (供 staging.Store 回调) ---
+
+// SaveStagingMeta 保存 staging 文件元数据
+func (m *CacheManager) SaveStagingMeta(fid, localPath string, size int64) error {
+	return m.DB.SaveStagingMeta(fid, localPath, size)
+}
+
+// UpdateStagingMeta 更新 staging 文件元数据
+func (m *CacheManager) UpdateStagingMeta(fid string, size int64) error {
+	return m.DB.UpdateStagingMeta(fid, size)
+}
+
+// RemoveStagingMeta 删除 staging 文件元数据
+func (m *CacheManager) RemoveStagingMeta(fid string) error {
+	return m.DB.RemoveStagingMeta(fid)
+}
+
+// --- 以下为 CacheManager 的原有方法 ---
 
 // GetChunk 读取分块内容
 func (m *CacheManager) GetChunk(fid string, chunkIndex int64) ([]byte, error) {
@@ -113,17 +197,6 @@ func (m *CacheManager) GetPendingNodes() ([]CacheDBPendingNode, error) {
 	return result, nil
 }
 
-type CacheDBPendingNode struct {
-	Path      string
-	Fid       string
-	ParentFid string
-	Name      string
-	LocalPath string
-	Size      int64
-	IsFolder  bool
-	Nonce     []byte
-}
-
 // GetDirtyChunks 获取文件的所有脏分块索引
 func (m *CacheManager) GetDirtyChunks(fid string) ([]int64, error) {
 	return m.DB.GetDirtyChunks(fid)
@@ -176,6 +249,56 @@ func (m *CacheManager) EvictIfNeeded(lowWatermark int64) error {
 	}
 
 	return nil
+}
+
+// CleanupStagingMetas 清理过期的 staging 元数据和孤立文件
+// abandonedMaxAge: abandoned 状态超过此时间则删除文件
+func (m *CacheManager) CleanupStagingMetas(abandonedMaxAge time.Duration) error {
+	// 获取孤立的 staging fid（没有 pending node 关联）
+	pendingNodes, err := m.DB.GetPendingNodes()
+	if err != nil {
+		return err
+	}
+
+	orphanFids := []string{}
+	activeFids := make(map[string]bool)
+	for _, n := range pendingNodes {
+		if n.Fid != "" {
+			activeFids[n.Fid] = true
+		}
+	}
+
+	// 找出孤立的 fid（staging_meta 中有但 pending_nodes 中没有）
+	allMetas, err := m.DB.GetStagingMetasByStatus("active")
+	if err != nil {
+		return err
+	}
+	for _, meta := range allMetas {
+		if !activeFids[meta.Fid] {
+			orphanFids = append(orphanFids, meta.Fid)
+		}
+	}
+
+	return m.DB.CleanupStagingMetas(abandonedMaxAge, orphanFids)
+}
+
+// Maintenance 执行数据库维护
+func (m *CacheManager) Maintenance() error {
+	// 清理 staging 元数据（删除 abandoned 超过 24h 的）
+	if err := m.CleanupStagingMetas(24 * time.Hour); err != nil {
+		fmt.Printf("CleanupStagingMetas failed: %v\n", err)
+	}
+
+	return m.DB.Maintenance()
+}
+
+// MaintenanceStart 在后台启动维护任务
+func (m *CacheManager) MaintenanceStart() {
+	go func() {
+		if err := m.Maintenance(); err != nil {
+			fmt.Printf("Background maintenance failed: %v\n", err)
+		}
+	}()
 }
 
 // Close 关闭缓存管理器
