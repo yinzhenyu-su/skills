@@ -47,53 +47,171 @@ func fillVirtualTrashStat(stat *fuse.Stat_t) {
 func (fs *QryptFS) currentPathForNode(n *node) string {
 	n.mu.RLock()
 	path := n.currentPath
+	parentFid := n.parentFid
+	name := n.name
 	n.mu.RUnlock()
+
 	if path != "" {
 		return path
 	}
 
-	fs.nodes.Range(func(key, value interface{}) bool {
-		if value == n {
-			path = key.(string)
-			return false
+	// 如果路径丢失，通过 parentFid 递归向上构建，避免 O(N) 扫描
+	constructedPath := ""
+	if parentFid == "" || parentFid == fs.rootFid {
+		if name == "" {
+			constructedPath = "/"
+		} else {
+			constructedPath = "/" + name
 		}
-		return true
-	})
-	if path != "" {
-		n.mu.Lock()
-		n.currentPath = path
-		n.mu.Unlock()
+	} else {
+		// 找到父节点
+		var parentNode *node
+		if v, ok := fs.fidNodes.Load(parentFid); ok {
+			parentNode = v.(*node)
+		}
+
+		if parentNode != nil {
+			parentPath := fs.currentPathForNode(parentNode)
+			if parentPath != "" {
+				if !strings.HasSuffix(parentPath, "/") {
+					parentPath += "/"
+				}
+				constructedPath = parentPath + name
+			}
+		}
 	}
-	return path
+
+	// 验证构建的路径是否确实指向我们 (如果已被删除，不应返回假路径)
+	if constructedPath != "" {
+		if v, ok := fs.nodes.Load(constructedPath); ok && v.(*node) == n {
+			n.mu.Lock()
+			n.currentPath = constructedPath
+			n.mu.Unlock()
+			return constructedPath
+		}
+	}
+
+	return ""
 }
 
 func (fs *QryptFS) storeNode(path string, n *node) {
 	n.mu.Lock()
 	n.currentPath = path
+	if n.isFolder && n.children == nil {
+		n.children = make(map[string]*node)
+	}
 	n.mu.Unlock()
+
 	fs.nodes.Store(path, n)
+
+	// 维护父子引用，避免 O(N) 扫描
+	if path != "/" {
+		parentPath := filepath.Dir(path)
+		if v, ok := fs.nodes.Load(parentPath); ok {
+			p := v.(*node)
+			p.mu.Lock()
+			if p.children == nil {
+				p.children = make(map[string]*node)
+			}
+			p.children[filepath.Base(path)] = n
+			p.mu.Unlock()
+		}
+	}
+
+	// 维护 fid 索引 (仅针对远程节点)
+	n.mu.RLock()
+	fid := n.fid
+	n.mu.RUnlock()
+	if fid != "" && !strings.HasPrefix(fid, "local_") {
+		fs.fidNodes.Store(fid, n)
+	}
 }
 
 func (fs *QryptFS) replaceNodePath(oldPath, newPath string, n *node) {
 	if oldPath != newPath {
 		fs.nodes.Delete(oldPath)
+
+		// 更新父子关系
+		oldParent := filepath.Dir(oldPath)
+		newParent := filepath.Dir(newPath)
+		if oldParent != newParent {
+			// 移除旧父节点引用
+			if v, ok := fs.nodes.Load(oldParent); ok {
+				p := v.(*node)
+				p.mu.Lock()
+				if p.children != nil {
+					delete(p.children, filepath.Base(oldPath))
+				}
+				p.mu.Unlock()
+			}
+			// 添加到新父节点 (storeNode 会做，但我们这里显式处理逻辑更清晰)
+		} else if oldPath != "" {
+			// 仅仅是同目录下重命名
+			if v, ok := fs.nodes.Load(oldParent); ok {
+				p := v.(*node)
+				p.mu.Lock()
+				if p.children != nil {
+					delete(p.children, filepath.Base(oldPath))
+					p.children[filepath.Base(newPath)] = n
+				}
+				p.mu.Unlock()
+			}
+		}
 	}
+
 	n.mu.Lock()
 	n.currentPath = newPath
+	if n.isFolder && n.children == nil {
+		n.children = make(map[string]*node)
+	}
 	n.mu.Unlock()
+
 	fs.nodes.Store(newPath, n)
+
+	// 如果父目录变了，确保链入新父目录
+	if oldPath != newPath {
+		parentPath := filepath.Dir(newPath)
+		if v, ok := fs.nodes.Load(parentPath); ok {
+			p := v.(*node)
+			p.mu.Lock()
+			if p.children == nil {
+				p.children = make(map[string]*node)
+			}
+			p.children[filepath.Base(newPath)] = n
+			p.mu.Unlock()
+		}
+	}
 }
 
 func (fs *QryptFS) deleteNodePath(path string, n *node) {
 	fs.nodes.Delete(path)
+
+	// 从父节点移除引用
+	if path != "/" {
+		parentPath := filepath.Dir(path)
+		if v, ok := fs.nodes.Load(parentPath); ok {
+			p := v.(*node)
+			p.mu.Lock()
+			if p.children != nil {
+				delete(p.children, filepath.Base(path))
+			}
+			p.mu.Unlock()
+		}
+	}
+
 	if n == nil {
 		return
 	}
 	n.mu.Lock()
+	fid := n.fid
 	if n.currentPath == path {
 		n.currentPath = ""
 	}
 	n.mu.Unlock()
+
+	if fid != "" && !strings.HasPrefix(fid, "local_") {
+		fs.fidNodes.Delete(fid)
+	}
 }
 
 func (fs *QryptFS) persistPendingPath(oldPath, newPath string, n *node) {
@@ -123,38 +241,44 @@ func (fs *QryptFS) persistPendingPath(oldPath, newPath string, n *node) {
 }
 
 func (fs *QryptFS) renameSubtreePaths(oldPath, newPath string) {
-	oldPrefix := oldPath
-	if !strings.HasSuffix(oldPrefix, "/") {
-		oldPrefix += "/"
+	if v, ok := fs.nodes.Load(oldPath); ok {
+		n := v.(*node)
+		fs.recursiveRename(oldPath, newPath, n)
 	}
-	newPrefix := newPath
-	if !strings.HasSuffix(newPrefix, "/") {
-		newPrefix += "/"
+}
+
+func (fs *QryptFS) recursiveRename(oldPath, newPath string, n *node) {
+	// 1. 更新当前节点路径
+	fs.replaceNodePath(oldPath, newPath, n)
+	fs.persistPendingPath(oldPath, newPath, n)
+
+	if !n.isFolder {
+		return
 	}
 
-	type renameEntry struct {
-		oldPath string
-		newPath string
-		node    *node
+	// 2. 递归更新子节点
+	prefixOld := oldPath
+	if !strings.HasSuffix(prefixOld, "/") {
+		prefixOld += "/"
+	}
+	prefixNew := newPath
+	if !strings.HasSuffix(prefixNew, "/") {
+		prefixNew += "/"
 	}
 
-	var entries []renameEntry
-	fs.nodes.Range(func(key, value interface{}) bool {
-		path, ok := key.(string)
-		if !ok || !strings.HasPrefix(path, oldPrefix) {
-			return true
-		}
-		entries = append(entries, renameEntry{
-			oldPath: path,
-			newPath: newPrefix + strings.TrimPrefix(path, oldPrefix),
-			node:    value.(*node),
-		})
-		return true
-	})
+	n.mu.RLock()
+	type childEntry struct {
+		name  string
+		child *node
+	}
+	var children []childEntry
+	for name, child := range n.children {
+		children = append(children, childEntry{name, child})
+	}
+	n.mu.RUnlock()
 
-	for _, entry := range entries {
-		fs.replaceNodePath(entry.oldPath, entry.newPath, entry.node)
-		fs.persistPendingPath(entry.oldPath, entry.newPath, entry.node)
+	for _, c := range children {
+		fs.recursiveRename(prefixOld+c.name, prefixNew+c.name, c.child)
 	}
 }
 
@@ -248,6 +372,10 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 			decSize, _ := fs.cipher.DecryptedSize(f.Int64Size())
 			modTime := f.ModTime()
 			driver.Log.Printf("[FUSE] lookup: creating node for '%s' (FID='%s') with parentFid='%s'\n", decName, f.Fid, currentFid)
+			lastCheck := time.Time{}
+			if !f.IsDir() {
+				lastCheck = time.Now()
+			}
 			n := &node{
 				fid:               f.Fid,
 				parentFid:         currentFid,
@@ -259,7 +387,7 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 				mtime:             modTime,
 				baseServerMtime:   modTime.UnixMilli(),
 				baseServerSize:    decSize,
-				lastMetadataCheck: time.Now(),
+				lastMetadataCheck: lastCheck,
 			}
 			fs.storeNode(currentPath, n)
 			currentFid = f.Fid
@@ -332,7 +460,20 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 
 	for _, f := range remoteFiles {
 		seenFids[f.Fid] = true
-		decName, _ := fs.cipher.DecryptSegment(f.FileName)
+		
+		decName := ""
+		// 1. 优先使用缓存中已知的解密名称
+		if v, ok := fs.fidNodes.Load(f.Fid); ok {
+			pn := v.(*node)
+			pn.mu.RLock()
+			decName = pn.name
+			pn.mu.RUnlock()
+		}
+		// 2. 如果未知，则进行昂贵的解密
+		if decName == "" {
+			decName, _ = fs.cipher.DecryptSegment(f.FileName)
+		}
+		
 		remoteMap[decName] = f
 	}
 
@@ -347,19 +488,16 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		node *node
 	}
 	var localEntries []nodeEntry
-	fs.nodes.Range(func(key, value interface{}) bool {
-		p := key.(string)
-		if p == parentPath {
-			return true
+
+	// 通过 parentNode.children 直接获取子节点，避免全局 O(N) 扫描
+	if v, ok := fs.nodes.Load(parentPath); ok {
+		p := v.(*node)
+		p.mu.RLock()
+		for name, child := range p.children {
+			localEntries = append(localEntries, nodeEntry{path: prefix + name, node: child})
 		}
-		if strings.HasPrefix(p, prefix) {
-			rel := strings.TrimPrefix(p, prefix)
-			if !strings.Contains(rel, "/") {
-				localEntries = append(localEntries, nodeEntry{path: p, node: value.(*node)})
-			}
-		}
-		return true
-	})
+		p.mu.RUnlock()
+	}
 
 	seenLocalNames := make(map[string]bool)
 	for _, entry := range localEntries {
@@ -550,137 +688,54 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 
 	n.mu.RLock()
 	lastCheck := n.lastMetadataCheck
+	childCount := len(n.children)
 	n.mu.RUnlock()
 
-	var files []driver.File
-	var err error
+	// 增加防御逻辑：如果子节点为空，且不是刚刚检查过(1s内)，则强制刷新一次
+	forceRefresh := childCount == 0 && time.Since(lastCheck) > 1*time.Second
 
-	if time.Since(lastCheck) > MetadataTTL {
-		files, err = fs.driver.ListFiles(n.fid)
+	if time.Since(lastCheck) > MetadataTTL || forceRefresh {
+		files, err := fs.driver.ListFiles(n.fid)
 		if err != nil {
-			return -fuse.EIO
-		}
-		fs.MergeRemoteChanges(path, n.fid, files)
-		n.mu.Lock()
-		n.lastMetadataCheck = time.Now()
-		n.mu.Unlock()
-	} else {
-		files, err = fs.driver.ListFiles(n.fid)
-		if err != nil {
-			return -fuse.EIO
+			driver.Log.Printf("[FUSE] Readdir ListFiles failed for %s: %v\n", path, err)
+			// 如果获取失败，仍然尝试用本地缓存展示
+		} else {
+			fs.MergeRemoteChanges(path, n.fid, files)
+			n.mu.Lock()
+			n.lastMetadataCheck = time.Now()
+			n.mu.Unlock()
 		}
 	}
 
 	uid, gid, _ := fuse.Getcontext()
 
-	seen := make(map[string]bool)
-	for _, f := range files {
-		decName := ""
-		if fs.cache != nil {
-			if cached, ok, cerr := fs.cache.GetCachedName(f.Fid, f.FileName); cerr == nil && ok {
-				decName = cached
-			}
-		}
-		if decName == "" {
-			decName, err = fs.cipher.DecryptSegment(f.FileName)
-			if err != nil {
-				driver.Log.Printf("[FUSE] DecryptSegment failed for '%s': %v\n", f.FileName, err)
-				continue
-			}
-			if fs.cache != nil {
-				_ = fs.cache.SaveCachedName(f.Fid, f.FileName, decName)
-			}
-		}
+	// 使用父子引用，避免 O(N) 扫描，且能够展示本地尚未同步的文件
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	for name, child := range n.children {
+		child.mu.RLock()
+		isFolder := child.isFolder
+		size := child.size
+		mtime := child.mtime
+		child.mu.RUnlock()
 
 		stat := &fuse.Stat_t{}
 		stat.Uid = uid
 		stat.Gid = gid
 
-		decSize, _ := fs.cipher.DecryptedSize(f.Int64Size())
-		modTime := f.ModTime()
-		if f.IsDir() {
-			stat.Mode = fuse.S_IFDIR | 0777
+		if isFolder {
+			stat.Mode = fuse.S_IFDIR | 0755
 		} else {
-			stat.Mode = fuse.S_IFREG | 0666
-			stat.Size = decSize
+			stat.Mode = fuse.S_IFREG | 0644
+			stat.Size = size
 		}
-		stat.Mtim = fuse.NewTimespec(modTime)
+		stat.Mtim = fuse.NewTimespec(mtime)
 		stat.Atim = stat.Mtim
 		stat.Ctim = stat.Mtim
 
-		childPath := path
-		if !strings.HasSuffix(childPath, "/") {
-			childPath += "/"
-		}
-		childPath += decName
-
-		// 保护逻辑：如果本地已有该路径的 Dirty 节点，不覆盖它
-		skipStore := false
-		if v, ok := fs.nodes.Load(childPath); ok {
-			existing := v.(*node)
-			existing.mu.RLock()
-			if existing.isDirty {
-				skipStore = true
-			}
-			existing.mu.RUnlock()
-		}
-
-		if !skipStore {
-			fs.storeNode(childPath, &node{
-				fid:         f.Fid,
-				parentFid:   n.fid,
-				name:        decName,
-				size:        decSize,
-				currentPath: childPath,
-				isFolder:    f.IsDir(),
-				mtime:       modTime,
-			})
-		}
-
-		seen[decName] = true
-		fill(decName, stat, 0)
+		fill(name, stat, 0)
 	}
-
-	// 补充本地存在但服务器上尚未出现的节点（例如正在同步中的新文件）
-	prefix := path
-	if !strings.HasSuffix(prefix, "/") {
-		prefix += "/"
-	}
-	fs.nodes.Range(func(key, value interface{}) bool {
-		childPath, ok := key.(string)
-		if !ok || !strings.HasPrefix(childPath, prefix) || childPath == prefix {
-			return true
-		}
-
-		relPath := strings.TrimPrefix(childPath, prefix)
-		if strings.Contains(relPath, "/") {
-			return true // 深度超过一级
-		}
-
-		if seen[relPath] {
-			return true
-		}
-
-		childNode := value.(*node)
-		stat := &fuse.Stat_t{}
-		stat.Uid = uid
-		stat.Gid = gid
-
-		childNode.mu.RLock()
-		if childNode.isFolder {
-			stat.Mode = fuse.S_IFDIR | 0777
-		} else {
-			stat.Mode = fuse.S_IFREG | 0666
-			stat.Size = childNode.size
-		}
-		stat.Mtim = fuse.NewTimespec(childNode.mtime)
-		childNode.mu.RUnlock()
-		stat.Atim = stat.Mtim
-		stat.Ctim = stat.Mtim
-
-		fill(relPath, stat, 0)
-		return true
-	})
 
 	return 0
 }

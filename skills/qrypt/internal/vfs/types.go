@@ -51,8 +51,9 @@ type node struct {
 	lastReadBlock   int64     // 上次读取的块索引
 	readSeqCount    int       // 连续顺序读取的块数
 	lastPendingSave time.Time
-	lastPendingSize int64
-	mu              sync.RWMutex
+	lastPendingSize   int64
+	children          map[string]*node // 子节点缓存 (name -> *node), 避免 O(N) 扫描
+	mu                sync.RWMutex
 }
 
 type syncTask struct {
@@ -86,6 +87,7 @@ type QryptFS struct {
 	cipher       *crypt.RcloneCipher
 	rootFid      string
 	nodes        sync.Map // path -> *node
+	fidNodes     sync.Map // fid -> *node (用于快速反查)
 	fetching     sync.Map // batchKey -> chan struct{} (用于合并请求)
 	memCache     *simplelru.LRU[string, []byte] // fid_idx -> []byte (有界内存二级缓存)
 	uploadChan   chan syncTask

@@ -188,36 +188,13 @@ func (fs *QryptFS) uploadWorker() {
 
 func (fs *QryptFS) cleanupLocalUploadState(path string, n *node, isDir bool) {
 	if isDir {
-		prefix := path
-		if !strings.HasSuffix(prefix, "/") {
-			prefix += "/"
-		}
-
-		type nodeEntry struct {
-			path string
-			node *node
-		}
-		var entries []nodeEntry
-		fs.nodes.Range(func(key, value interface{}) bool {
-			p, ok := key.(string)
-			if !ok {
-				return true
-			}
-			if p == path || strings.HasPrefix(p, prefix) {
-				entries = append(entries, nodeEntry{path: p, node: value.(*node)})
-			}
-			return true
-		})
-		for _, entry := range entries {
-			fs.deleteNodePath(entry.path, entry.node)
-			entry.node.mu.Lock()
-			entry.node.syncQueued = false
-			entry.node.isDirty = false
-			entry.node.mu.Unlock()
-			fs.retryState.Delete(entry.node)
-		}
+		fs.recursiveCleanup(path, n)
 
 		if fs.cache != nil {
+			prefix := path
+			if !strings.HasSuffix(prefix, "/") {
+				prefix += "/"
+			}
 			if fs.staging != nil {
 				pending, err := fs.cache.GetPendingNodes()
 				if err == nil {
@@ -249,6 +226,35 @@ func (fs *QryptFS) cleanupLocalUploadState(path string, n *node, isDir bool) {
 	if fs.staging != nil {
 		_ = fs.staging.Remove(localPath)
 	}
+}
+
+func (fs *QryptFS) recursiveCleanup(path string, n *node) {
+	prefix := path
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	n.mu.RLock()
+	type childEntry struct {
+		name  string
+		child *node
+	}
+	var children []childEntry
+	for name, child := range n.children {
+		children = append(children, childEntry{name, child})
+	}
+	n.mu.RUnlock()
+
+	for _, c := range children {
+		fs.recursiveCleanup(prefix+c.name, c.child)
+	}
+
+	fs.deleteNodePath(path, n)
+	n.mu.Lock()
+	n.syncQueued = false
+	n.isDirty = false
+	n.mu.Unlock()
+	fs.retryState.Delete(n)
 }
 
 func (fs *QryptFS) maybeSavePendingNodeLocked(path string, n *node, force bool) error {
