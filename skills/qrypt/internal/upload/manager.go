@@ -47,6 +47,7 @@ func NewManager(d *driver.QuarkDriver, c *crypt.RcloneCipher, s *staging.Store) 
 
 // deleteExistingFileByName lists files in parentFid and deletes any file with matching encrypted name.
 // This prevents duplicate files with (1) suffix when re-uploading an edited file.
+// It also invalidates the directory cache before listing to ensure fresh data.
 func (m *Manager) deleteExistingFileByName(parentFid, encName string) error {
 	// Skip for root directory or empty parent
 	if parentFid == "" || parentFid == "0" || parentFid == "root" {
@@ -59,6 +60,10 @@ func (m *Manager) deleteExistingFileByName(parentFid, encName string) error {
 			driver.Log.Printf("deleteExistingFileByName: recovered from panic: %v\n", r)
 		}
 	}()
+
+	// Invalidate directory cache before listing to ensure we see the latest state.
+	// This prevents stale cache from hiding existing files and causing duplicates.
+	m.driver.RemoveDirCache(parentFid)
 
 	files, err := m.driver.ListFiles(parentFid)
 	if err != nil {
@@ -73,6 +78,8 @@ func (m *Manager) deleteExistingFileByName(parentFid, encName string) error {
 				driver.Log.Printf("deleteExistingFileByName: warning: failed to delete existing file: %v\n", err)
 				return nil // Don't fail the sync if delete fails
 			}
+			// Invalidate cache again after deletion so subsequent ListFiles sees the change
+			m.driver.RemoveDirCache(parentFid)
 			return nil // Only delete first match
 		}
 	}
