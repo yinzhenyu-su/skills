@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/driver"
 )
 
@@ -107,12 +109,14 @@ func (fs *QryptFS) persistPendingPath(oldPath, newPath string, n *node) {
 	localPath := n.localPath
 	size := n.size
 	nonce := append([]byte(nil), n.fileNonce[:]...)
+	baseMtime := n.baseServerMtime
+	baseSize := n.baseServerSize
 	n.mu.RUnlock()
 	if !shouldSave {
 		return
 	}
 
-	_ = fs.cache.SavePendingNode(newPath, fid, parentFid, name, localPath, size, false, nonce)
+	_ = fs.cache.SavePendingNode(newPath, fid, parentFid, name, localPath, size, false, nonce, baseMtime, baseSize)
 	if oldPath != "" && oldPath != newPath {
 		_ = fs.cache.RemovePendingNode(oldPath)
 	}
@@ -157,12 +161,41 @@ func (fs *QryptFS) renameSubtreePaths(oldPath, newPath string) {
 func (fs *QryptFS) lookup(path string) (*node, int) {
 	if v, ok := fs.nodes.Load(path); ok {
 		n := v.(*node)
+
+		n.mu.RLock()
+		isFolder := n.isFolder
+		lastCheck := n.lastMetadataCheck
+		isDirty := n.isDirty
+		fid := n.fid
+		parentFid := n.parentFid
+		n.mu.RUnlock()
+
 		// For synced nodes (non-local fid), verify the file still exists on server.
-		// If not found, we still return the cached node rather than deleting it,
-		// to handle cases where server hasn't propagated the fid yet.
-		if !strings.HasPrefix(n.fid, "local_") {
-			if !fs.fileExistsOnServer(n.fid, n.parentFid) {
-				driver.Log.Printf("lookup: file %s (fid=%s) not found on server, using cached node\n", path, n.fid)
+		// If TTL expired, we refresh metadata.
+		if !strings.HasPrefix(fid, "local_") {
+			if !isFolder && !isDirty && time.Since(lastCheck) > MetadataTTL {
+				// Refresh single file metadata
+				files, err := fs.driver.ListFiles(parentFid)
+				if err == nil {
+					for _, f := range files {
+						if f.Fid == fid {
+							decSize, _ := fs.cipher.DecryptedSize(f.Int64Size())
+							n.mu.Lock()
+							n.size = decSize
+							n.encSize = f.Int64Size()
+							n.mtime = f.ModTime()
+							n.baseServerMtime = f.ModTime().UnixMilli()
+							n.baseServerSize = decSize
+							n.lastMetadataCheck = time.Now()
+							n.mu.Unlock()
+							break
+						}
+					}
+				}
+			}
+
+			if path != "/" && !fs.fileExistsOnServer(fid, parentFid) {
+				driver.Log.Printf("lookup: file %s (fid=%s) not found on server, using cached node\n", path, fid)
 			}
 			return n, 0
 		}
@@ -216,14 +249,17 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 			modTime := f.ModTime()
 			driver.Log.Printf("[FUSE] lookup: creating node for '%s' (FID='%s') with parentFid='%s'\n", decName, f.Fid, currentFid)
 			n := &node{
-				fid:         f.Fid,
-				parentFid:   currentFid,
-				name:        decName,
-				size:        decSize,
-				encSize:     f.Int64Size(),
-				currentPath: currentPath,
-				isFolder:    f.IsDir(),
-				mtime:       modTime,
+				fid:               f.Fid,
+				parentFid:         currentFid,
+				name:              decName,
+				size:              decSize,
+				encSize:           f.Int64Size(),
+				currentPath:       currentPath,
+				isFolder:          f.IsDir(),
+				mtime:             modTime,
+				baseServerMtime:   modTime.UnixMilli(),
+				baseServerSize:    decSize,
+				lastMetadataCheck: time.Now(),
 			}
 			fs.storeNode(currentPath, n)
 			currentFid = f.Fid
@@ -240,6 +276,224 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 		return v.(*node), 0
 	}
 	return nil, -fuse.ENOENT
+}
+
+type opsPayload struct {
+	Fid       string   `json:"fid,omitempty"`
+	Fids      []string `json:"fids,omitempty"`
+	ParentFid string   `json:"parent_fid,omitempty"`
+	Name      string   `json:"name,omitempty"`
+}
+
+func (fs *QryptFS) recoverPendingOps() {
+	if fs.cache == nil {
+		return
+	}
+	db, ok := fs.cache.GetDB().(*cache.CacheDB)
+	if !ok || db == nil {
+		return
+	}
+	logs, err := db.GetPendingOpsLogs()
+	if err != nil {
+		driver.Log.Printf("recoverPendingOps: failed to get logs: %v\n", err)
+		return
+	}
+
+	for _, l := range logs {
+		driver.Log.Printf("recoverPendingOps: retrying %s (id=%d) %s -> %s\n", l.OpType, l.ID, l.SourcePath, l.TargetPath)
+		var p opsPayload
+		_ = json.Unmarshal([]byte(l.Payload), &p)
+
+		var err error
+		switch l.OpType {
+		case "MKDIR":
+			_, err = fs.driver.CreateDir(p.ParentFid, p.Name)
+		case "UNLINK", "RMDIR":
+			err = fs.driver.Delete(p.Fids)
+		case "RENAME":
+			if p.ParentFid != "" {
+				_ = fs.driver.Move(p.Fids, p.ParentFid)
+			}
+			err = fs.driver.Rename(p.Fids[0], p.Name)
+		}
+
+		if err == nil {
+			driver.Log.Printf("recoverPendingOps: retry %d (%s) SUCCEEDED\n", l.ID, l.OpType)
+			_ = db.UpdateOpsLogStatus(l.ID, "DONE")
+		} else {
+			driver.Log.Printf("recoverPendingOps: retry %d failed: %v\n", l.ID, err)
+		}
+	}
+}
+
+func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remoteFiles []driver.File) {
+	seenFids := make(map[string]bool)
+	remoteMap := make(map[string]driver.File)
+
+	for _, f := range remoteFiles {
+		seenFids[f.Fid] = true
+		decName, _ := fs.cipher.DecryptSegment(f.FileName)
+		remoteMap[decName] = f
+	}
+
+	// 1. 处理本地已有的节点：更新或冲突检测
+	prefix := parentPath
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	type nodeEntry struct {
+		path string
+		node *node
+	}
+	var localEntries []nodeEntry
+	fs.nodes.Range(func(key, value interface{}) bool {
+		p := key.(string)
+		if p == parentPath {
+			return true
+		}
+		if strings.HasPrefix(p, prefix) {
+			rel := strings.TrimPrefix(p, prefix)
+			if !strings.Contains(rel, "/") {
+				localEntries = append(localEntries, nodeEntry{path: p, node: value.(*node)})
+			}
+		}
+		return true
+	})
+
+	seenLocalNames := make(map[string]bool)
+	for _, entry := range localEntries {
+		n := entry.node
+		n.mu.RLock()
+		name := n.name
+		fid := n.fid
+		isDirty := n.isDirty
+		baseMtime := n.baseServerMtime
+		n.mu.RUnlock()
+
+		seenLocalNames[name] = true
+
+		rf, exists := remoteMap[name]
+		if !exists {
+			// 远端已删除
+			if !strings.HasPrefix(fid, "local_") {
+				if !isDirty {
+					driver.Log.Printf("MergeRemoteChanges: remote deleted %s, removing local node\n", entry.path)
+					fs.deleteNodePath(entry.path, n)
+				} else {
+					// 冲突：远端删了，但我本地改了。将 fid 转为 local_ 保证继续上传为新文件
+					driver.Log.Printf("MergeRemoteChanges: CONFLICT (remote deleted, local dirty) for %s. Turning into local node.\n", entry.path)
+					n.mu.Lock()
+					if !strings.HasPrefix(n.fid, "local_") {
+						n.fid = "local_" + n.name + "_" + fmt.Sprint(time.Now().UnixNano())
+					}
+					n.mu.Unlock()
+				}
+			}
+			continue
+		}
+
+		// 远端存在
+		if !strings.HasPrefix(fid, "local_") {
+			if rf.Fid != fid {
+				// FID 变了（可能是删了重建），按更新处理
+				driver.Log.Printf("MergeRemoteChanges: FID changed for %s (%s -> %s)\n", entry.path, fid, rf.Fid)
+			}
+
+			remoteMtime := rf.ModTime().UnixMilli()
+			if remoteMtime > baseMtime {
+				if !isDirty {
+					// 纯远端更新
+					decSize, _ := fs.cipher.DecryptedSize(rf.Int64Size())
+					n.mu.Lock()
+					n.fid = rf.Fid
+					n.size = decSize
+					n.encSize = rf.Int64Size()
+					n.mtime = rf.ModTime()
+					n.baseServerMtime = remoteMtime
+					n.baseServerSize = decSize
+					n.lastMetadataCheck = time.Now()
+					n.mu.Unlock()
+					// 失效缓存
+					if fs.cache != nil {
+						_ = fs.cache.RemoveChunksByFid(fid)
+					}
+					driver.Log.Printf("MergeRemoteChanges: updated %s from server\n", entry.path)
+				} else {
+					// 冲突：双向改
+					driver.Log.Printf("MergeRemoteChanges: CONFLICT (both modified) for %s. Triggering side-by-side rename.\n", entry.path)
+					fs.resolveConflict(entry.path, n, rf)
+				}
+			}
+		} else {
+			// 本地是 local_，但远端出现了同名文件（可能是别人上传了同名文件）
+			driver.Log.Printf("MergeRemoteChanges: CONFLICT (local new, remote exists) for %s. Triggering side-by-side rename.\n", entry.path)
+			fs.resolveConflict(entry.path, n, rf)
+		}
+	}
+
+	// 2. 处理远端有但本地没有的新文件
+	for name, rf := range remoteMap {
+		if seenLocalNames[name] {
+			continue
+		}
+
+		childPath := prefix + name
+		decSize, _ := fs.cipher.DecryptedSize(rf.Int64Size())
+		modTime := rf.ModTime()
+		fs.storeNode(childPath, &node{
+			fid:               rf.Fid,
+			parentFid:         parentFid,
+			name:              name,
+			size:              decSize,
+			encSize:           rf.Int64Size(),
+			currentPath:       childPath,
+			isFolder:          rf.IsDir(),
+			mtime:             modTime,
+			baseServerMtime:   modTime.UnixMilli(),
+			baseServerSize:    decSize,
+			lastMetadataCheck: time.Now(),
+		})
+		driver.Log.Printf("MergeRemoteChanges: added new remote file %s\n", childPath)
+	}
+}
+
+func (fs *QryptFS) resolveConflict(path string, n *node, rf driver.File) {
+	// 1. 重命名本地脏节点
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(path, ext)
+	conflictPath := fmt.Sprintf("%s [Local Conflict %s]%s", base, time.Now().Format("20060102_150405"), ext)
+
+	driver.Log.Printf("resolveConflict: Renaming local %s -> %s\n", path, conflictPath)
+
+	n.mu.Lock()
+	newName := filepath.Base(conflictPath)
+	// 强制变为 local_ fid 以重新上传
+	if !strings.HasPrefix(n.fid, "local_") {
+		n.fid = "local_" + newName + "_" + fmt.Sprint(time.Now().UnixNano())
+	}
+	n.name = newName
+	n.mu.Unlock()
+
+	fs.replaceNodePath(path, conflictPath, n)
+	fs.persistPendingPath(path, conflictPath, n)
+
+	// 2. 为原路径拉取远端节点
+	decSize, _ := fs.cipher.DecryptedSize(rf.Int64Size())
+	modTime := rf.ModTime()
+	fs.storeNode(path, &node{
+		fid:               rf.Fid,
+		parentFid:         n.parentFid,
+		name:              filepath.Base(path),
+		size:              decSize,
+		encSize:           rf.Int64Size(),
+		currentPath:       path,
+		isFolder:          rf.IsDir(),
+		mtime:             modTime,
+		baseServerMtime:   modTime.UnixMilli(),
+		baseServerSize:    decSize,
+		lastMetadataCheck: time.Now(),
+	})
 }
 
 // Getattr 拦截元数据请求
@@ -294,9 +548,27 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 		return errc
 	}
 
-	files, err := fs.driver.ListFiles(n.fid)
-	if err != nil {
-		return -fuse.EIO
+	n.mu.RLock()
+	lastCheck := n.lastMetadataCheck
+	n.mu.RUnlock()
+
+	var files []driver.File
+	var err error
+
+	if time.Since(lastCheck) > MetadataTTL {
+		files, err = fs.driver.ListFiles(n.fid)
+		if err != nil {
+			return -fuse.EIO
+		}
+		fs.MergeRemoteChanges(path, n.fid, files)
+		n.mu.Lock()
+		n.lastMetadataCheck = time.Now()
+		n.mu.Unlock()
+	} else {
+		files, err = fs.driver.ListFiles(n.fid)
+		if err != nil {
+			return -fuse.EIO
+		}
 	}
 
 	uid, gid, _ := fuse.Getcontext()
@@ -428,18 +700,36 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 	}
 
 	encName := fs.cipher.EncryptSegment(name)
+
+	var logID int64
+	if fs.cache != nil {
+		if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
+			payload, _ := json.Marshal(opsPayload{ParentFid: parentNode.fid, Name: encName})
+			logID, _ = db.AddOpsLogEntry("MKDIR", "", path, string(payload))
+		}
+	}
+
 	fid, err := fs.driver.CreateDir(parentNode.fid, encName)
 	if err != nil {
 		return -fuse.EIO
 	}
 
+	if logID > 0 && fs.cache != nil {
+		if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
+			_ = db.UpdateOpsLogStatus(logID, "DONE")
+		}
+	}
+
 	fs.storeNode(path, &node{
-		fid:         fid,
-		parentFid:   parentNode.fid,
-		name:        name,
-		currentPath: path,
-		isFolder:    true,
-		mtime:       time.Now(),
+		fid:               fid,
+		parentFid:         parentNode.fid,
+		name:              name,
+		currentPath:       path,
+		isFolder:          true,
+		mtime:             time.Now(),
+		baseServerMtime:   time.Now().UnixMilli(),
+		baseServerSize:    0,
+		lastMetadataCheck: time.Now(),
 	})
 	fs.driver.RemoveDirCache(parentNode.fid)
 
@@ -462,10 +752,24 @@ func (fs *QryptFS) Unlink(path string) (errc int) {
 	}
 
 	if !strings.HasPrefix(n.fid, "local_") {
+		var logID int64
+		if fs.cache != nil {
+			if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
+				payload, _ := json.Marshal(opsPayload{Fids: []string{n.fid}})
+				logID, _ = db.AddOpsLogEntry("UNLINK", path, "", string(payload))
+			}
+		}
+
 		err := fs.driver.Delete([]string{n.fid})
 		if err != nil {
 			driver.Log.Printf("Unlink failed for %s (fid=%s): %v\n", path, n.fid, err)
 			return -fuse.EIO
+		}
+
+		if logID > 0 && fs.cache != nil {
+			if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
+				_ = db.UpdateOpsLogStatus(logID, "DONE")
+			}
 		}
 	}
 
@@ -490,10 +794,24 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 	}
 
 	if !strings.HasPrefix(n.fid, "local_") {
+		var logID int64
+		if fs.cache != nil {
+			if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
+				payload, _ := json.Marshal(opsPayload{Fids: []string{n.fid}})
+				logID, _ = db.AddOpsLogEntry("RMDIR", path, "", string(payload))
+			}
+		}
+
 		err := fs.driver.Delete([]string{n.fid})
 		if err != nil {
 			driver.Log.Printf("Rmdir failed for %s (fid=%s): %v\n", path, n.fid, err)
 			return -fuse.EIO
+		}
+
+		if logID > 0 && fs.cache != nil {
+			if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
+				_ = db.UpdateOpsLogStatus(logID, "DONE")
+			}
 		}
 	}
 
@@ -520,6 +838,22 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 	newParent := filepath.Dir(newPath)
 	newName := filepath.Base(newPath)
 	isLocal := strings.HasPrefix(oldNode.fid, "local_")
+
+	var logID int64
+	if !isLocal && fs.cache != nil {
+		if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
+			var moveFid string
+			if oldParent != newParent {
+				np, ec := fs.lookup(newParent)
+				if ec == 0 {
+					moveFid = np.fid
+				}
+			}
+			encName := fs.cipher.EncryptSegment(newName)
+			payload, _ := json.Marshal(opsPayload{Fids: []string{oldNode.fid}, ParentFid: moveFid, Name: encName})
+			logID, _ = db.AddOpsLogEntry("RENAME", oldPath, newPath, string(payload))
+		}
+	}
 
 	if oldParent != newParent {
 		newParentNode, errc := fs.lookup(newParent)
@@ -550,6 +884,12 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 		err := fs.driver.Rename(oldNode.fid, encName)
 		if err != nil {
 			return -fuse.EIO
+		}
+	}
+
+	if logID > 0 && fs.cache != nil {
+		if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
+			_ = db.UpdateOpsLogStatus(logID, "DONE")
 		}
 	}
 

@@ -27,12 +27,14 @@ var (
 
 // QuarkDriver 封装了与夸克网盘 API 的交互
 type QuarkDriver struct {
-	client   *http.Client
-	cookie   string
-	urlCache sync.Map // fid -> cachedURL
-	dirCache sync.Map // pdir_fid -> DirCache
-	negCache sync.Map // "parentFid:name" -> expiry
-	sem      chan struct{}
+	client      *http.Client
+	cookie      string
+	urlCache    sync.Map // fid -> cachedURL
+	dirCache    sync.Map // pdir_fid -> DirCache
+	negCache    sync.Map // "parentFid:name" -> expiry
+	sem         chan struct{}
+	DirCacheTTL time.Duration
+	NegCacheTTL time.Duration
 }
 
 type cachedURL struct {
@@ -69,9 +71,11 @@ func newHTTPClient() *http.Client {
 // NewQuarkDriver 创建一个新的驱动实例
 func NewQuarkDriver(cookie string) *QuarkDriver {
 	return &QuarkDriver{
-		client: newHTTPClient(),
-		cookie: cookie,
-		sem:    make(chan struct{}, 10), // 限制最大 10 个并发请求
+		client:      newHTTPClient(),
+		cookie:      cookie,
+		sem:         make(chan struct{}, 10), // 限制最大 10 个并发请求
+		DirCacheTTL: 60 * time.Second,
+		NegCacheTTL: 60 * time.Second,
 	}
 }
 
@@ -608,10 +612,10 @@ func (d *QuarkDriver) ListFiles(parentFid string) ([]File, error) {
 		allFiles = allFiles[:len(firstResp.Data.List)]
 	}
 
-	// 2. 存入缓存 (有效期 60 秒)
+	// 2. 存入缓存 (使用配置的 TTL)
 	d.dirCache.Store(parentFid, DirCache{
 		Files:  allFiles,
-		Expiry: time.Now().Add(60 * time.Second),
+		Expiry: time.Now().Add(d.DirCacheTTL),
 	})
 
 	return allFiles, nil
@@ -644,7 +648,6 @@ func (d *QuarkDriver) FindChildByName(parentFid, name string) (string, error) {
 		return "", err
 	}
 
-	Log.Printf("Debug: Searching for '%s' in FID '%s'. Found %d items:\n", name, parentFid, len(files))
 	for _, f := range files {
 		if f.FileName == name {
 			// 如果命中，确保清除负缓存（防止在短时间内创建同名文件的情况）
@@ -653,8 +656,8 @@ func (d *QuarkDriver) FindChildByName(parentFid, name string) (string, error) {
 		}
 	}
 
-	// 存入负缓存 (有效期 60 秒)
-	d.negCache.Store(key, time.Now().Add(60*time.Second))
+	// 存入负缓存 (使用配置的 TTL)
+	d.negCache.Store(key, time.Now().Add(d.NegCacheTTL))
 	return "", fmt.Errorf("child not found: %s", name)
 }
 

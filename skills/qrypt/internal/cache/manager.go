@@ -19,14 +19,16 @@ type CacheManager struct {
 
 // CacheDBPendingNode 定义待同步的节点（兼容 db.go 的 PendingNode）
 type CacheDBPendingNode struct {
-	Path      string
-	Fid       string
-	ParentFid string
-	Name      string
-	LocalPath string
-	Size      int64
-	IsFolder  bool
-	Nonce     []byte
+	Path            string
+	Fid             string
+	ParentFid       string
+	Name            string
+	LocalPath       string
+	Size            int64
+	IsFolder        bool
+	Nonce           []byte
+	BaseServerMtime int64
+	BaseServerSize  int64
 }
 
 func (m *CacheManager) CacheDir() string {
@@ -40,6 +42,10 @@ func (m *CacheManager) StagingDir() string {
 // Staging 返回 staging store 实例
 func (m *CacheManager) Staging() *staging.Store {
 	return m.staging
+}
+
+func (m *CacheManager) GetDB() interface{} {
+	return m.DB
 }
 
 // NewCacheManager 创建缓存管理器
@@ -165,8 +171,8 @@ func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDir
 }
 
 // SavePendingNode 持久化未完成的文件节点
-func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte) error {
-	return m.DB.SavePendingNode(path, fid, parentFid, name, localPath, size, isFolder, nonce)
+func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64) error {
+	return m.DB.SavePendingNode(path, fid, parentFid, name, localPath, size, isFolder, nonce, baseMtime, baseSize)
 }
 
 // RemovePendingNode 移除已完成的文件节点
@@ -192,7 +198,18 @@ func (m *CacheManager) GetPendingNodes() ([]CacheDBPendingNode, error) {
 	}
 	var result []CacheDBPendingNode
 	for _, n := range nodes {
-		result = append(result, CacheDBPendingNode(n))
+		result = append(result, CacheDBPendingNode{
+			Path:            n.Path,
+			Fid:             n.Fid,
+			ParentFid:       n.ParentFid,
+			Name:            n.Name,
+			LocalPath:       n.LocalPath,
+			Size:            n.Size,
+			IsFolder:        n.IsFolder,
+			Nonce:           n.Nonce,
+			BaseServerMtime: n.BaseServerMtime,
+			BaseServerSize:  n.BaseServerSize,
+		})
 	}
 	return result, nil
 }

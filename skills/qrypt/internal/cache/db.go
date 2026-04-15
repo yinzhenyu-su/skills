@@ -49,7 +49,19 @@ func NewCacheDB(dbPath string) (*CacheDB, error) {
 		size INTEGER,
 		is_folder BOOLEAN,
 		file_nonce BLOB,
-		mtime DATETIME DEFAULT CURRENT_TIMESTAMP
+		mtime DATETIME DEFAULT CURRENT_TIMESTAMP,
+		base_server_mtime INTEGER DEFAULT 0,
+		base_server_size INTEGER DEFAULT 0
+	);
+
+	CREATE TABLE IF NOT EXISTS ops_log (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		op_type TEXT,
+		source_path TEXT,
+		target_path TEXT,
+		payload TEXT,
+		status TEXT DEFAULT 'PENDING',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
 	CREATE TABLE IF NOT EXISTS name_cache (
@@ -74,9 +86,11 @@ func NewCacheDB(dbPath string) (*CacheDB, error) {
 		return nil, err
 	}
 
-	// 简单的数据库迁移：如果 pending_nodes 表已经存在但没有 parent_fid 列，则添加它。
+	// 简单的数据库迁移：如果 pending_nodes 表已经存在但没有对应列，则添加它。
 	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN parent_fid TEXT")
 	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN local_path TEXT")
+	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN base_server_mtime INTEGER DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN base_server_size INTEGER DEFAULT 0")
 
 	return &CacheDB{db: db}, nil
 }
@@ -164,14 +178,14 @@ func (c *CacheDB) DeleteChunk(fid string, chunkIndex int64) error {
 }
 
 // SavePendingNode 持久化未完成的文件节点（含 SQLITE_BUSY 重试）
-func (c *CacheDB) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte) error {
-	query := `INSERT OR REPLACE INTO pending_nodes (path, fid, parent_fid, name, local_path, size, is_folder, file_nonce) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+func (c *CacheDB) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64) error {
+	query := `INSERT OR REPLACE INTO pending_nodes (path, fid, parent_fid, name, local_path, size, is_folder, file_nonce, base_server_mtime, base_server_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(10<<uint(attempt-1)) * time.Millisecond)
 		}
-		_, err := c.db.Exec(query, path, fid, parentFid, name, localPath, size, isFolder, nonce)
+		_, err := c.db.Exec(query, path, fid, parentFid, name, localPath, size, isFolder, nonce, baseMtime, baseSize)
 		if err == nil {
 			return nil
 		}
@@ -219,19 +233,21 @@ func (c *CacheDB) RemovePendingNodesByFid(fid string) error {
 
 // PendingNode 定义待同步的节点
 type PendingNode struct {
-	Path      string
-	Fid       string
-	ParentFid string
-	Name      string
-	LocalPath string
-	Size      int64
-	IsFolder  bool
-	Nonce     []byte
+	Path            string
+	Fid             string
+	ParentFid       string
+	Name            string
+	LocalPath       string
+	Size            int64
+	IsFolder        bool
+	Nonce           []byte
+	BaseServerMtime int64
+	BaseServerSize  int64
 }
 
 // GetPendingNodes 获取所有待同步的节点
 func (c *CacheDB) GetPendingNodes() ([]PendingNode, error) {
-	rows, err := c.db.Query("SELECT path, fid, parent_fid, name, local_path, size, is_folder, file_nonce FROM pending_nodes")
+	rows, err := c.db.Query("SELECT path, fid, parent_fid, name, local_path, size, is_folder, file_nonce, base_server_mtime, base_server_size FROM pending_nodes")
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +256,7 @@ func (c *CacheDB) GetPendingNodes() ([]PendingNode, error) {
 	var nodes []PendingNode
 	for rows.Next() {
 		var n PendingNode
-		if err := rows.Scan(&n.Path, &n.Fid, &n.ParentFid, &n.Name, &n.LocalPath, &n.Size, &n.IsFolder, &n.Nonce); err != nil {
+		if err := rows.Scan(&n.Path, &n.Fid, &n.ParentFid, &n.Name, &n.LocalPath, &n.Size, &n.IsFolder, &n.Nonce, &n.BaseServerMtime, &n.BaseServerSize); err != nil {
 			return nil, err
 		}
 		nodes = append(nodes, n)
@@ -293,6 +309,54 @@ func (c *CacheDB) GetDirtyChunks(fid string) ([]int64, error) {
 		indices = append(indices, idx)
 	}
 	return indices, nil
+}
+
+// OpsLogEntry 表示一个元数据操作日志
+type OpsLogEntry struct {
+	ID         int64
+	OpType     string
+	SourcePath string
+	TargetPath string
+	Payload    string
+	Status     string
+	CreatedAt  time.Time
+}
+
+// AddOpsLogEntry 添加一条操作日志
+func (c *CacheDB) AddOpsLogEntry(opType, sourcePath, targetPath, payload string) (int64, error) {
+	query := `INSERT INTO ops_log (op_type, source_path, target_path, payload) VALUES (?, ?, ?, ?)`
+	res, err := c.db.Exec(query, opType, sourcePath, targetPath, payload)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// UpdateOpsLogStatus 更新操作日志状态
+func (c *CacheDB) UpdateOpsLogStatus(id int64, status string) error {
+	query := `UPDATE ops_log SET status = ? WHERE id = ?`
+	_, err := c.db.Exec(query, status, id)
+	return err
+}
+
+// GetPendingOpsLogs 获取所有待处理的操作日志
+func (c *CacheDB) GetPendingOpsLogs() ([]OpsLogEntry, error) {
+	query := `SELECT id, op_type, source_path, target_path, payload, status, created_at FROM ops_log WHERE status = 'PENDING' ORDER BY created_at ASC`
+	rows, err := c.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []OpsLogEntry
+	for rows.Next() {
+		var l OpsLogEntry
+		if err := rows.Scan(&l.ID, &l.OpType, &l.SourcePath, &l.TargetPath, &l.Payload, &l.Status, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		logs = append(logs, l)
+	}
+	return logs, nil
 }
 
 // GetCachedName 通过 fid 与加密名读取解密名缓存

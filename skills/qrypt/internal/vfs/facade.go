@@ -46,6 +46,7 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ci
 
 	// 恢复上次未完成的任务
 	fs.recoverDirtyFiles()
+	fs.recoverPendingOps()
 
 	return fs
 }

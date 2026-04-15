@@ -25,13 +25,16 @@ func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uin
 
 	name := filepath.Base(path)
 	n := &node{
-		fid:         "local_" + name + "_" + fmt.Sprint(time.Now().UnixNano()),
-		parentFid:   parentNode.fid,
-		name:        name,
-		currentPath: path,
-		isFolder:    false,
-		mtime:       time.Now(),
-		isDirty:     true,
+		fid:               "local_" + name + "_" + fmt.Sprint(time.Now().UnixNano()),
+		parentFid:         parentNode.fid,
+		name:              name,
+		currentPath:       path,
+		isFolder:          false,
+		mtime:             time.Now(),
+		isDirty:           true,
+		baseServerMtime:   0, // New local file has no base mtime
+		baseServerSize:    0,
+		lastMetadataCheck: time.Now(),
 	}
 
 	nonce, err := fs.cipher.GenerateRandomNonce()

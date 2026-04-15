@@ -24,6 +24,11 @@ const (
 	MemCacheMaxEntries = 512
 )
 
+var (
+	// MetadataTTL 定义了元数据缓存的有效期 (60s)
+	MetadataTTL = 60 * time.Second
+)
+
 var errNonRetryableSync = errors.New("non-retryable sync error")
 
 type node struct {
@@ -38,17 +43,21 @@ type node struct {
 	mtime           time.Time // 修改时间
 	fileNonce       [24]byte
 	hasNonce        bool
-	isDirty         bool  // 是否有未同步的修改
-	syncQueued      bool  // 是否已在同步队列中
-	lastReadBlock   int64 // 上次读取的块索引
-	readSeqCount    int   // 连续顺序读取的块数
+	isDirty         bool      // 是否有未同步的修改
+	syncQueued      bool      // 是否已在同步队列中
+	baseServerMtime int64     // 上次同步成功的服务端修改时间 (ms)
+	baseServerSize  int64     // 上次同步成功的服务端明文大小
+	lastMetadataCheck time.Time // 上次从服务器拉取元数据的时间
+	lastReadBlock   int64     // 上次读取的块索引
+	readSeqCount    int       // 连续顺序读取的块数
 	lastPendingSave time.Time
 	lastPendingSize int64
 	mu              sync.RWMutex
 }
 
 type syncTask struct {
-	node *node
+	node     *node
+	opsLogID int64 // 关联的日志记录 ID
 }
 
 type syncPerformanceSnapshot struct {

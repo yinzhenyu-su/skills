@@ -45,16 +45,19 @@ func (fs *QryptFS) recoverDirtyFiles() {
 		}
 
 		n := &node{
-			fid:         p.Fid,
-			parentFid:   p.ParentFid,
-			name:        p.Name,
-			localPath:   p.LocalPath,
-			currentPath: p.Path,
-			size:        p.Size,
-			isFolder:    p.IsFolder,
-			mtime:       time.Now(),
-			isDirty:     true,
-			syncQueued:  true,
+			fid:               p.Fid,
+			parentFid:         p.ParentFid,
+			name:              p.Name,
+			localPath:         p.LocalPath,
+			currentPath:       p.Path,
+			size:              p.Size,
+			isFolder:          p.IsFolder,
+			mtime:             time.Now(),
+			isDirty:           true,
+			syncQueued:        true,
+			baseServerMtime:   p.BaseServerMtime,
+			baseServerSize:    p.BaseServerSize,
+			lastMetadataCheck: time.Now(),
 		}
 		if len(p.Nonce) == 24 {
 			copy(n.fileNonce[:], p.Nonce)
@@ -75,24 +78,28 @@ func (fs *QryptFS) cleanupPendingEntry(p cache.CacheDBPendingNode) {
 	}
 }
 
-// fileExistsOnServer checks if a file with the given fid exists in the parent directory on the server.
-func (fs *QryptFS) fileExistsOnServer(fid, parentFid string) bool {
-	// Skip check for root or virtual paths (e.g., .Trashes)
+// fileExistsOnServerDetailed checks if a file with the given fid exists and returns its metadata.
+func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*driver.File, error) {
 	if parentFid == "" || parentFid == "root" || isFinderTrashPath("/"+filepath.ToSlash(parentFid)) {
-		return true
+		return nil, nil
 	}
 	fs.driver.RemoveDirCache(parentFid)
 	files, err := fs.driver.ListFiles(parentFid)
 	if err != nil {
-		driver.Log.Printf("fileExistsOnServer: failed to list parent %s: %v\n", parentFid, err)
-		return false
+		return nil, err
 	}
 	for _, f := range files {
 		if f.Fid == fid {
-			return true
+			return &f, nil
 		}
 	}
-	return false
+	return nil, nil
+}
+
+// fileExistsOnServer checks if a file with the given fid exists in the parent directory on the server.
+func (fs *QryptFS) fileExistsOnServer(fid, parentFid string) bool {
+	f, _ := fs.fileExistsOnServerDetailed(fid, parentFid)
+	return f != nil
 }
 
 func (fs *QryptFS) uploadWorker() {
@@ -262,7 +269,7 @@ func (fs *QryptFS) maybeSavePendingNodeLocked(path string, n *node, force bool) 
 		return nil
 	}
 
-	if err := fs.cache.SavePendingNode(path, n.fid, n.parentFid, n.name, n.localPath, n.size, n.isFolder, n.fileNonce[:]); err != nil {
+	if err := fs.cache.SavePendingNode(path, n.fid, n.parentFid, n.name, n.localPath, n.size, n.isFolder, n.fileNonce[:], n.baseServerMtime, n.baseServerSize); err != nil {
 		return err
 	}
 	n.lastPendingSave = now
@@ -335,9 +342,55 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	snapshotName := n.name
 	snapshotMtime := n.mtime
 	parentFid := n.parentFid
+	fid := n.fid
+	baseMtime := n.baseServerMtime
 	localPath := n.localPath
 	n.mu.Unlock()
 	stats.SnapshotSize = snapshotSize
+
+	// 1. Pre-upload Conflict Check
+	if !strings.HasPrefix(fid, "local_") {
+		rf, err := fs.fileExistsOnServerDetailed(fid, parentFid)
+		if err != nil {
+			return fmt.Errorf("pre-upload check failed: %v", err)
+		}
+		if rf == nil {
+			// FID is gone. Check if a file with same name exists.
+			files, err := fs.driver.ListFiles(parentFid)
+			if err == nil {
+				var foundRf *driver.File
+				for _, f := range files {
+					decName, _ := fs.cipher.DecryptSegment(f.FileName)
+					if decName == snapshotName {
+						foundRf = &f
+						break
+					}
+				}
+				if foundRf != nil {
+					// Name exists but FID changed: Conflict!
+					driver.Log.Printf("Sync: CONFLICT (FID gone but name exists) for %s. Resolving...\n", path)
+					fs.resolveConflict(path, n, *foundRf)
+					return nil
+				}
+			}
+
+			// Remote truly deleted, but we have local changes. Convert to local node to re-upload as new file.
+			driver.Log.Printf("Sync: remote deleted %s (fid=%s), converting to local node\n", path, fid)
+			n.mu.Lock()
+			if !strings.HasPrefix(n.fid, "local_") {
+				n.fid = "local_" + n.name + "_" + fmt.Sprint(time.Now().UnixNano())
+			}
+			n.mu.Unlock()
+		} else {
+			remoteMtime := rf.ModTime().UnixMilli()
+			if remoteMtime > baseMtime {
+				// Both modified: Diverge!
+				driver.Log.Printf("Sync: CONFLICT (both modified) for %s. Remote %v > Base %v. Resolving...\n", path, remoteMtime, baseMtime)
+				fs.resolveConflict(path, n, *rf)
+				return nil // Task finished as a rename + new path creation
+			}
+		}
+	}
 
 	if fs.staging == nil || fs.uploader == nil || localPath == "" {
 		return fmt.Errorf("missing staging state for %s", path)
@@ -374,6 +427,9 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	n.encSize = result.EncryptedSize
 	if n.mtime.Equal(snapshotMtime) {
 		n.isDirty = false
+		n.baseServerMtime = time.Now().UnixMilli() // Update base mtime after success
+		n.baseServerSize = n.size
+		n.lastMetadataCheck = time.Now()
 	}
 	currentPath := n.currentPath
 	localPath = n.localPath

@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: TTL-based Directory Metadata Caching
 The system SHALL cache directory listings and file metadata for a configurable duration (default 60 seconds). Each node SHALL maintain a `baseServerMtime` and `baseServerSize` representing its state at the last successful synchronization. The system SHALL NOT overwrite local nodes marked as `isDirty` with remote metadata, but SHALL detect conflicts if the remote metadata has changed since the node's `baseServerMtime`.
@@ -13,6 +13,8 @@ The system SHALL cache directory listings and file metadata for a configurable d
 - **WHEN** user lists the same directory twice within the TTL
 - **THEN** the second list operation returns data from the local cache without making a network request
 
+## ADDED Requirements
+
 ### Requirement: On-Demand Metadata Refresh
 The system SHALL verify the remote metadata of a file before starting an upload or a read operation if the cached metadata is older than the TTL.
 
@@ -20,17 +22,3 @@ The system SHALL verify the remote metadata of a file before starting an upload 
 - **WHEN** an upload task for `/test.txt` starts
 - **AND** a metadata refresh reveals that the remote file has been modified since `baseServerMtime`
 - **THEN** the system SHALL abort the direct upload and initiate conflict resolution
-
-### Requirement: Negative Caching
-The system SHALL cache negative results (e.g., file not found) for a short duration to prevent repeated lookups for non-existent files.
-
-#### Scenario: Lookup for missing file
-- **WHEN** a request is made for a file that does not exist
-- **THEN** the system caches the ENOENT result and returns it for subsequent requests within the negative TTL
-
-### Requirement: Parallel Directory Listing
-The system SHALL fetch directory pages in parallel for large directories to minimize the total listing time.
-
-#### Scenario: Listing large directory
-- **WHEN** a directory contains more than 100 files (1 page)
-- **THEN** the system issues concurrent HTTP requests for all remaining pages

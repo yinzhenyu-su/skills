@@ -88,6 +88,20 @@ func readFileSample(path string, offset int64, size int) ([]byte, error) {
 	return buf[:n], nil
 }
 
+var (
+	e2eRunIDOnce sync.Once
+	e2eRunID     string
+)
+
+func getE2ERunID() string {
+	e2eRunIDOnce.Do(func() {
+		randBuf := make([]byte, 4)
+		_, _ = rand.Read(randBuf)
+		e2eRunID = fmt.Sprintf("run_%d_%x", time.Now().UnixNano(), randBuf)
+	})
+	return e2eRunID
+}
+
 func loadE2EConfig(t *testing.T) *e2eConfig {
 	// 优先从 qrypt 项目根目录加载 .env.local
 	_ = godotenv.Load("../../.env.local")
@@ -102,6 +116,10 @@ func loadE2EConfig(t *testing.T) *e2eConfig {
 		remotePath: os.Getenv("QRYPT_TEST_REMOTE_PATH"),
 		mountPoint: os.Getenv("QRYPT_TEST_MOUNT_POINT"),
 		cacheDir:   os.Getenv("QRYPT_TEST_CACHE_DIR"),
+	}
+
+	if config.remotePath != "" {
+		config.remotePath = filepath.Join(config.remotePath, getE2ERunID())
 	}
 
 	if config.cookie == "" || config.password == "" || config.remotePath == "" || config.mountPoint == "" || config.cacheDir == "" {
@@ -119,6 +137,53 @@ func unmount(mountPoint string) {
 		cmd = exec.Command("fusermount", "-u", mountPoint)
 	}
 	cmd.Run()
+}
+
+func ensureRemotePath(d *driver.QuarkDriver, path string) (string, error) {
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	currentFid := "0"
+
+	for _, seg := range segments {
+		if seg == "" {
+			continue
+		}
+		fid, err := d.FindChildByName(currentFid, seg)
+		if err != nil {
+			// Try to create it
+			fid, err = d.CreateDir(currentFid, seg)
+			if err != nil {
+				// If conflict, try listing one more time with fresh cache
+				if strings.Contains(err.Error(), "23008") || strings.Contains(err.Error(), "conflict") {
+					d.RemoveDirCache(currentFid)
+					fid, err = d.FindChildByName(currentFid, seg)
+					if err == nil {
+						currentFid = fid
+						continue
+					}
+
+					// If still not found but conflict persists, it might be a ghost item or eventual consistency.
+					// In E2E tests, we can try to find it by listing EVERYTHING multiple times with a sleep.
+					for retry := 0; retry < 5; retry++ {
+						time.Sleep(1 * time.Second)
+						d.RemoveDirCache(currentFid)
+						files, lerr := d.ListFiles(currentFid)
+						if lerr == nil {
+							for _, f := range files {
+								if f.FileName == seg {
+									currentFid = f.Fid
+									goto nextSegment
+								}
+							}
+						}
+					}
+				}
+				return "", fmt.Errorf("failed to create remote dir %s: %v", seg, err)
+			}
+		}
+		currentFid = fid
+	nextSegment:
+	}
+	return currentFid, nil
 }
 
 func setupQryptFSInternal(t *testing.T, config *e2eConfig, clearCache bool) (*QryptFS, *fuse.FileSystemHost, error) {
@@ -145,24 +210,25 @@ func setupQryptFSInternal(t *testing.T, config *e2eConfig, clearCache bool) (*Qr
 		d.RemoveDirCache("0")
 
 		// 递归清理远程测试目录中的残留
-		rootFid, err := d.ResolvePath(config.remotePath)
+		rootFid, err := ensureRemotePath(d, config.remotePath)
 		if err == nil {
 			files, err := d.ListFiles(rootFid)
 			if err == nil {
+				var fids []string
 				for _, f := range files {
-					decName, _ := cipher.DecryptSegment(f.FileName)
-					if decName == "it_test_dir" || decName == "upload_5mb.bin" || decName == "upload_perf_5mb.bin" || decName == "upload_perf_200mb.bin" || decName == "xattr_test.txt" || decName == "stress_test" || decName == "create_sync.txt" || decName == "delete_after_sync.txt" {
-						d.Delete([]string{f.Fid})
-					}
+					fids = append(fids, f.Fid)
+				}
+				if len(fids) > 0 {
+					d.Delete(fids)
 				}
 			}
 			d.RemoveDirCache(rootFid)
 		}
 	}
 
-	rootFid, err := d.ResolvePath(config.remotePath)
+	rootFid, err := ensureRemotePath(d, config.remotePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to resolve remote path: %v", err)
+		return nil, nil, fmt.Errorf("failed to ensure remote path: %v", err)
 	}
 
 	if clearCache {
@@ -200,6 +266,18 @@ func setupQryptFSInternal(t *testing.T, config *e2eConfig, clearCache bool) (*Qr
 	}
 	if !success {
 		return nil, nil, fmt.Errorf("mount failed to become ready at %s", config.mountPoint)
+	}
+
+	// For standard E2E tests, we cleanup the remote dir on exit.
+	// But only for the first mount in a test to avoid deleting it while it's being used by a second mount.
+	if clearCache {
+		t.Cleanup(func() {
+			d := driver.NewQuarkDriver(config.cookie)
+			rootFid, err := ensureRemotePath(d, config.remotePath)
+			if err == nil {
+				_ = d.Delete([]string{rootFid})
+			}
+		})
 	}
 
 	return fs, host, nil
@@ -304,13 +382,13 @@ func TestE2E_Lifecycle(t *testing.T) {
 		t.Fatalf("Mkdir failed: %v", err)
 	}
 
-	testFile := filepath.Join(testDir, "hello.txt")
+	testFile := filepath.Join(testDir, "it_lifecycle_file.txt")
 	content := []byte("Hello, Qrypt E2E Integration Test!")
 	if err := os.WriteFile(testFile, content, 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	waitForSync(t, fs, "/it_test_dir/hello.txt")
+	waitForSync(t, fs, "/it_test_dir/it_lifecycle_file.txt")
 
 	readContent, err := os.ReadFile(testFile)
 	if err != nil {
@@ -320,7 +398,7 @@ func TestE2E_Lifecycle(t *testing.T) {
 		t.Errorf("Content mismatch. Expected %q, got %q", string(content), string(readContent))
 	}
 
-	newName := filepath.Join(testDir, "renamed.txt")
+	newName := filepath.Join(testDir, "it_lifecycle_renamed.txt")
 	if err := os.Rename(testFile, newName); err != nil {
 		t.Fatalf("Rename failed: %v", err)
 	}
@@ -336,7 +414,7 @@ func TestE2E_Lifecycle(t *testing.T) {
 	defer unmount(config.mountPoint)
 	defer host2.Unmount()
 
-	newNameRel := filepath.Join(config.mountPoint, "it_test_dir", "renamed.txt")
+	newNameRel := filepath.Join(config.mountPoint, "it_test_dir", "it_lifecycle_renamed.txt")
 	readContent2, err := os.ReadFile(newNameRel)
 	if err != nil {
 		t.Fatalf("ReadFile after remount failed: %v", err)
