@@ -851,3 +851,94 @@ func TestE2E_LargeDirectoryLoadPerformance(t *testing.T) {
 		t.Errorf("Loading speed too slow! Took %v", elapsed)
 	}
 }
+
+func TestE2E_CopyConflict(t *testing.T) {
+	config := loadE2EConfig(t)
+
+	fs, host, err := setupQryptFSInternal(t, config, true)
+	if err != nil {
+		t.Fatalf("Failed to setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host.Unmount()
+
+	// 1. Create directory A
+	dirA := filepath.Join(config.mountPoint, "A")
+	if err := os.Mkdir(dirA, 0755); err != nil {
+		t.Fatalf("Mkdir A failed: %v", err)
+	}
+
+	// 2. Create file /A/file.txt
+	fileA := filepath.Join(dirA, "file.txt")
+	contentA := []byte("content from A")
+	if err := os.WriteFile(fileA, contentA, 0644); err != nil {
+		t.Fatalf("WriteFile /A/file.txt failed: %v", err)
+	}
+	waitForSync(t, fs, "/A/file.txt")
+
+	// 3. Create /file.txt (existing file to be overwritten)
+	fileRoot := filepath.Join(config.mountPoint, "file.txt")
+	contentRoot := []byte("original root content")
+	if err := os.WriteFile(fileRoot, contentRoot, 0644); err != nil {
+		t.Fatalf("WriteFile /file.txt failed: %v", err)
+	}
+	waitForSync(t, fs, "/file.txt")
+	waitForRemoteEntryState(t, config, "file.txt", true)
+
+	// 4. Copy /A/file.txt to /file.txt (Overwrite)
+	// We use shell 'cp' to simulate real OS behavior
+	cmd := exec.Command("cp", fileA, fileRoot)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("cp failed: %v", err)
+	}
+	
+	waitForSync(t, fs, "/file.txt")
+	
+	// Verify content locally
+	gotContent, err := os.ReadFile(fileRoot)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !bytes.Equal(gotContent, contentA) {
+		t.Errorf("Content mismatch. Expected %q, got %q", string(contentA), string(gotContent))
+	}
+
+	// 5. Check remote for duplicates
+	cipher, err := crypt.NewRcloneCipher(config.password, config.salt)
+	if err != nil {
+		t.Fatalf("cipher init failed: %v", err)
+	}
+
+	d := driver.NewQuarkDriver(config.cookie)
+	if err := d.Auth(); err != nil {
+		t.Fatalf("auth failed: %v", err)
+	}
+
+	rootFid, err := d.ResolvePath(config.remotePath)
+	if err != nil {
+		t.Fatalf("resolve remote path failed: %v", err)
+	}
+
+	// Give it some time for remote to reflect changes if there's any eventual consistency
+	time.Sleep(2 * time.Second)
+	d.RemoveDirCache(rootFid)
+	files, err := d.ListFiles(rootFid)
+	if err != nil {
+		t.Fatalf("list files failed: %v", err)
+	}
+
+	foundFileTxt := false
+	for _, f := range files {
+		decName, _ := cipher.DecryptSegment(f.FileName)
+		if decName == "file.txt" {
+			foundFileTxt = true
+		}
+		if strings.Contains(decName, "file.txt") && strings.Contains(decName, "(") {
+			t.Errorf("Found unexpected remote file (potential duplicate): %s", decName)
+		}
+	}
+	
+	if !foundFileTxt {
+		t.Errorf("file.txt not found on remote")
+	}
+}

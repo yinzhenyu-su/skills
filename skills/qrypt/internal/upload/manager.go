@@ -61,14 +61,12 @@ func (m *Manager) deleteExistingFileByName(parentFid, encName string) error {
 		}
 	}()
 
-	// Invalidate directory cache before listing to ensure we see the latest state.
-	// This prevents stale cache from hiding existing files and causing duplicates.
-	m.driver.RemoveDirCache(parentFid)
-
+	// Use driver's cache for listing. It has a TTL (default 60s).
+	// This avoids O(N^2) API calls during batch uploads.
 	files, err := m.driver.ListFiles(parentFid)
 	if err != nil {
 		driver.Log.Printf("deleteExistingFileByName: warning: failed to list files in parent %s: %v\n", parentFid, err)
-		return nil // Don't fail the sync if we can't check for duplicates
+		return nil
 	}
 
 	for _, f := range files {
@@ -76,11 +74,11 @@ func (m *Manager) deleteExistingFileByName(parentFid, encName string) error {
 			driver.Log.Printf("deleteExistingFileByName: found existing file %s (fid=%s), deleting before re-upload\n", encName, f.Fid)
 			if err := m.driver.Delete([]string{f.Fid}); err != nil {
 				driver.Log.Printf("deleteExistingFileByName: warning: failed to delete existing file: %v\n", err)
-				return nil // Don't fail the sync if delete fails
+				return nil
 			}
-			// Invalidate cache again after deletion so subsequent ListFiles sees the change
+			// Invalidate cache ONLY after a successful deletion so subsequent ListFiles or UploadPre sees the change.
 			m.driver.RemoveDirCache(parentFid)
-			return nil // Only delete first match
+			return nil
 		}
 	}
 	return nil

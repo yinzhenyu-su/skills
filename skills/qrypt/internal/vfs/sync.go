@@ -178,10 +178,6 @@ func (fs *QryptFS) uploadWorker() {
 
 			fs.retryState.Delete(n)
 			driver.Log.Printf("Successfully synced %s (fid=%s) to Quark Drive\n", path, n.fid)
-			n.mu.RLock()
-			parentFid := n.parentFid
-			n.mu.RUnlock()
-			fs.driver.RemoveDirCache(parentFid)
 		}(task)
 	}
 }
@@ -389,9 +385,9 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 			n.mu.Unlock()
 		} else {
 			remoteMtime := rf.ModTime().UnixMilli()
-			if remoteMtime > baseMtime {
+			if remoteMtime > baseMtime+2000 {
 				// Both modified: Diverge!
-				driver.Log.Printf("Sync: CONFLICT (both modified) for %s. Remote %v > Base %v. Resolving...\n", path, remoteMtime, baseMtime)
+				driver.Log.Printf("Sync: CONFLICT (both modified) for %s. Remote %v > Base %v (grace 2s). Resolving...\n", path, remoteMtime, baseMtime)
 				fs.resolveConflict(path, n, *rf)
 				return nil // Task finished as a rename + new path creation
 			}
@@ -454,7 +450,6 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	if clearPending && fs.staging != nil {
 		_ = fs.staging.Remove(localPath)
 	}
-	fs.driver.RemoveDirCache(parentFid)
 
 	return nil
 }

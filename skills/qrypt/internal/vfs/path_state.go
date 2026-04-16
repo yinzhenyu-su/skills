@@ -539,7 +539,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			}
 
 			remoteMtime := rf.ModTime().UnixMilli()
-			if remoteMtime > baseMtime {
+			if remoteMtime > baseMtime+2000 {
 				if !isDirty {
 					// 纯远端更新
 					decSize, _ := fs.cipher.DecryptedSize(rf.Int64Size())
