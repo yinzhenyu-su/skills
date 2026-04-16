@@ -3,7 +3,7 @@ package vfs
 import (
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2/simplelru"
+	"github.com/hashicorp/golang-lru/v2"
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/driver"
@@ -23,7 +23,7 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ci
 		}
 	}
 
-	memCache, _ := simplelru.NewLRU[string, []byte](MemCacheMaxEntries, nil)
+	memCache, _ := lru.New[string, []byte](MemCacheMaxEntries)
 
 	fs := &QryptFS{
 		driver:     d,

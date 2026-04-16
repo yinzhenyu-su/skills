@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2/simplelru"
+	"github.com/hashicorp/golang-lru/v2"
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
@@ -89,7 +89,7 @@ type QryptFS struct {
 	nodes        sync.Map // path -> *node
 	fidNodes     sync.Map // fid -> *node (用于快速反查)
 	fetching     sync.Map // batchKey -> chan struct{} (用于合并请求)
-	memCache     *simplelru.LRU[string, []byte] // fid_idx -> []byte (有界内存二级缓存)
+	memCache     *lru.Cache[string, []byte] // fid_idx -> []byte (有界内存二级缓存)
 	uploadChan   chan syncTask
 	syncing      sync.Map // *node -> struct{} (防止并发同步同一节点)
 	retryState   sync.Map // *node -> int (基于节点的自动重试次数)

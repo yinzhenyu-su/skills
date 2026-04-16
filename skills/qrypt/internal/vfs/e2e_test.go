@@ -776,3 +776,78 @@ func TestE2E_ErrorHandling(t *testing.T) {
 		t.Errorf("Expected error when creating directory in non-existent parent")
 	}
 }
+
+func TestE2E_LargeDirectoryLoadPerformance(t *testing.T) {
+	config := loadE2EConfig(t)
+
+	// Pre-cleanup
+	os.RemoveAll(filepath.Join(config.mountPoint, "perf_large_dir"))
+	time.Sleep(1 * time.Second)
+
+	fs, host, err := setupQryptFSInternal(t, config, true)
+	if err != nil {
+		t.Fatalf("Failed to setup QryptFS: %v", err)
+	}
+
+	testDir := filepath.Join(config.mountPoint, "perf_large_dir")
+	if err := os.Mkdir(testDir, 0755); err != nil {
+		t.Fatalf("Mkdir failed: %v", err)
+	}
+
+	numFiles := 55
+	var wg sync.WaitGroup
+	for i := 0; i < numFiles; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			fileName := fmt.Sprintf("perf_file_%d.txt", idx)
+			filePath := filepath.Join(testDir, fileName)
+			content := []byte(fmt.Sprintf("Content of file %d", idx))
+			if err := os.WriteFile(filePath, content, 0644); err != nil {
+				t.Errorf("WriteFile failed for %s: %v", fileName, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Wait for all files to sync
+	for i := 0; i < numFiles; i++ {
+		vfsPath := fmt.Sprintf("/perf_large_dir/perf_file_%d.txt", i)
+		waitForSync(t, fs, vfsPath)
+	}
+
+	// Unmount to simulate cold start
+	host.Unmount()
+	unmount(config.mountPoint)
+	time.Sleep(3 * time.Second)
+
+	// Remount
+	fs2, host2, err := setupQryptFSInternal(t, config, false)
+	if err != nil {
+		t.Fatalf("Failed to re-setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host2.Unmount()
+
+	_ = fs2
+
+	// Measure loading speed
+	start := time.Now()
+	entries, err := os.ReadDir(filepath.Join(config.mountPoint, "perf_large_dir"))
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+
+	if len(entries) != numFiles {
+		t.Errorf("Expected %d files, got %d", numFiles, len(entries))
+	}
+
+	t.Logf("Loaded %d files in %v", len(entries), elapsed)
+
+	// We expect the optimized load to take less than 5 seconds for 55 files (including network request + decryption)
+	if elapsed > 5*time.Second {
+		t.Errorf("Loading speed too slow! Took %v", elapsed)
+	}
+}
