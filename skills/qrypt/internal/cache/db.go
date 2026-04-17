@@ -181,9 +181,11 @@ func (c *CacheDB) DeleteChunk(fid string, chunkIndex int64) error {
 func (c *CacheDB) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64) error {
 	query := `INSERT OR REPLACE INTO pending_nodes (path, fid, parent_fid, name, local_path, size, is_folder, file_nonce, base_server_mtime, base_server_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 10; attempt++ {
 		if attempt > 0 {
-			time.Sleep(time.Duration(10<<uint(attempt-1)) * time.Millisecond)
+			// 指数退避：10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1280ms, 2560ms
+			delay := time.Duration(10<<uint(attempt-1)) * time.Millisecond
+			time.Sleep(delay)
 		}
 		_, err := c.db.Exec(query, path, fid, parentFid, name, localPath, size, isFolder, nonce, baseMtime, baseSize)
 		if err == nil {
