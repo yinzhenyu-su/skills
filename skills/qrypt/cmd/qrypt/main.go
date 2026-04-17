@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/winfsp/cgofuse/fuse"
@@ -71,14 +73,24 @@ func main() {
 				os.Exit(1)
 			}
 
-			// 5. 挂载
-			fs := vfs.NewQryptFS(d, cm, rootFid, cipher)
-			host := fuse.NewFileSystemHost(fs)
+		// 5. 挂载
+		fs := vfs.NewQryptFS(d, cm, rootFid, cipher)
+		host := fuse.NewFileSystemHost(fs)
 
-			// 平台适配：macOS 使用 noappledouble/defer_permissions，Linux 使用 allow_other
-			options := vfs.MountOptions()
-			fmt.Printf("Mounting Quark Drive at %s...\n", mountPoint)
-			host.Mount(mountPoint, options)
+		// 平台适配：macOS 使用 noappledouble/defer_permissions，Linux 使用 allow_other
+		options := vfs.MountOptions()
+		fmt.Printf("Mounting Quark Drive at %s... (Ctrl+C to unmount)\n", mountPoint)
+
+		// 处理信号，优雅退出
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigChan
+			fmt.Println("\nUnmounting...")
+			host.Unmount()
+		}()
+
+		host.Mount(mountPoint, options)
 		},
 	}
 
