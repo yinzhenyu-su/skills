@@ -25,15 +25,15 @@ func TestMergeRemoteChanges_SkipRecentlySynced(t *testing.T) {
 	}
 	fs.storeNode("/", root)
 
-	// 创建刚上传完成的文件（lastMetadataCheck = 2秒前）
+	// 创建刚上传完成的文件（lastUploadTime = 2秒前）
 	recentFile := &node{
-		fid:               "file_fid",
-		parentFid:         "root_fid",
-		name:              "myfile.txt",
-		currentPath:       "/myfile.txt",
-		size:              1024,
-		isDirty:           false,
-		lastMetadataCheck: time.Now().Add(-2 * time.Second), // 2秒前上传完成
+		fid:             "file_fid",
+		parentFid:       "root_fid",
+		name:            "myfile.txt",
+		currentPath:     "/myfile.txt",
+		size:            1024,
+		isDirty:         false,
+		lastUploadTime:  time.Now().Add(-2 * time.Second), // 2秒前上传完成
 	}
 	fs.storeNode("/myfile.txt", recentFile)
 
@@ -68,15 +68,15 @@ func TestMergeRemoteChanges_DeleteStaleRemoteFile(t *testing.T) {
 	}
 	fs.storeNode("/", root)
 
-	// 创建很久之前同步的文件（lastMetadataCheck = 1分钟前）
+	// 创建很久之前同步的文件（lastUploadTime = 1分钟前）
 	oldFile := &node{
-		fid:               "file_fid",
-		parentFid:         "root_fid",
-		name:              "old_file.txt",
-		currentPath:       "/old_file.txt",
-		size:              512,
-		isDirty:           false,
-		lastMetadataCheck: time.Now().Add(-1 * time.Minute), // 1分钟前同步
+		fid:             "file_fid",
+		parentFid:       "root_fid",
+		name:            "old_file.txt",
+		currentPath:     "/old_file.txt",
+		size:            512,
+		isDirty:         false,
+		lastUploadTime:  time.Now().Add(-1 * time.Minute), // 1分钟前同步
 	}
 	fs.storeNode("/old_file.txt", oldFile)
 
@@ -111,14 +111,14 @@ func TestMergeRemoteChanges_SkipSyncInProgress(t *testing.T) {
 
 	// 正在同步的文件（syncQueued = true）
 	syncingFile := &node{
-		fid:               "file_fid",
-		parentFid:         "root_fid",
-		name:              "syncing.txt",
-		currentPath:       "/syncing.txt",
-		size:              256,
-		isDirty:           false,
-		syncQueued:        true, // 正在同步
-		lastMetadataCheck: time.Time{}, // 零值
+		fid:             "file_fid",
+		parentFid:       "root_fid",
+		name:            "syncing.txt",
+		currentPath:     "/syncing.txt",
+		size:            256,
+		isDirty:         false,
+		syncQueued:      true, // 正在同步
+		lastUploadTime:  time.Time{}, // 零值
 	}
 	fs.storeNode("/syncing.txt", syncingFile)
 
@@ -155,7 +155,7 @@ func TestMergeRemoteChanges_UpdateRemoteFile(t *testing.T) {
 		size:              100,
 		baseServerMtime:   1000000, // 很早的时间
 		isDirty:           false,
-		lastMetadataCheck: time.Now().Add(-10 * time.Second),
+		lastUploadTime:    time.Now().Add(-60 * time.Second), // 1分钟前上传
 	}
 	fs.storeNode("/update_test.txt", localFile)
 

@@ -48,6 +48,7 @@ type node struct {
 	baseServerMtime int64     // 上次同步成功的服务端修改时间 (ms)
 	baseServerSize  int64     // 上次同步成功的服务端明文大小
 	lastMetadataCheck time.Time // 上次从服务器拉取元数据的时间
+	lastUploadTime  time.Time // 上次上传完成的时间（用于防止 API 索引延迟导致误删）
 	lastReadBlock   int64     // 上次读取的块索引
 	readSeqCount    int       // 连续顺序读取的块数
 	lastPendingSave time.Time

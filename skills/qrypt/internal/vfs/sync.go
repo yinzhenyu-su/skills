@@ -458,6 +458,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		n.baseServerMtime = snapshotMtime.UnixMilli()
 		n.baseServerSize = n.size
 		n.lastMetadataCheck = time.Now()
+		n.lastUploadTime = time.Now() // 记录上传完成时间，防止 API 索引延迟导致误删
 	}
 	currentPath := n.currentPath
 	localPath = n.localPath
