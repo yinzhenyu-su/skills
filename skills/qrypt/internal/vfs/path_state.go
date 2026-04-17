@@ -982,6 +982,10 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 			}
 			if moveErr != nil {
 				driver.Log.Printf("Rename Move failed for %s -> %s: %v\n", oldPath, newPath, moveErr)
+				// 夸克网盘 API 限制：不能移动到子目录
+				if strings.Contains(moveErr.Error(), "23017") || strings.Contains(moveErr.Error(), "subdirs") {
+					driver.Log.Printf("Rename: Quark API does not allow moving files into subdirectories\n")
+				}
 				return -fuse.EIO
 			}
 		}
