@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -82,21 +83,26 @@ func main() {
 		options := vfs.MountOptions()
 		fmt.Printf("Mounting Quark Drive at %s... (Ctrl+C to unmount)\n", mountPoint)
 
-		// 处理信号，优雅退出
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		go func() {
-			<-sigChan
-			fmt.Println("\nUnmounting...")
-			// 先尝试 fusermount，再调用 host.Unmount
+	// 处理信号，优雅退出
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\nUnmounting...")
+
+		// 先尝试 fusermount -u（更可靠）
+		cmd := exec.Command("fusermount", "-u", mountPoint)
+		if err := cmd.Run(); err != nil {
+			// fusermount 失败，尝试 cgofuse 的 Unmount
 			go func() {
 				time.Sleep(2 * time.Second)
 				fmt.Println("Force exit")
 				os.Exit(0)
 			}()
 			host.Unmount()
-			os.Exit(0)
-		}()
+		}
+		os.Exit(0)
+	}()
 
 		host.Mount(mountPoint, options)
 		},
