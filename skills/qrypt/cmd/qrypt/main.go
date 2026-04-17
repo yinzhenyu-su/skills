@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/winfsp/cgofuse/fuse"
@@ -87,7 +88,14 @@ func main() {
 		go func() {
 			<-sigChan
 			fmt.Println("\nUnmounting...")
+			// 先尝试 fusermount，再调用 host.Unmount
+			go func() {
+				time.Sleep(2 * time.Second)
+				fmt.Println("Force exit")
+				os.Exit(0)
+			}()
 			host.Unmount()
+			os.Exit(0)
 		}()
 
 		host.Mount(mountPoint, options)
