@@ -480,6 +480,11 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			decName, _ = fs.cipher.DecryptSegment(f.FileName)
 		}
 		
+		// 跳过同名文件（夸克网盘允许 xxx 和 xxx(1) 共存，解密后可能重名）
+		if _, exists := remoteMap[decName]; exists {
+			driver.Log.Printf("MergeRemoteChanges: skipping duplicate remote file '%s' (fid=%s) in %s\n", decName, f.Fid, parentPath)
+			continue
+		}
 		remoteMap[decName] = f
 	}
 
