@@ -454,7 +454,8 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	n.encSize = result.EncryptedSize
 	if n.mtime.Equal(snapshotMtime) {
 		n.isDirty = false
-		n.baseServerMtime = time.Now().UnixMilli() // Update base mtime after success
+		// 使用本地文件的 mtime 作为 base，避免 MergeRemoteChanges 误判冲突
+		n.baseServerMtime = snapshotMtime.UnixMilli()
 		n.baseServerSize = n.size
 		n.lastMetadataCheck = time.Now()
 	}
