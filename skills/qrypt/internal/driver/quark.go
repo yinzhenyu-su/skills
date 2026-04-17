@@ -523,10 +523,10 @@ func (d *QuarkDriver) Rename(fid, newName string) error {
 // Move 移动文件或文件夹
 func (d *QuarkDriver) Move(fids []string, toPdirFid string, currentDirFid string) error {
 	data := map[string]interface{}{
-		"fids":        fids,
-		"to_pdir_fid": toPdirFid,
-		// 不传 current_dir_fid，避免 API 报错 23017
-		"action_type": 1,
+		"filelist":     fids,
+		"to_pdir_fid":  toPdirFid,
+		"action_type":  1,
+		"exclude_fids": []string{},
 	}
 	var resp Resp
 	err := d.request(http.MethodPost, "/file/move", nil, data, &resp)
