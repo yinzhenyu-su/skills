@@ -518,9 +518,21 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		fid := n.fid
 		isDirty := n.isDirty
 		baseMtime := n.baseServerMtime
+		syncQueued := n.syncQueued
 		n.mu.RUnlock()
 
 		seenLocalNames[name] = true
+
+		// 跳过正在同步或刚同步完成的文件（API 可能还没索引）
+		if syncQueued {
+			driver.Log.Printf("MergeRemoteChanges: skipping %s (sync in progress)\n", entry.path)
+			continue
+		}
+		// 刚上传完成的文件（5秒内），跳过以防 API 延迟
+		if !isDirty && baseMtime > 0 && time.Now().UnixMilli()-baseMtime < 5000 {
+			driver.Log.Printf("MergeRemoteChanges: skipping %s (just synced %dms ago)\n", entry.path, time.Now().UnixMilli()-baseMtime)
+			continue
+		}
 
 		rf, exists := remoteMap[name]
 		if !exists {
