@@ -149,39 +149,34 @@ func ensureRemotePath(d *driver.QuarkDriver, path string) (string, error) {
 		}
 		fid, err := d.FindChildByName(currentFid, seg)
 		if err != nil {
-			// Try to create it
-			fid, err = d.CreateDir(currentFid, seg)
-			if err != nil {
-				// If conflict, try listing one more time with fresh cache
+			// Try to create it, with retries for "doloading" transient conflicts
+			for createAttempt := 0; createAttempt < 10; createAttempt++ {
+				fid, err = d.CreateDir(currentFid, seg)
+				if err == nil {
+					break
+				}
 				if strings.Contains(err.Error(), "23008") || strings.Contains(err.Error(), "conflict") {
+					// Directory might be in "doloading" transient state — wait and retry
+					time.Sleep(time.Duration(createAttempt+1) * 2 * time.Second)
 					d.RemoveDirCache(currentFid)
 					fid, err = d.FindChildByName(currentFid, seg)
 					if err == nil {
-						currentFid = fid
-						continue
+						break
 					}
-
-					// If still not found but conflict persists, it might be a ghost item or eventual consistency.
-					// In E2E tests, we can try to find it by listing EVERYTHING multiple times with a sleep.
-					for retry := 0; retry < 5; retry++ {
-						time.Sleep(1 * time.Second)
-						d.RemoveDirCache(currentFid)
-						files, lerr := d.ListFiles(currentFid)
-						if lerr == nil {
-							for _, f := range files {
-								if f.FileName == seg {
-									currentFid = f.Fid
-									goto nextSegment
-								}
-							}
-						}
-					}
+					continue
 				}
 				return "", fmt.Errorf("failed to create remote dir %s: %v", seg, err)
 			}
+			if err != nil {
+				// Final attempt: maybe it appeared in the listing by now
+				d.RemoveDirCache(currentFid)
+				fid, err = d.FindChildByName(currentFid, seg)
+				if err != nil {
+					return "", fmt.Errorf("failed to create remote dir %s after retries: %v", seg, err)
+				}
+			}
 		}
 		currentFid = fid
-	nextSegment:
 	}
 	return currentFid, nil
 }
@@ -248,10 +243,20 @@ func setupQryptFSInternal(t *testing.T, config *e2eConfig, clearCache bool) (*Qr
 	// 6. 后台挂载
 	options := []string{
 		"-o", "rw",
-		"-o", "noappledouble",
-		"-o", "volname=QryptTest",
-		"-o", "defer_permissions",
-		"-o", "local",
+		"-o", "nonempty",
+	}
+	if runtime.GOOS == "darwin" {
+		options = append(options,
+			"-o", "noappledouble",
+			"-o", "volname=QryptTest",
+			"-o", "defer_permissions",
+			"-o", "local",
+		)
+	} else {
+		options = append(options,
+			"-o", "allow_other",
+			"-o", "default_permissions",
+		)
 	}
 
 	go host.Mount(config.mountPoint, options)
@@ -941,4 +946,133 @@ func TestE2E_CopyConflict(t *testing.T) {
 	if !foundFileTxt {
 		t.Errorf("file.txt not found on remote")
 	}
+}
+
+// TestE2E_CrossDirectoryRename tests moving a file across directories
+// (the macOS Finder cut-paste scenario). This reproduces the bug where
+// Move API was missing the required current_dir_fid parameter.
+func TestE2E_CrossDirectoryRename(t *testing.T) {
+	config := loadE2EConfig(t)
+
+	// Pre-cleanup
+	os.RemoveAll(filepath.Join(config.mountPoint, "e2e_rename_src"))
+	time.Sleep(1 * time.Second)
+
+	fs, host, err := setupQryptFSInternal(t, config, true)
+	if err != nil {
+		t.Fatalf("Failed to setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host.Unmount()
+
+	// 1. Create source directory
+	srcDir := filepath.Join(config.mountPoint, "e2e_rename_src")
+	if err := os.Mkdir(srcDir, 0755); err != nil {
+		t.Fatalf("Mkdir failed: %v", err)
+	}
+	time.Sleep(2 * time.Second) // wait for dir sync
+
+	// 2. Create file in subdirectory and wait for sync
+	srcFile := filepath.Join(srcDir, "move_me.txt")
+	content := []byte("cross-directory rename test content")
+	if err := os.WriteFile(srcFile, content, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	waitForSync(t, fs, "/e2e_rename_src/move_me.txt")
+
+	// 3. Move file from /e2e_rename_src/ to / (cross-directory rename)
+	dstFile := filepath.Join(config.mountPoint, "move_me.txt")
+	if err := os.Rename(srcFile, dstFile); err != nil {
+		t.Fatalf("Cross-directory Rename failed: %v", err)
+	}
+
+	// 4. Verify file accessible at new path
+	readBack, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("ReadFile at new path failed: %v", err)
+	}
+	if !bytes.Equal(content, readBack) {
+		t.Errorf("Content mismatch. Expected %q, got %q", string(content), string(readBack))
+	}
+
+	// 5. Verify file gone from old path
+	if _, err := os.Stat(srcFile); !os.IsNotExist(err) {
+		t.Errorf("File should not exist at old path %s", srcFile)
+	}
+
+	// 6. Cleanup
+	os.Remove(dstFile)
+	os.Remove(srcDir)
+}
+
+// TestE2E_NoDuplicateAfterUpload verifies that after uploading a file,
+// there's only one copy on the server (no empty placeholder or (1) suffix).
+func TestE2E_NoDuplicateAfterUpload(t *testing.T) {
+	config := loadE2EConfig(t)
+
+	const fileName = "no_dup_test.txt"
+	os.Remove(filepath.Join(config.mountPoint, fileName))
+	time.Sleep(1 * time.Second)
+
+	fs, host, err := setupQryptFSInternal(t, config, true)
+	if err != nil {
+		t.Fatalf("Failed to setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host.Unmount()
+
+	// 1. Write and sync
+	content := []byte("no duplicate test content " + fmt.Sprint(time.Now().UnixNano()))
+	testFile := filepath.Join(config.mountPoint, fileName)
+	if err := os.WriteFile(testFile, content, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	waitForSync(t, fs, "/"+fileName)
+
+	// 2. Wait for remote to stabilize
+	time.Sleep(3 * time.Second)
+
+	// 3. Check remote: count files with matching encrypted name
+	cipher, err := crypt.NewRcloneCipher(config.password, config.salt)
+	if err != nil {
+		t.Fatalf("cipher init failed: %v", err)
+	}
+	d := driver.NewQuarkDriver(config.cookie)
+	if err := d.Auth(); err != nil {
+		t.Fatalf("auth failed: %v", err)
+	}
+	rootFid, err := d.ResolvePath(config.remotePath)
+	if err != nil {
+		t.Fatalf("resolve path failed: %v", err)
+	}
+	d.RemoveDirCache(rootFid)
+	files, err := d.ListFiles(rootFid)
+	if err != nil {
+		t.Fatalf("list files failed: %v", err)
+	}
+
+	encName := cipher.EncryptSegment(fileName)
+	matchCount := 0
+	for _, f := range files {
+		if f.FileName == encName {
+			matchCount++
+			if f.Int64Size() == 0 {
+				t.Errorf("Found empty placeholder file (fid=%s) — UploadFinish not called after dedup?", f.Fid)
+			}
+		}
+		// Also check for (1) suffixed duplicates
+		decName, _ := cipher.DecryptSegment(f.FileName)
+		if strings.Contains(decName, fileName[:len(fileName)-4]) && decName != fileName {
+			t.Errorf("Found duplicate file on server: %s", decName)
+		}
+	}
+	if matchCount == 0 {
+		t.Error("Uploaded file not found on server")
+	}
+	if matchCount > 1 {
+		t.Errorf("Found %d files with same encrypted name (expected 1) — possible placeholder leak", matchCount)
+	}
+
+	// 4. Cleanup
+	os.Remove(testFile)
 }

@@ -83,6 +83,31 @@ func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*driver.Fi
 	if parentFid == "" || parentFid == "root" || isFinderTrashPath("/"+filepath.ToSlash(parentFid)) {
 		return nil, nil
 	}
+
+	// OPTIMIZATION: If parent's children are fresh (within TTL), check in-memory
+	// instead of making an API call. This avoids RemoveDirCache + ListFiles every time.
+	if parentNode, ok := fs.fidNodes.Load(parentFid); ok {
+		pn := parentNode.(*node)
+		pn.mu.RLock()
+		lastCheck := pn.lastMetadataCheck
+		if time.Since(lastCheck) < MetadataTTL {
+			// Cache is fresh — search children by fid
+			for _, child := range pn.children {
+				child.mu.RLock()
+				childFid := child.fid
+				child.mu.RUnlock()
+				if childFid == fid {
+					pn.mu.RUnlock()
+					return &driver.File{Fid: fid}, nil // File exists in cache
+				}
+			}
+			pn.mu.RUnlock()
+			return nil, nil // Not found in fresh cache means it's gone
+		}
+		pn.mu.RUnlock()
+	}
+
+	// Fallback: cache is stale, fetch from server
 	fs.driver.RemoveDirCache(parentFid)
 	files, err := fs.driver.ListFiles(parentFid)
 	if err != nil {

@@ -114,6 +114,10 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	}
 
 	if pre.Data.Finish {
+		// 秒传/去重：文件已存在，但仍需 UploadFinish 清理 UploadPre 创建的占位文件
+		if err := m.driver.UploadFinish(pre); err != nil {
+			driver.Log.Printf("Sync: UploadFinish after dedup failed for %s: %v\n", req.Path, err)
+		}
 		result.Fid = pre.Data.Fid
 		return result, nil
 	}

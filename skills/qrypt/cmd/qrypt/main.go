@@ -75,15 +75,9 @@ func main() {
 			fs := vfs.NewQryptFS(d, cm, rootFid, cipher)
 			host := fuse.NewFileSystemHost(fs)
 
-			// 设置挂载参数：rw (读写), noappledouble (减少苹果双叉文件), defer_permissions (macOS 推荐)
-			// 注意：根据规范显式禁用 -o local 模式，防止 Finder 创建 .Trashes 并触发权限错误。
-			options := []string{
-				"-o", "rw",
-				"-o", "noappledouble",
-				"-o", "defer_permissions",
-				"-o", "volname=QuarkDrive",
-			}
-			fmt.Printf("Mounting Quark Drive at %s (Network Mode)...\n", mountPoint)
+			// 平台适配：macOS 使用 noappledouble/defer_permissions，Linux 使用 allow_other
+			options := vfs.MountOptions()
+			fmt.Printf("Mounting Quark Drive at %s...\n", mountPoint)
 			host.Mount(mountPoint, options)
 		},
 	}

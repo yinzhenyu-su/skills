@@ -294,12 +294,15 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 		parentFid := n.parentFid
 		n.mu.RUnlock()
 
-		// For synced nodes (non-local fid), verify the file still exists on server.
-		// If TTL expired, we refresh metadata.
+		// For synced nodes (non-local fid):
+		// - If within TTL, trust cached metadata (no API call).
+		// - If TTL expired, refresh metadata via ListFiles (which also verifies existence).
+		// This eliminates redundant fileExistsOnServer calls on every lookup.
 		if !strings.HasPrefix(fid, "local_") {
 			if !isFolder && !isDirty && time.Since(lastCheck) > MetadataTTL {
-				// Refresh single file metadata
+				// Refresh single file metadata + verify existence in one ListFiles call
 				files, err := fs.driver.ListFiles(parentFid)
+				found := false
 				if err == nil {
 					for _, f := range files {
 						if f.Fid == fid {
@@ -312,14 +315,16 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 							n.baseServerSize = decSize
 							n.lastMetadataCheck = time.Now()
 							n.mu.Unlock()
+							found = true
 							break
 						}
 					}
 				}
-			}
-
-			if path != "/" && !fs.fileExistsOnServer(fid, parentFid) {
-				driver.Log.Printf("lookup: file %s (fid=%s) not found on server, using cached node\n", path, fid)
+				if !found && path != "/" {
+					driver.Log.Printf("lookup: file %s (fid=%s) deleted from server, removing from cache\n", path, fid)
+					fs.deleteNodePath(path, n)
+					return nil, -fuse.ENOENT
+				}
 			}
 			return n, 0
 		}
@@ -407,10 +412,11 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 }
 
 type opsPayload struct {
-	Fid       string   `json:"fid,omitempty"`
-	Fids      []string `json:"fids,omitempty"`
-	ParentFid string   `json:"parent_fid,omitempty"`
-	Name      string   `json:"name,omitempty"`
+	Fid           string   `json:"fid,omitempty"`
+	Fids          []string `json:"fids,omitempty"`
+	ParentFid     string   `json:"parent_fid,omitempty"`
+	CurrentDirFid string   `json:"current_dir_fid,omitempty"`
+	Name          string   `json:"name,omitempty"`
 }
 
 func (fs *QryptFS) recoverPendingOps() {
@@ -440,7 +446,7 @@ func (fs *QryptFS) recoverPendingOps() {
 			err = fs.driver.Delete(p.Fids)
 		case "RENAME":
 			if p.ParentFid != "" {
-				_ = fs.driver.Move(p.Fids, p.ParentFid)
+				_ = fs.driver.Move(p.Fids, p.ParentFid, p.CurrentDirFid)
 			}
 			err = fs.driver.Rename(p.Fids[0], p.Name)
 		}
@@ -704,6 +710,31 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 			n.mu.Lock()
 			n.lastMetadataCheck = time.Now()
 			n.mu.Unlock()
+
+			// OPTIMIZATION: Background prefetch child directories
+			n.mu.RLock()
+			for _, child := range n.children {
+				child.mu.RLock()
+				isDir := child.isFolder
+				childFid := child.fid
+				childLastCheck := child.lastMetadataCheck
+				child.mu.RUnlock()
+				if isDir && time.Since(childLastCheck) > MetadataTTL {
+					go func(fid string) {
+						prefetchFiles, err := fs.driver.ListFiles(fid)
+						if err != nil {
+							return
+						}
+						if cpn, ok := fs.fidNodes.Load(fid); ok {
+							fs.MergeRemoteChanges(cpn.(*node).currentPath, fid, prefetchFiles)
+							cpn.(*node).mu.Lock()
+							cpn.(*node).lastMetadataCheck = time.Now()
+							cpn.(*node).mu.Unlock()
+						}
+					}(childFid)
+				}
+			}
+			n.mu.RUnlock()
 		}
 	}
 
@@ -905,7 +936,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 				}
 			}
 			encName := fs.cipher.EncryptSegment(newName)
-			payload, _ := json.Marshal(opsPayload{Fids: []string{oldNode.fid}, ParentFid: moveFid, Name: encName})
+			payload, _ := json.Marshal(opsPayload{Fids: []string{oldNode.fid}, ParentFid: moveFid, CurrentDirFid: oldNode.parentFid, Name: encName})
 			logID, _ = db.AddOpsLogEntry("RENAME", oldPath, newPath, string(payload))
 		}
 	}
@@ -917,8 +948,23 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 		}
 
 		if !isLocal {
-			err := fs.driver.Move([]string{oldNode.fid}, newParentNode.fid)
-			if err != nil {
+			// Retry Move to handle transient Quark API errors (e.g. 23008 conflict)
+			var moveErr error
+			for attempt := 0; attempt < 5; attempt++ {
+				moveErr = fs.driver.Move([]string{oldNode.fid}, newParentNode.fid, oldNode.parentFid)
+				if moveErr == nil {
+					break
+				}
+				if strings.Contains(moveErr.Error(), "23008") || strings.Contains(moveErr.Error(), "conflict") {
+					driver.Log.Printf("Rename Move: transient error on attempt %d for %s: %v\n", attempt+1, oldPath, moveErr)
+					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+					fs.driver.RemoveDirCache(newParentNode.fid)
+					continue
+				}
+				break // non-retryable error
+			}
+			if moveErr != nil {
+				driver.Log.Printf("Rename Move failed for %s -> %s: %v\n", oldPath, newPath, moveErr)
 				return -fuse.EIO
 			}
 		}
@@ -936,9 +982,32 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 
 	if !isLocal {
 		encName := fs.cipher.EncryptSegment(newName)
-		err := fs.driver.Rename(oldNode.fid, encName)
-		if err != nil {
-			return -fuse.EIO
+		// OPTIMIZATION + BUGFIX: Skip Rename if encrypted name is unchanged.
+		// EncryptSegment is deterministic, so same plaintext → same ciphertext.
+		// This avoids a redundant API call and prevents Quark 23008 conflicts
+		// when Move already set the file's name (e.g. cross-directory move with same name).
+		oldEncName := fs.cipher.EncryptSegment(oldNode.name)
+		if encName != oldEncName {
+			// Retry Rename to handle transient Quark API errors
+			var renameErr error
+			for attempt := 0; attempt < 5; attempt++ {
+				renameErr = fs.driver.Rename(oldNode.fid, encName)
+				if renameErr == nil {
+					break
+				}
+				if strings.Contains(renameErr.Error(), "23008") || strings.Contains(renameErr.Error(), "conflict") {
+					driver.Log.Printf("Rename: transient error on attempt %d for %s: %v\n", attempt+1, oldPath, renameErr)
+					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+					continue
+				}
+				break
+			}
+			if renameErr != nil {
+				driver.Log.Printf("Rename failed for %s -> %s: %v\n", oldPath, newPath, renameErr)
+				return -fuse.EIO
+			}
+		} else {
+			driver.Log.Printf("Rename: skipping Rename API call, name unchanged (%s)\n", newName)
 		}
 	}
 

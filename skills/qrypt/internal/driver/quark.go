@@ -498,12 +498,12 @@ func (d *QuarkDriver) Delete(fids []string) error {
 		return err
 	}
 	if resp.Status >= 400 || resp.Code != 0 {
-		return errors.New(resp.Message)
+		return fmt.Errorf("API Error (Status %d, Code %d): %s", resp.Status, resp.Code, resp.Message)
 	}
 	return nil
 }
 
-// Rename 重命名文件或文件夹
+// Rename 重命名文件
 func (d *QuarkDriver) Rename(fid, newName string) error {
 	data := map[string]interface{}{
 		"fid":       fid,
@@ -515,16 +515,17 @@ func (d *QuarkDriver) Rename(fid, newName string) error {
 		return err
 	}
 	if resp.Status >= 400 || resp.Code != 0 {
-		return errors.New(resp.Message)
+		return fmt.Errorf("API Error (Status %d, Code %d): %s", resp.Status, resp.Code, resp.Message)
 	}
 	return nil
 }
 
 // Move 移动文件或文件夹
-func (d *QuarkDriver) Move(fids []string, toPdirFid string) error {
+func (d *QuarkDriver) Move(fids []string, toPdirFid string, currentDirFid string) error {
 	data := map[string]interface{}{
-		"fids":        fids,
-		"to_pdir_fid": toPdirFid,
+		"fids":            fids,
+		"to_pdir_fid":     toPdirFid,
+		"current_dir_fid": currentDirFid,
 	}
 	var resp Resp
 	err := d.request(http.MethodPost, "/file/move", nil, data, &resp)
@@ -532,7 +533,7 @@ func (d *QuarkDriver) Move(fids []string, toPdirFid string) error {
 		return err
 	}
 	if resp.Status >= 400 || resp.Code != 0 {
-		return errors.New(resp.Message)
+		return fmt.Errorf("API Error (Status %d, Code %d): %s", resp.Status, resp.Code, resp.Message)
 	}
 	return nil
 }
