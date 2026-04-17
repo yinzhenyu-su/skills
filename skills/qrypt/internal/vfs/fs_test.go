@@ -39,19 +39,30 @@ func TestQryptFS_RenameToFinderTrashDeletesRemote(t *testing.T) {
 	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/file/delete" {
+		switch r.URL.Path {
+		case "/file/delete":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("failed to read request body: %v", err)
+			}
+			mu.Lock()
+			deleteCalls++
+			deleteBody = string(body)
+			mu.Unlock()
+			fmt.Fprint(w, `{"status":200,"code":0,"message":"ok"}`)
+		case "/file/sort":
+			// ListFiles: 返回包含 doc.txt 的列表，避免 MergeRemoteChanges 误判删除
+			fmt.Fprint(w, `{"status":200,"code":0,"data":{"list":[{
+				"fid":"remote-fid",
+				"file_name":"doc.txt",
+				"pdir_fid":"root",
+				"size":100,
+				"updated_at":1000,
+				"file":true
+			}]},"metadata":{"_total":1}}`)
+		default:
 			http.Error(w, "unexpected path", http.StatusNotFound)
-			return
 		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("failed to read request body: %v", err)
-		}
-		mu.Lock()
-		deleteCalls++
-		deleteBody = string(body)
-		mu.Unlock()
-		fmt.Fprint(w, `{"status":200,"code":0,"message":"ok"}`)
 	}))
 	defer server.Close()
 
