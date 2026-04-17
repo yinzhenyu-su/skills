@@ -519,6 +519,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		isDirty := n.isDirty
 		baseMtime := n.baseServerMtime
 		syncQueued := n.syncQueued
+		lastCheck := n.lastMetadataCheck
 		n.mu.RUnlock()
 
 		seenLocalNames[name] = true
@@ -528,9 +529,9 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			driver.Log.Printf("MergeRemoteChanges: skipping %s (sync in progress)\n", entry.path)
 			continue
 		}
-		// 刚上传完成的文件（5秒内），跳过以防 API 延迟
-		if !isDirty && baseMtime > 0 && time.Now().UnixMilli()-baseMtime < 5000 {
-			driver.Log.Printf("MergeRemoteChanges: skipping %s (just synced %dms ago)\n", entry.path, time.Now().UnixMilli()-baseMtime)
+		// 刚上传完成的文件（5秒内），跳过以防 API 索引延迟导致误判为"远程删除"
+		if !isDirty && !lastCheck.IsZero() && time.Since(lastCheck) < 5*time.Second {
+			driver.Log.Printf("MergeRemoteChanges: skipping %s (just synced %dms ago)\n", entry.path, time.Since(lastCheck).Milliseconds())
 			continue
 		}
 
