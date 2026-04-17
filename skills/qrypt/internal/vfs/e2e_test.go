@@ -438,6 +438,83 @@ func TestE2E_Lifecycle(t *testing.T) {
 	_ = fs2
 }
 
+func TestE2E_MoveFileToSubdirectory(t *testing.T) {
+	config := loadE2EConfig(t)
+
+	// Pre-cleanup
+	os.RemoveAll(filepath.Join(config.mountPoint, "move_test_dir"))
+	os.Remove(filepath.Join(config.mountPoint, "move_test_file.txt"))
+	time.Sleep(1 * time.Second)
+
+	fs, host, err := setupQryptFSInternal(t, config, true)
+	if err != nil {
+		t.Fatalf("Failed to setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host.Unmount()
+
+	// 1. 创建测试文件
+	testFile := filepath.Join(config.mountPoint, "move_test_file.txt")
+	content := []byte("Hello, Move Test!")
+	if err := os.WriteFile(testFile, content, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	waitForSync(t, fs, "/move_test_file.txt")
+	t.Log("File created and synced")
+
+	// 2. 创建子目录
+	subDir := filepath.Join(config.mountPoint, "move_test_dir")
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatalf("Mkdir failed: %v", err)
+	}
+	time.Sleep(2 * time.Second) // 等待目录创建同步
+	t.Log("Subdirectory created")
+
+	// 3. 移动文件到子目录
+	movedFile := filepath.Join(subDir, "move_test_file.txt")
+	if err := os.Rename(testFile, movedFile); err != nil {
+		t.Fatalf("Move to subdirectory failed: %v", err)
+	}
+	waitForSync(t, fs, "/move_test_dir/move_test_file.txt")
+	t.Log("File moved to subdirectory")
+
+	// 4. 验证文件内容
+	readContent, err := os.ReadFile(movedFile)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !bytes.Equal(content, readContent) {
+		t.Errorf("Content mismatch after move. Expected %q, got %q", string(content), string(readContent))
+	}
+
+	// 5. 移动文件回根目录
+	backToFile := filepath.Join(config.mountPoint, "move_test_file.txt")
+	if err := os.Rename(movedFile, backToFile); err != nil {
+		t.Fatalf("Move back to root failed: %v", err)
+	}
+	waitForSync(t, fs, "/move_test_file.txt")
+	t.Log("File moved back to root")
+
+	// 6. 验证文件内容
+	readContent2, err := os.ReadFile(backToFile)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !bytes.Equal(content, readContent2) {
+		t.Errorf("Content mismatch after move back. Expected %q, got %q", string(content), string(readContent2))
+	}
+
+	// 7. 清理
+	if err := os.Remove(backToFile); err != nil {
+		t.Fatalf("Remove file failed: %v", err)
+	}
+	if err := os.Remove(subDir); err != nil {
+		t.Fatalf("Remove dir failed: %v", err)
+	}
+
+	_ = fs
+}
+
 func TestE2E_CreateAndSync(t *testing.T) {
 	config := loadE2EConfig(t)
 
