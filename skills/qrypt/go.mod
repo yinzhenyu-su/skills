@@ -3,6 +3,7 @@ module github.com/yinzhenyu/skills/qrypt
 go 1.26.2
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/joho/godotenv v1.5.1
 	github.com/pkg/xattr v0.4.12
