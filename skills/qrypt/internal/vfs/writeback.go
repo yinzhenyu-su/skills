@@ -149,14 +149,8 @@ func (fs *QryptFS) Truncate(path string, size int64, fh uint64) (errc int) {
 	return 0
 }
 
-// Flush 刷新文件
+// Flush 刷新文件 - 不再触发上传，避免写入未完成时就开始上传
 func (fs *QryptFS) Flush(path string, fh uint64) (errc int) {
-	node, errc := fs.lookup(path)
-	if errc != 0 {
-		return errc
-	}
-
-	fs.enqueueSync(node)
 	return 0
 }
 
@@ -232,7 +226,13 @@ func (fs *QryptFS) Listxattr(path string, fill func(name string) bool) (errc int
 	return 0
 }
 
-// Release 文件句柄关闭时触发，沿用 Flush 行为以覆盖更多编辑器写入路径
+// Release 文件句柄关闭时触发，此时写入已完成，可以安全上传
 func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
-	return fs.Flush(path, fh)
+	node, errc := fs.lookup(path)
+	if errc != 0 {
+		return errc
+	}
+
+	fs.enqueueSync(node)
+	return 0
 }
