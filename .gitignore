@@ -2,6 +2,7 @@
 *.db-shm
 *.db-wal
 /cache/
+qrypt.toml
 */qrypt/cache
 skills/qrypt/qrypt
 skills/qrypt/mount-quark.sh
