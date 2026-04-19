@@ -78,10 +78,10 @@ func runMount(cmd *cobra.Command, args []string) {
 		cfg.Encryption.Salt = salt
 	}
 	if cacheDir, _ := cmd.Flags().GetString("cache"); cacheDir != "" {
-		cfg.Cache.Dir = cacheDir
+		cfg.Cache.Dir = config.ExpandHome(cacheDir)
 	}
 	if mountPoint, _ := cmd.Flags().GetString("mount"); mountPoint != "" {
-		cfg.Mount.Point = mountPoint
+		cfg.Mount.Point = config.ExpandHome(mountPoint)
 	}
 	if rootPath, _ := cmd.Flags().GetString("root-path"); rootPath != "" {
 		cfg.Quark.RootPath = rootPath

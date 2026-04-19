@@ -85,6 +85,21 @@ func DefaultConfig() *Config {
 	}
 }
 
+// ExpandHome 将路径中的 ~ 展开为用户家目录
+func ExpandHome(path string) string {
+	if path == "" || path[0] != '~' {
+		return path
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	if len(path) == 1 {
+		return homeDir
+	}
+	return filepath.Join(homeDir, path[2:]) // skip "~/"
+}
+
 // LoadConfig 从文件加载配置
 func LoadConfig(path string) (*Config, error) {
 	config := DefaultConfig()
@@ -102,6 +117,11 @@ func LoadConfig(path string) (*Config, error) {
 	if _, err := toml.DecodeFile(path, config); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+
+	// 展开所有路径中的 ~
+	config.Cache.Dir = ExpandHome(config.Cache.Dir)
+	config.Mount.Point = ExpandHome(config.Mount.Point)
+	config.Log.File = ExpandHome(config.Log.File)
 
 	return config, nil
 }
