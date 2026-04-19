@@ -454,12 +454,11 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 
 	driver.Log.Printf("Syncing file (Staged): %s (size %d, parentFid %s)\n", snapshotName, snapshotSize, parentFid)
 	result, err := fs.uploader.Sync(uploadpkg.SyncRequest{
-		Path:               path,
-		Name:               snapshotName,
-		ParentFid:          parentFid,
-		LocalPath:          snapshotPath,
-		PlainSize:          snapshotSize,
-		SkipDeleteExisting: true, // conflict check already done in syncFile step 1b
+		Path:      path,
+		Name:      snapshotName,
+		ParentFid: parentFid,
+		LocalPath: snapshotPath,
+		PlainSize: snapshotSize,
 	})
 	stats.PreDuration = result.PreDuration
 	stats.UpdateHashDuration = result.UpdateHashDuration

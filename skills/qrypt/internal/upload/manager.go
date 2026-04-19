@@ -15,12 +15,11 @@ import (
 )
 
 type SyncRequest struct {
-	Path                 string
-	Name                 string
-	ParentFid            string
-	LocalPath            string
-	PlainSize            int64
-	SkipDeleteExisting   bool // if true, skip deleteExistingFileByName (for external/test uploads)
+	Path      string
+	Name      string
+	ParentFid string
+	LocalPath string
+	PlainSize int64
 }
 
 type SyncResult struct {
@@ -103,11 +102,8 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 
 	// Check if file with same name already exists in parent directory.
 	// If so, delete it first to avoid duplicate files with (1) suffix.
-	// Skip for external/test uploads that intentionally add a file alongside existing ones.
-	if !req.SkipDeleteExisting {
-		if err := m.deleteExistingFileByName(req.ParentFid, encName); err != nil {
-			driver.Log.Printf("Sync: warning: failed to check/delete existing file %s in parent %s: %v\n", encName, req.ParentFid, err)
-		}
+	if err := m.deleteExistingFileByName(req.ParentFid, encName); err != nil {
+		driver.Log.Printf("Sync: warning: failed to check/delete existing file %s in parent %s: %v\n", encName, req.ParentFid, err)
 	}
 
 	preStart := time.Now()

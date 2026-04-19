@@ -38,12 +38,11 @@ func uploadRemoteFile(t *testing.T, config *e2eConfig, name string, content []by
 	_, _ = st.WriteAt(localPath, content, 0)
 	
 	_, err = uploader.Sync(uploadpkg.SyncRequest{
-		Path:               "/" + name,
-		Name:               name,
-		ParentFid:          rootFid,
-		LocalPath:          localPath,
-		PlainSize:          int64(len(content)),
-		SkipDeleteExisting: true, // don't delete existing file — this simulates an external upload
+		Path:      "/" + name,
+		Name:      name,
+		ParentFid: rootFid,
+		LocalPath: localPath,
+		PlainSize: int64(len(content)),
 	})
 	if err != nil {
 		t.Fatalf("Failed to upload remote file: %v", err)
