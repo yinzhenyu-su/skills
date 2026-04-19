@@ -102,12 +102,17 @@ func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*driver.Fi
 				}
 			}
 			pn.mu.RUnlock()
-			return nil, nil // Not found in fresh cache means it's gone
+			// FID not in local children, but cache is fresh.
+			// This can happen if a file was uploaded externally (bypassing FUSE).
+			// Fall through to server check instead of assuming file is gone.
+			driver.Log.Printf("fileExistsOnServerDetailed: fid=%s not in local children of parent=%s, checking server\n", fid, parentFid)
+			goto serverCheck
 		}
 		pn.mu.RUnlock()
 	}
 
-	// Fallback: cache is stale, fetch from server
+	// Fallback: cache is stale or missing, fetch from server
+serverCheck:
 	fs.driver.RemoveDirCache(parentFid)
 	files, err := fs.driver.ListFiles(parentFid)
 	if err != nil {
@@ -375,7 +380,26 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	n.mu.Unlock()
 	stats.SnapshotSize = snapshotSize
 
-	// 1. Pre-upload Conflict Check
+	// 1b. Check for same-name conflict on server (external upload with different FID)
+	if !strings.HasPrefix(fid, "local_") {
+		files, listErr := fs.driver.ListFiles(parentFid)
+		if listErr == nil {
+			for _, f := range files {
+				if f.Fid == fid {
+					continue // our own file, skip
+				}
+				decName, _ := fs.cipher.DecryptSegment(f.FileName)
+				if decName == snapshotName {
+					// Same name but different FID — external modification detected
+					driver.Log.Printf("Sync: CONFLICT (same name, different FID) for %s. Our FID=%s, server FID=%s. Resolving...\n", path, fid, f.Fid)
+					fs.resolveConflict(path, n, f)
+					return nil
+				}
+			}
+		}
+	}
+
+	// 1c. Pre-upload Conflict Check (existing FID-based check)
 	if !strings.HasPrefix(fid, "local_") {
 		rf, err := fs.fileExistsOnServerDetailed(fid, parentFid)
 		if err != nil {
@@ -430,11 +454,12 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 
 	driver.Log.Printf("Syncing file (Staged): %s (size %d, parentFid %s)\n", snapshotName, snapshotSize, parentFid)
 	result, err := fs.uploader.Sync(uploadpkg.SyncRequest{
-		Path:      path,
-		Name:      snapshotName,
-		ParentFid: parentFid,
-		LocalPath: snapshotPath,
-		PlainSize: snapshotSize,
+		Path:               path,
+		Name:               snapshotName,
+		ParentFid:          parentFid,
+		LocalPath:          snapshotPath,
+		PlainSize:          snapshotSize,
+		SkipDeleteExisting: true, // conflict check already done in syncFile step 1b
 	})
 	stats.PreDuration = result.PreDuration
 	stats.UpdateHashDuration = result.UpdateHashDuration
