@@ -452,6 +452,20 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	}
 	defer func() { _ = fs.staging.Remove(snapshotPath) }()
 
+	// Verify staging file size matches node.size to prevent uploading incomplete files.
+	// FUSE may call Release before all Writes complete (e.g., macFUSE behavior).
+	if snapshotSize > 0 {
+		actualSize, err := fs.staging.FileSize(snapshotPath)
+		if err == nil && actualSize < snapshotSize {
+			driver.Log.Printf("Sync: WARNING: staging file size %d < expected %d for %s. Re-queuing...\n", actualSize, snapshotSize, path)
+			// Re-queue the sync: mark as not synced so Release can trigger again later
+			n.mu.Lock()
+			n.syncQueued = false
+			n.mu.Unlock()
+			return fmt.Errorf("staging file incomplete (%d < %d)", actualSize, snapshotSize)
+		}
+	}
+
 	driver.Log.Printf("Syncing file (Staged): %s (size %d, parentFid %s)\n", snapshotName, snapshotSize, parentFid)
 	result, err := fs.uploader.Sync(uploadpkg.SyncRequest{
 		Path:      path,

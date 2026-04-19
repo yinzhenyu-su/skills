@@ -191,6 +191,15 @@ func (s *Store) Exists(path string) bool {
 	return err == nil
 }
 
+// FileSize returns the size of a file at the given path.
+func (s *Store) FileSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
 func (s *Store) Remove(path string) error {
 	if path == "" {
 		return nil

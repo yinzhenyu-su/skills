@@ -222,6 +222,90 @@ func TestE2E_ConflictResolution(t *testing.T) {
 	_ = fs.staging.Remove(st)
 }
 
+// TestE2E_IncompleteStagingFileRequeued tests that syncFile re-queues when
+// the staging file size is smaller than the expected node.size.
+// This simulates the macFUSE behavior where Release is called before all Writes complete.
+func TestE2E_IncompleteStagingFileRequeued(t *testing.T) {
+	config := loadE2EConfig(t)
+	config.remotePath = filepath.Join(config.remotePath, t.Name())
+
+	// Setup fresh FS
+	fs, host, err := setupQryptFSInternal(t, config, true)
+	if err != nil {
+		t.Fatalf("Failed to setup QryptFS: %v", err)
+	}
+	defer unmount(config.mountPoint)
+	defer host.Unmount()
+
+	const fileName = "incomplete_staging_test.txt"
+	filePath := filepath.Join(config.mountPoint, fileName)
+	expectedContent := []byte("This file should not be uploaded as incomplete")
+
+	// 1. Create a file via FUSE (this triggers Create + Write + Release)
+	if err := os.WriteFile(filePath, expectedContent, 0644); err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	// 2. Get the node and staging file
+	v, ok := fs.nodes.Load("/" + fileName)
+	if !ok {
+		t.Fatal("Node not found after write")
+	}
+	n := v.(*node)
+
+	n.mu.Lock()
+	// Simulate early Release: mark as synced but the staging file is incomplete
+	// In real macFUSE scenario, Release is called before all Writes finish
+	// We simulate this by:
+	// 1. Creating a staging file with 0 size (as if no data written yet)
+	// 2. Setting node.size to expected content length
+	// 3. Marking syncQueued = true (simulating Release's enqueueSync call)
+	stagingPath, _ := fs.staging.Create("test-incomplete-" + fileName)
+	// Note: we intentionally do NOT write to stagingPath — simulating incomplete state
+	n.localPath = stagingPath
+	n.size = int64(len(expectedContent)) // node expects this size
+	n.syncQueued = true                  // Release would have set this
+	n.mu.Unlock()
+
+	// 3. Call syncFile — it should detect the size mismatch and re-queue
+	t.Logf("Calling syncFile with staging size=0, node.size=%d", len(expectedContent))
+	err = fs.syncFile("/"+fileName, n)
+
+	// 4. Verify: syncFile should return error and re-queue the sync
+	if err == nil {
+		t.Error("syncFile should return error for incomplete staging file")
+	} else {
+		t.Logf("syncFile correctly returned error: %v", err)
+	}
+
+	// Verify syncQueued was reset to false (so Release can trigger again later)
+	n.mu.Lock()
+	requeued := n.syncQueued
+	n.mu.Unlock()
+
+	if requeued {
+		t.Log("syncFile correctly re-queued the sync (syncQueued reset to false)")
+	} else {
+		t.Error("syncQueued should be false after re-queue")
+	}
+
+	// 5. Now simulate proper completion: write the actual content to staging
+	n.mu.Lock()
+	_, _ = fs.staging.WriteAt(n.localPath, expectedContent, 0)
+	n.mu.Unlock()
+
+	// 6. Call syncFile again — it should succeed now
+	err = fs.syncFile("/"+fileName, n)
+	if err != nil {
+		t.Errorf("syncFile should succeed with complete staging file: %v", err)
+	} else {
+		t.Log("syncFile succeeded with complete staging file")
+	}
+
+	// Cleanup staging
+	_ = fs.staging.Remove(stagingPath)
+}
+
 func TestE2E_OpsLogRecovery(t *testing.T) {
 	config := loadE2EConfig(t)
 	// Use t.Name() which is unique enough
