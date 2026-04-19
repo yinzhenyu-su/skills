@@ -172,30 +172,30 @@ func (fs *QryptFS) uploadWorker() {
 					return
 				}
 
-				attempt := 0
-				if v, ok := fs.retryState.Load(n); ok {
-					attempt = v.(int)
-				}
-				attempt++
-				fs.retryState.Store(n, attempt)
+			attempt := 0
+			if v, ok := fs.retryState.Load(n); ok {
+				attempt = v.(int)
+			}
+			attempt++
+			fs.retryState.Store(n, attempt)
 
-				if attempt >= maxAutoRetryAttempts {
-					driver.Log.Printf("Background Sync Error for %s (fid=%s) reached max retries (%d): %v. Keep pending for manual retry.\n", path, n.fid, attempt, err)
-					fs.retryState.Delete(n)
-					n.mu.Lock()
-					n.syncQueued = false
-					n.mu.Unlock()
-					return
-				}
-
-				delay := time.Duration(attempt*15) * time.Second
-				driver.Log.Printf("Background Sync Error for %s (fid=%s): %v. Retrying in %s (attempt %d/%d)...\n", path, n.fid, err, delay, attempt, maxAutoRetryAttempts)
-				go func(nodeToRetry *node, d time.Duration) {
-					time.Sleep(d)
-					fs.enqueueSync(nodeToRetry)
-				}(n, delay)
+			if attempt >= fs.maxRetries {
+				driver.Log.Printf("Background Sync Error for %s (fid=%s) reached max retries (%d): %v. Keep pending for manual retry.\n", path, n.fid, attempt, err)
+				fs.retryState.Delete(n)
+				n.mu.Lock()
+				n.syncQueued = false
+				n.mu.Unlock()
 				return
 			}
+
+			delay := time.Duration(attempt*15) * time.Second
+			driver.Log.Printf("Background Sync Error for %s (fid=%s): %v. Retrying in %s (attempt %d/%d)...\n", path, n.fid, err, delay, attempt, fs.maxRetries)
+			go func(nodeToRetry *node, d time.Duration) {
+				time.Sleep(d)
+				fs.enqueueSync(nodeToRetry)
+			}(n, delay)
+			return
+		}
 
 			if stillDirty {
 				fs.enqueueSync(n)

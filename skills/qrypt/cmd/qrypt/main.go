@@ -101,6 +101,15 @@ func runMount(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// 3.5 初始化日志系统
+	levelLogger, err := driver.NewLevelLogger(cfg.Log.Level, cfg.Log.File)
+	if err != nil {
+		fmt.Printf("日志初始化失败: %v\n", err)
+		os.Exit(1)
+	}
+	driver.Log = levelLogger
+	defer levelLogger.Close()
+
 	// 4. 初始化加密引擎
 	cipher, err := crypt.NewRcloneCipher(cfg.Encryption.Password, cfg.Encryption.Salt)
 	if err != nil {
@@ -148,10 +157,13 @@ func runMount(cmd *cobra.Command, args []string) {
 	}
 
 	// 10. 挂载
-	fs := vfs.NewQryptFS(d, cm, rootFid, cipher)
+	fs := vfs.NewQryptFS(d, cm, rootFid, cipher, vfs.QryptFSConfig{
+		MaxRetries:        cfg.Sync.MaxRetries,
+		ConcurrentUploads: cfg.Sync.ConcurrentUploads,
+	})
 	host := fuse.NewFileSystemHost(fs)
 
-	options := vfs.MountOptions()
+	options := vfs.MountOptions(cfg.Mount.AllowOther)
 	fmt.Printf("挂载 Quark Drive 到 %s... (Ctrl+C 卸载)\n", cfg.Mount.Point)
 
 	// 处理信号，优雅退出

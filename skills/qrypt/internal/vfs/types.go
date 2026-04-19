@@ -83,18 +83,19 @@ type syncObserver interface {
 // QryptFS 实现了 fuse.FileSystem 接口
 type QryptFS struct {
 	fuse.FileSystemBase
-	driver       *driver.QuarkDriver
-	cache        *cache.CacheManager
-	cipher       *crypt.RcloneCipher
-	rootFid      string
-	nodes        sync.Map // path -> *node
-	fidNodes     sync.Map // fid -> *node (用于快速反查)
-	fetching     sync.Map // batchKey -> chan struct{} (用于合并请求)
-	memCache     *lru.Cache[string, []byte] // fid_idx -> []byte (有界内存二级缓存)
-	uploadChan   chan syncTask
-	syncing      sync.Map // *node -> struct{} (防止并发同步同一节点)
-	retryState   sync.Map // *node -> int (基于节点的自动重试次数)
-	syncObserver syncObserver
-	staging      *staging.Store
-	uploader     *uploadpkg.Manager
+	driver          *driver.QuarkDriver
+	cache           *cache.CacheManager
+	cipher          *crypt.RcloneCipher
+	rootFid         string
+	nodes           sync.Map // path -> *node
+	fidNodes        sync.Map // fid -> *node (用于快速反查)
+	fetching        sync.Map // batchKey -> chan struct{} (用于合并请求)
+	memCache        *lru.Cache[string, []byte] // fid_idx -> []byte (有界内存二级缓存)
+	uploadChan      chan syncTask
+	syncing         sync.Map // *node -> struct{} (防止并发同步同一节点)
+	retryState      sync.Map // *node -> int (基于节点的自动重试次数)
+	syncObserver    syncObserver
+	staging         *staging.Store
+	uploader        *uploadpkg.Manager
+	maxRetries      int
 }

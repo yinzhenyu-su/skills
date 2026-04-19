@@ -480,7 +480,7 @@ func TestPerfOptim_TypicalWorkflow_TotalAPICalls(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPerfOptim_MountOptions_IncludeFUSECache(t *testing.T) {
-	opts := MountOptions()
+	opts := MountOptions(true)
 	optsStr := strings.Join(opts, " ")
 
 	if !strings.Contains(optsStr, "attr_timeout") {
