@@ -55,6 +55,11 @@ func NewCacheManager(cacheDir string, dbPath string, maxSize int64) (*CacheManag
 		return nil, err
 	}
 
+	// 如果 dbPath 不是绝对路径，拼接到 cacheDir 下
+	if !filepath.IsAbs(dbPath) {
+		dbPath = filepath.Join(cacheDir, dbPath)
+	}
+
 	db, err := NewCacheDB(dbPath)
 	if err != nil {
 		return nil, err

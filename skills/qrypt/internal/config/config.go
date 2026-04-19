@@ -120,6 +120,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	// 展开所有路径中的 ~
 	config.Cache.Dir = ExpandHome(config.Cache.Dir)
+	config.Cache.DBName = ExpandHome(config.Cache.DBName)
 	config.Mount.Point = ExpandHome(config.Mount.Point)
 	config.Log.File = ExpandHome(config.Log.File)
 
