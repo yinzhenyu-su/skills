@@ -455,7 +455,16 @@ func (d *QuarkDriver) UploadFinish(pre *UpPreResp) error {
 		"obj_key": pre.Data.ObjKey,
 		"task_id": pre.Data.TaskId,
 	}
-	return d.request(http.MethodPost, "/file/upload/finish", nil, data, nil)
+	var resp Resp
+	err := d.request(http.MethodPost, "/file/upload/finish", nil, data, &resp)
+	if err != nil {
+		return err
+	}
+	if resp.Status >= 400 || resp.Code != 0 {
+		return fmt.Errorf("UploadFinish error: status=%d, code=%d, message=%s", resp.Status, resp.Code, resp.Message)
+	}
+	Log.Printf("UploadFinish OK: obj_key=%s, task_id=%s\n", pre.Data.ObjKey, pre.Data.TaskId)
+	return nil
 }
 
 // CreateDir 创建文件夹
