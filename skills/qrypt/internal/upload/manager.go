@@ -45,6 +45,28 @@ func NewManager(d *driver.QuarkDriver, c *crypt.RcloneCipher, s *staging.Store) 
 	return &Manager{driver: d, cipher: c, staging: s}
 }
 
+// verifyFileName checks if a file with the given fid has the expected plaintext name
+// in the parent directory. Used to verify dedup results before accepting them.
+func (m *Manager) verifyFileName(fid, parentFid, expectedPlainName string) bool {
+	if parentFid == "" || parentFid == "0" || parentFid == "root" {
+		return true // can't verify at root, assume OK
+	}
+	files, err := m.driver.ListFiles(parentFid)
+	if err != nil {
+		return false
+	}
+	for _, f := range files {
+		if f.Fid == fid {
+			decName, decErr := m.cipher.DecryptSegment(f.FileName)
+			if decErr != nil {
+				return false
+			}
+			return decName == expectedPlainName
+		}
+	}
+	return false
+}
+
 // deleteExistingFileByName lists files in parentFid and deletes any file with matching
 // plaintext name. This prevents duplicate files with (1) suffix when re-uploading.
 // Uses plaintext comparison because EncryptSegment generates a different ciphertext
@@ -103,12 +125,6 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	result.Nonce = nonce
 	result.EncryptedSize = encSize
 
-	// Check if file with same plaintext name already exists in parent directory.
-	// If so, delete it first to avoid duplicate files with (1) suffix.
-	if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
-		driver.Log.Printf("Sync: warning: failed to check/delete existing file %s in parent %s: %v\n", req.Name, req.ParentFid, err)
-	}
-
 	preStart := time.Now()
 	pre, err := m.driver.UploadPre(encName, req.ParentFid, encSize)
 	result.PreDuration = time.Since(preStart)
@@ -116,8 +132,39 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 		return result, err
 	}
 
+	// If UploadPre returned finish=true (dedup), verify the dedup file has the
+	// correct name. If not, it's a hash collision or stale dedup — delete the
+	// old file and re-create UploadPre to get a fresh upload task.
+	for i := 0; pre.Data.Finish && pre.Data.Fid != "" && i < 3; i++ {
+		if m.verifyFileName(pre.Data.Fid, req.ParentFid, req.Name) {
+			break // Dedup file has correct name — accept it
+		}
+		driver.Log.Printf("Sync: dedup fid=%s has wrong name, deleting old file and re-creating upload for %s (attempt %d)\n", pre.Data.Fid, req.Name, i+1)
+		// Clean up the placeholder created by UploadPre
+		m.driver.UploadFinish(pre)
+		// Delete the old file with same plaintext name
+		m.deleteExistingFileByName(req.ParentFid, req.Name)
+		// Re-create UploadPre for a fresh upload
+		pre, err = m.driver.UploadPre(encName, req.ParentFid, encSize)
+		if err != nil {
+			return result, err
+		}
+	}
+
+	// If not dedup, delete existing file with same name to prevent (1) duplicates
+	if !pre.Data.Finish {
+		if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
+			driver.Log.Printf("Sync: warning: failed to check/delete existing file %s in parent %s: %v\n", req.Name, req.ParentFid, err)
+		}
+	}
+
 	if pre.Data.Finish {
-		// 秒传/去重：文件已存在，但仍需 UploadFinish 清理 UploadPre 创建的占位文件
+		// Verify dedup file name one more time before accepting
+		if !m.verifyFileName(pre.Data.Fid, req.ParentFid, req.Name) {
+			return result, fmt.Errorf("dedup returned wrong file after retries: fid=%s for %s", pre.Data.Fid, req.Name)
+		}
+		// Dedup verified: file with correct hash and name already exists
+		driver.Log.Printf("Sync: dedup OK for %s (fid=%s)\n", req.Name, pre.Data.Fid)
 		if err := m.driver.UploadFinish(pre); err != nil {
 			driver.Log.Printf("Sync: UploadFinish after dedup failed for %s: %v\n", req.Path, err)
 		}
