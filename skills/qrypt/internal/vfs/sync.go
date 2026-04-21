@@ -26,52 +26,78 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		return nil
 	}
 
-	// Parent doesn't exist on server. Walk up the node tree to find the
-	// highest ancestor that still exists on the server.
+	// Parent doesn't exist on server. We need to recreate the directory path.
+	// The parent node may have been removed from fidNodes by MergeRemoteChanges,
+	// so we walk up the file path instead of relying on fidNodes.
 	type dirSeg struct {
-		name    string
-		encName string
-		node    *node
+		name     string
+		encName  string
+		fullPath string
+		node     *node // may be nil if node was cleaned up
 	}
 	var missing []dirSeg
 
-	curFid := parentFid
-	for {
-		v, ok := fs.fidNodes.Load(curFid)
-		if !ok {
-			return fmt.Errorf("parent dir fid=%s not found in node tree for %s", curFid, filePath)
-		}
-		n := v.(*node)
-		n.mu.RLock()
-		pFid := n.parentFid
-		nName := n.name
-		n.mu.RUnlock()
+	// Walk up from the file's parent directory, collecting segments.
+	dirPath := filepath.Dir(filePath)
+	segments := strings.Split(strings.Trim(dirPath, "/"), "/")
 
-		if pFid == "" || pFid == "0" || pFid == "root" {
+	// Build a list of (path, node) for each directory level from root to immediate parent
+	type pathLevel struct {
+		fullPath string
+		segName  string
+		node     *node
+	}
+	var levels []pathLevel
+	for i, seg := range segments {
+		if seg == "" {
+			continue
+		}
+		p := "/" + strings.Join(segments[:i+1], "/")
+		var n *node
+		if v, ok := fs.nodes.Load(p); ok {
+			n = v.(*node)
+		}
+		levels = append(levels, pathLevel{fullPath: p, segName: seg, node: n})
+	}
+
+	// Walk from the deepest level upward, finding the deepest ancestor that exists on server
+	curFid := ""
+	for i := len(levels) - 1; i >= 0; i-- {
+		lvl := levels[i]
+		if lvl.node == nil {
+			// No node in memory — definitely needs recreation
+			encName := fs.cipher.EncryptSegment(lvl.segName)
+			missing = append(missing, dirSeg{name: lvl.segName, encName: encName, fullPath: lvl.fullPath, node: nil})
+			continue
+		}
+
+		lvl.node.mu.RLock()
+		fid := lvl.node.fid
+		isDir := lvl.node.isFolder
+		lvl.node.mu.RUnlock()
+
+		if !isDir {
+			continue
+		}
+
+		if fid == "" || fid == "0" || fid == "root" || fs.dirExistsOnServer(fid) {
+			// This directory exists on server — use as anchor
+			curFid = fid
 			break
 		}
 
-		if fs.dirExistsOnServer(pFid) {
-			break
-		}
-
-		// Parent also missing — keep walking up
-		missing = append(missing, dirSeg{
-			name:    nName,
-			encName: fs.cipher.EncryptSegment(nName),
-			node:    n,
-		})
-		curFid = pFid
+		// Doesn't exist on server — needs recreation
+		encName := fs.cipher.EncryptSegment(lvl.segName)
+		missing = append(missing, dirSeg{name: lvl.segName, encName: encName, fullPath: lvl.fullPath, node: lvl.node})
 	}
 
 	if len(missing) == 0 {
-		// Walk-up found parent exists but original check failed — could be cache issue.
-		// Clear cache and re-verify.
-		fs.driver.RemoveDirCache(parentFid)
-		if fs.dirExistsOnServer(parentFid) {
-			return nil
-		}
-		return fmt.Errorf("parent dir fid=%s does not exist on server", parentFid)
+		return fmt.Errorf("could not find existing ancestor for parent dir %s of %s", parentFid, filePath)
+	}
+
+	if curFid == "" || curFid == "root" {
+		// Reached the mount root — use "0" as the base
+		curFid = "0"
 	}
 
 	// Reverse: walk from existing ancestor down to the immediate parent
@@ -104,19 +130,35 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 			}
 		}
 
-		driver.Log.Printf("ensureParentDirExists: recreated dir %s (old fid=%s, new fid=%s, parent=%s)\n",
-			seg.name, seg.node.fid, newFid, curFid)
+		driver.Log.Printf("ensureParentDirExists: recreated dir %s (new fid=%s, parent=%s)\n",
+			seg.name, newFid, curFid)
 
-		// Update the in-memory node: new FID, correct parentFid, clear dirty state
-		seg.node.mu.Lock()
-		seg.node.fid = newFid
-		seg.node.parentFid = curFid
-		seg.node.isDirty = false
-		seg.node.baseServerMtime = time.Now().UnixMilli()
-		seg.node.lastMetadataCheck = time.Now()
-		seg.node.mu.Unlock()
+		// Update or create the in-memory node for this directory
+		if seg.node != nil {
+			seg.node.mu.Lock()
+			seg.node.fid = newFid
+			seg.node.parentFid = curFid
+			seg.node.isDirty = false
+			seg.node.baseServerMtime = time.Now().UnixMilli()
+			seg.node.lastMetadataCheck = time.Now()
+			seg.node.mu.Unlock()
+			fs.storeNode(seg.node.currentPath, seg.node)
+		} else {
+			// Original node was cleaned up — create a new one
+			newNode := &node{
+				fid:               newFid,
+				parentFid:         curFid,
+				name:              seg.name,
+				currentPath:       seg.fullPath,
+				isFolder:          true,
+				mtime:             time.Now(),
+				baseServerMtime:   time.Now().UnixMilli(),
+				lastMetadataCheck: time.Now(),
+			}
+			fs.storeNode(seg.fullPath, newNode)
+			driver.Log.Printf("ensureParentDirExists: created new node for %s (fid=%s)\n", seg.fullPath, newFid)
+		}
 
-		fs.storeNode(seg.node.currentPath, seg.node)
 		fs.driver.RemoveDirCache(curFid)
 		curFid = newFid
 	}
@@ -585,6 +627,21 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	// 1d. Ensure parent directory exists on server (handles external deletion)
 	if err := fs.ensureParentDirExists(path, parentFid); err != nil {
 		return fmt.Errorf("parent dir check failed for %s: %v", path, err)
+	}
+	// Parent may have been recreated with a new FID — refresh parentFid from node tree
+	parentDirPath := filepath.Dir(path)
+	if pv, ok := fs.nodes.Load(parentDirPath); ok {
+		pn := pv.(*node)
+		pn.mu.RLock()
+		newParentFid := pn.fid
+		pn.mu.RUnlock()
+		if newParentFid != parentFid {
+			driver.Log.Printf("syncFile: parentFid updated for %s: %s -> %s\n", path, parentFid, newParentFid)
+			parentFid = newParentFid
+			n.mu.Lock()
+			n.parentFid = newParentFid
+			n.mu.Unlock()
+		}
 	}
 
 	if fs.staging == nil || fs.uploader == nil || localPath == "" {
