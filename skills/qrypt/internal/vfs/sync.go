@@ -713,16 +713,25 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 
 	// Verify staging file size matches node.size to prevent uploading incomplete files.
 	// FUSE may call Release before all Writes complete (e.g., macFUSE behavior).
-	if snapshotSize > 0 {
-		actualSize, err := fs.staging.FileSize(snapshotPath)
-		if err == nil && actualSize < snapshotSize {
-			driver.Log.Printf("Sync: WARNING: staging file size %d < expected %d for %s. Re-queuing...\n", actualSize, snapshotSize, path)
-			// Re-queue the sync: mark as not synced so Release can trigger again later
-			n.mu.Lock()
-			n.syncQueued = false
-			n.mu.Unlock()
-			return fmt.Errorf("staging file incomplete (%d < %d)", actualSize, snapshotSize)
-		}
+	actualSize, sizeErr := fs.staging.FileSize(snapshotPath)
+	if sizeErr != nil {
+		return fmt.Errorf("failed to stat snapshot for %s: %v", path, sizeErr)
+	}
+	// Safety: never upload when staging file is empty but node thinks there's data.
+	// This catches double-sync bugs where first sync deleted the staging file.
+	if actualSize == 0 && snapshotSize > 0 {
+		driver.Log.Printf("Sync: staging file empty but node.size=%d for %s — likely double-sync. Re-queuing...\n", snapshotSize, path)
+		n.mu.Lock()
+		n.syncQueued = false
+		n.mu.Unlock()
+		return fmt.Errorf("staging file empty but node.size=%d for %s", snapshotSize, path)
+	}
+	if snapshotSize > 0 && actualSize < snapshotSize {
+		driver.Log.Printf("Sync: WARNING: staging file size %d < expected %d for %s. Re-queuing...\n", actualSize, snapshotSize, path)
+		n.mu.Lock()
+		n.syncQueued = false
+		n.mu.Unlock()
+		return fmt.Errorf("staging file incomplete (%d < %d)", actualSize, snapshotSize)
 	}
 
 	driver.Log.Printf("Syncing file (Staged): %s (size %d, parentFid %s)\n", snapshotName, snapshotSize, parentFid)
