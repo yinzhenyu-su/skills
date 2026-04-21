@@ -78,9 +78,9 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 	}
 
 	node.mu.Lock()
-	defer node.mu.Unlock()
 
 	if fs.staging == nil {
+		node.mu.Unlock()
 		return 0
 	}
 	if node.localPath == "" {
@@ -89,6 +89,7 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 		localPath, err := fs.staging.Create(newFid)
 		if err != nil {
 			driver.Log.Printf("Warning: failed to create staging file for Write on %s: %v\n", path, err)
+			node.mu.Unlock()
 			return 0
 		}
 		node.localPath = localPath
@@ -98,6 +99,7 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 	node.mtime = time.Now()
 	written, err := fs.staging.WriteAt(node.localPath, buff, ofst)
 	if err != nil {
+		node.mu.Unlock()
 		return 0
 	}
 	if ofst+int64(written) > node.size {
@@ -107,6 +109,11 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 	if err := fs.maybeSavePendingNodeLocked(path, node, false); err != nil {
 		driver.Log.Printf("Warning: failed to save pending node after Write for %s: %v\n", path, err)
 	}
+	node.mu.Unlock()
+
+	// Trigger sync from Write (not just Release) to handle FUSE early-Release on macOS.
+	// The kernel may call Release before Write completes, so we sync from Write directly.
+	fs.enqueueSync(node)
 	return written
 }
 
@@ -226,13 +233,27 @@ func (fs *QryptFS) Listxattr(path string, fill func(name string) bool) (errc int
 	return 0
 }
 
-// Release 文件句柄关闭时触发，此时写入已完成，可以安全上传
+// Release 文件句柄关闭时触发。主要同步由 Write 触发，这里作为兜底。
 func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 	node, errc := fs.lookup(path)
 	if errc != 0 {
 		return errc
 	}
 
-	fs.enqueueSync(node)
+	// Only sync if the node is dirty AND staging file has content.
+	// On macOS, FUSE may call Release before Write completes, so the
+	// staging file might be empty. Write() already triggers sync directly.
+	node.mu.RLock()
+	localPath := node.localPath
+	isDirty := node.isDirty
+	node.mu.RUnlock()
+
+	if isDirty && localPath != "" {
+		if size, err := fs.staging.FileSize(localPath); err == nil && size > 0 {
+			fs.enqueueSync(node)
+		} else {
+			driver.Log.Printf("Release: skipping sync for %s (staging empty, isDirty=%v)\n", path, isDirty)
+		}
+	}
 	return 0
 }
