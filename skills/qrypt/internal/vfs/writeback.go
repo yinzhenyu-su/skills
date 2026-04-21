@@ -240,19 +240,25 @@ func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 		return errc
 	}
 
-	// Only sync if the node is dirty AND staging file has content.
-	// On macOS, FUSE may call Release before Write completes, so the
-	// staging file might be empty. Write() already triggers sync directly.
 	node.mu.RLock()
 	localPath := node.localPath
 	isDirty := node.isDirty
 	node.mu.RUnlock()
 
-	if isDirty && localPath != "" {
+	if !isDirty {
+		// Never written (e.g., `touch`). Sync to create a valid 0-byte file on server.
+		fs.enqueueSync(node)
+		return 0
+	}
+
+	// isDirty=true: data was written. Check if staging file has content before syncing.
+	// On macOS, FUSE may call Release before Write completes, leaving staging empty.
+	// In that case, skip — Write() already triggers sync directly.
+	if localPath != "" {
 		if size, err := fs.staging.FileSize(localPath); err == nil && size > 0 {
 			fs.enqueueSync(node)
 		} else {
-			driver.Log.Printf("Release: skipping sync for %s (staging empty, isDirty=%v)\n", path, isDirty)
+			driver.Log.Printf("Release: skipping sync for %s (staging empty but isDirty=true, Write will sync)\n", path)
 		}
 	}
 	return 0
