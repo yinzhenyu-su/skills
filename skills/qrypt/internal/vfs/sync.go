@@ -736,6 +736,17 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	}
 
 	driver.Log.Printf("Syncing file (Staged): %s (size %d, parentFid %s)\n", snapshotName, snapshotSize, parentFid)
+
+	// Final check: if the original staging file has grown since our snapshot,
+	// more writes arrived after we captured — re-queue to get the complete data.
+	if currentSize, err := fs.staging.FileSize(localPath); err == nil && currentSize > actualSize {
+		driver.Log.Printf("Sync: staging file grew from %d to %d during sync for %s — re-queuing\n", actualSize, currentSize, path)
+		n.mu.Lock()
+		n.syncQueued = false
+		n.mu.Unlock()
+		return fmt.Errorf("staging file grew during sync (%d > %d)", currentSize, actualSize)
+	}
+
 	result, err := fs.uploader.Sync(uploadpkg.SyncRequest{
 		Path:      path,
 		Name:      snapshotName,

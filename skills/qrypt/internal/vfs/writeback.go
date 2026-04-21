@@ -111,9 +111,13 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 	}
 	node.mu.Unlock()
 
-	// Trigger sync from Write (not just Release) to handle FUSE early-Release on macOS.
-	// The kernel may call Release before Write completes, so we sync from Write directly.
-	fs.enqueueSync(node)
+	// Trigger sync from Write with a short delay to allow concurrent writes to batch.
+	// On macOS, FUSE may call Release before Write completes, so we must sync from Write.
+	// The delay gives time for the OS to flush all queued writes before we snapshot.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		fs.enqueueSync(node)
+	}()
 	return written
 }
 
