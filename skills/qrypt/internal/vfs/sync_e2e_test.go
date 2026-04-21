@@ -283,7 +283,7 @@ func TestE2E_IncompleteStagingFileRequeued(t *testing.T) {
 	requeued := n.syncQueued
 	n.mu.Unlock()
 
-	if requeued {
+	if !requeued {
 		t.Log("syncFile correctly re-queued the sync (syncQueued reset to false)")
 	} else {
 		t.Error("syncQueued should be false after re-queue")
