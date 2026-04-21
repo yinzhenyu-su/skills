@@ -61,43 +61,61 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 	}
 
 	// If file is at mount root (no path segments), the parentFid IS the mount root.
-	// Check if it exists on server directly — if not, use "0" (Quark root) as base.
+	// Check if it exists on server directly — if not, recreate it under Quark root "0".
 	if len(levels) == 0 {
 		if parentFid == "" || parentFid == "0" || parentFid == "root" {
 			return nil
 		}
+		driver.Log.Printf("ensureParentDirExists: file at mount root, checking parentFid=%s\n", parentFid)
 		if fs.dirExistsOnServer(parentFid) {
 			return nil
 		}
-		// Mount root parent doesn't exist — use Quark root "0" and recreate the path
-		// by looking up the mount root node to get its name
+		// Mount root doesn't exist on server — recreate it
 		var mountRootNode *node
 		if v, ok := fs.nodes.Load("/"); ok {
 			mountRootNode = v.(*node)
 		}
-		if mountRootNode != nil {
-			mountRootNode.mu.RLock()
-			mountName := mountRootNode.name
-			mountRootNode.mu.RUnlock()
-			if mountName != "" {
-				encName := fs.cipher.EncryptSegment(mountName)
-				driver.Log.Printf("ensureParentDirExists: mount root parent missing, recreating %s under root\n", mountName)
-				newFid, createErr := fs.driver.CreateDir("0", encName)
-				if createErr != nil {
+		if mountRootNode == nil {
+			return fmt.Errorf("mount root node not found in memory for %s", filePath)
+		}
+		mountRootNode.mu.RLock()
+		mountName := mountRootNode.name
+		mountRootNode.mu.RUnlock()
+
+		driver.Log.Printf("ensureParentDirExists: mount root dir missing on server, name=%q, oldFid=%s\n", mountName, parentFid)
+
+		if mountName == "" {
+			return fmt.Errorf("mount root node has empty name, cannot recreate directory")
+		}
+
+		encName := fs.cipher.EncryptSegment(mountName)
+		newFid, createErr := fs.driver.CreateDir("0", encName)
+		if createErr != nil {
+			if strings.Contains(createErr.Error(), "23008") {
+				// Dir might already exist — try to find it
+				time.Sleep(2 * time.Second)
+				fs.driver.RemoveDirCache("0")
+				if found, findErr := fs.driver.FindChildByName("0", encName); findErr == nil {
+					newFid = found
+				} else {
 					return fmt.Errorf("failed to recreate mount root dir %s: %v", mountName, createErr)
 				}
-				mountRootNode.mu.Lock()
-				mountRootNode.fid = newFid
-				mountRootNode.parentFid = "0"
-				mountRootNode.isDirty = false
-				mountRootNode.baseServerMtime = time.Now().UnixMilli()
-				mountRootNode.lastMetadataCheck = time.Now()
-				mountRootNode.mu.Unlock()
-				fs.storeNode("/", mountRootNode)
-				return nil
+			} else {
+				return fmt.Errorf("failed to recreate mount root dir %s: %v", mountName, createErr)
 			}
 		}
-		return fmt.Errorf("mount root parent dir fid=%s does not exist on server and cannot recreate", parentFid)
+
+		driver.Log.Printf("ensureParentDirExists: recreated mount root %s (old fid=%s, new fid=%s)\n", mountName, parentFid, newFid)
+
+		mountRootNode.mu.Lock()
+		mountRootNode.fid = newFid
+		mountRootNode.parentFid = "0"
+		mountRootNode.isDirty = false
+		mountRootNode.baseServerMtime = time.Now().UnixMilli()
+		mountRootNode.lastMetadataCheck = time.Now()
+		mountRootNode.mu.Unlock()
+		fs.storeNode("/", mountRootNode)
+		return nil
 	}
 
 	// Walk from the deepest level upward, finding the deepest ancestor that exists on server
