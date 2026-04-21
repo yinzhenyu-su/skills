@@ -11,6 +11,123 @@ import (
 	uploadpkg "github.com/yinzhenyu/skills/qrypt/internal/upload"
 )
 
+// ensureParentDirExists verifies that the parent directory exists on the server
+// and recreates it (recursively) if it was deleted externally.
+func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
+	// Root directory always exists
+	if parentFid == "" || parentFid == "0" || parentFid == "root" {
+		return nil
+	}
+
+	// Quick check: try listing children — if it works, parent exists
+	_, err := fs.driver.ListFiles(parentFid)
+	if err == nil {
+		return nil
+	}
+
+	// Parent doesn't exist (or API error). Walk up the node tree to find the
+	// highest ancestor that still exists on the server.
+	type dirSeg struct {
+		name  string
+		encName string
+		node  *node
+	}
+	var missing []dirSeg
+
+	curFid := parentFid
+	for {
+		v, ok := fs.fidNodes.Load(curFid)
+		if !ok {
+			return fmt.Errorf("parent dir fid=%s not found in node tree for %s", curFid, filePath)
+		}
+		n := v.(*node)
+		n.mu.RLock()
+		pFid := n.parentFid
+		nName := n.name
+		n.mu.RUnlock()
+
+		// Root
+		if pFid == "" || pFid == "0" || pFid == "root" {
+			break
+		}
+
+		_, pErr := fs.driver.ListFiles(pFid)
+		if pErr == nil {
+			// Parent exists on server — curFid might or might not exist.
+			// We'll recreate from curFid downward if needed.
+			break
+		}
+
+		// Parent also missing — keep walking up
+		missing = append(missing, dirSeg{
+			name:    nName,
+			encName: fs.cipher.EncryptSegment(nName),
+			node:    n,
+		})
+		curFid = pFid
+	}
+
+	if len(missing) == 0 {
+		// No ancestors were missing from server — original parentFid should work
+		// but ListFiles failed. Try once more with cache clear.
+		fs.driver.RemoveDirCache(parentFid)
+		_, err2 := fs.driver.ListFiles(parentFid)
+		if err2 == nil {
+			return nil
+		}
+		return fmt.Errorf("parent dir fid=%s does not exist on server: %v", parentFid, err)
+	}
+
+	// Reverse: walk from existing ancestor down to the immediate parent
+	for i, j := 0, len(missing)-1; i < j; i, j = i+1, j-1 {
+		missing[i], missing[j] = missing[j], missing[i]
+	}
+
+	driver.Log.Printf("ensureParentDirExists: recreating %d missing directories for %s\n", len(missing), filePath)
+
+	// curFid now points to the deepest ancestor that exists on the server.
+	// Recreate each missing directory level.
+	for _, seg := range missing {
+		fs.driver.RemoveDirCache(curFid)
+		newFid, createErr := fs.driver.CreateDir(curFid, seg.encName)
+		if createErr != nil {
+			if strings.Contains(createErr.Error(), "23008") {
+				// Transient conflict — directory might be creating. Retry with lookup.
+				time.Sleep(2 * time.Second)
+				fs.driver.RemoveDirCache(curFid)
+				if found, findErr := fs.driver.FindChildByName(curFid, seg.encName); findErr == nil {
+					newFid = found
+				} else {
+					newFid, createErr = fs.driver.CreateDir(curFid, seg.encName)
+					if createErr != nil {
+						return fmt.Errorf("failed to recreate dir %s: %v", seg.name, createErr)
+					}
+				}
+			} else {
+				return fmt.Errorf("failed to recreate dir %s: %v", seg.name, createErr)
+			}
+		}
+
+		driver.Log.Printf("ensureParentDirExists: recreated dir %s (old fid=%s, new fid=%s, parent=%s)\n",
+			seg.name, seg.node.fid, newFid, curFid)
+
+		// Update the in-memory node: new FID, correct parentFid, clear dirty state
+		seg.node.mu.Lock()
+		seg.node.fid = newFid
+		seg.node.parentFid = curFid
+		seg.node.isDirty = false
+		seg.node.baseServerMtime = time.Now().UnixMilli()
+		seg.node.lastMetadataCheck = time.Now()
+		seg.node.mu.Unlock()
+
+		fs.storeNode(seg.node.currentPath, seg.node)
+		fs.driver.RemoveDirCache(curFid)
+		curFid = newFid
+	}
+
+	return nil
+}
+
 func (fs *QryptFS) recoverDirtyFiles() {
 	if fs.cache == nil {
 		return
@@ -441,6 +558,11 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 				return nil // Task finished as a rename + new path creation
 			}
 		}
+	}
+
+	// 1d. Ensure parent directory exists on server (handles external deletion)
+	if err := fs.ensureParentDirExists(path, parentFid); err != nil {
+		return fmt.Errorf("parent dir check failed for %s: %v", path, err)
 	}
 
 	if fs.staging == nil || fs.uploader == nil || localPath == "" {
