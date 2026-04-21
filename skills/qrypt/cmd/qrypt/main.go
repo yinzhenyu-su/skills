@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -156,8 +157,14 @@ func runMount(cmd *cobra.Command, args []string) {
 		d.DirCacheTTL = dirCacheTTL
 	}
 
+	// 提取挂载根目录名（用于重建被删除的根目录）
+	rootDirName := filepath.Base(cfg.Quark.RootPath)
+	if rootDirName == "/" || rootDirName == "." {
+		rootDirName = ""
+	}
+
 	// 10. 挂载
-	fs := vfs.NewQryptFS(d, cm, rootFid, cipher, vfs.QryptFSConfig{
+	fs := vfs.NewQryptFS(d, cm, rootFid, rootDirName, cipher, vfs.QryptFSConfig{
 		MaxRetries:        cfg.Sync.MaxRetries,
 		ConcurrentUploads: cfg.Sync.ConcurrentUploads,
 	})

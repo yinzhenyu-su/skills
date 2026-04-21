@@ -230,7 +230,7 @@ func runMockUploadPerf(tb testing.TB, fileSize int64, bandwidthBytesPerSec int64
 	}
 	defer cm.Close()
 
-	fs := NewQryptFS(d, cm, "root", cipher)
+	fs := NewQryptFS(d, cm, "root", "", cipher)
 
 	n := &node{
 		fid:       "local_perf_file",
@@ -306,7 +306,7 @@ func runMockFullPathUploadPerf(tb testing.TB, fileSize int64, writeChunkSize int
 	d := driver.NewQuarkDriver("mock-cookie")
 	d.SetClient(&http.Client{Transport: transport})
 
-	fs := NewQryptFS(d, cm, "root", cipher)
+	fs := NewQryptFS(d, cm, "root", "", cipher)
 	recorder := newSyncPerfRecorder()
 	fs.syncObserver = recorder
 

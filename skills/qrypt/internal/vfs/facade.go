@@ -18,7 +18,9 @@ type QryptFSConfig struct {
 }
 
 // NewQryptFS 创建新的文件系统实例
-func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, cipher *crypt.RcloneCipher, vfsCfg ...QryptFSConfig) *QryptFS {
+// rootDirName is the plaintext name of the mount root directory (e.g., "MyDrive").
+// Used to recreate the root directory if it's deleted externally.
+func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, rootDirName string, cipher *crypt.RcloneCipher, vfsCfg ...QryptFSConfig) *QryptFS {
 	var stagingStore *staging.Store
 	if c != nil {
 		s, err := staging.NewStore(c.StagingDir())
@@ -56,7 +58,7 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ci
 	if stagingStore != nil {
 		fs.uploader = uploadpkg.NewManager(d, cipher, stagingStore)
 	}
-	fs.storeNode("/", &node{fid: rootFid, currentPath: "/", isFolder: true, mtime: time.Now(), lastReadBlock: -1})
+	fs.storeNode("/", &node{fid: rootFid, name: rootDirName, parentFid: "0", currentPath: "/", isFolder: true, mtime: time.Now(), lastReadBlock: -1})
 
 	// 启动后台上传工作协程
 	for i := 0; i < concurrentUploads; i++ {

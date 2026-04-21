@@ -238,7 +238,7 @@ func setupQryptFSInternal(t *testing.T, config *e2eConfig, clearCache bool) (*Qr
 		return nil, nil, fmt.Errorf("cache init failed: %v", err)
 	}
 
-	fs := NewQryptFS(d, cm, rootFid, cipher)
+	fs := NewQryptFS(d, cm, rootFid, "", cipher)
 	host := fuse.NewFileSystemHost(fs)
 	// 6. 后台挂载
 	options := []string{

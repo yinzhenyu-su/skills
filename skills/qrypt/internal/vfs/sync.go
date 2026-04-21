@@ -60,6 +60,46 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		levels = append(levels, pathLevel{fullPath: p, segName: seg, node: n})
 	}
 
+	// If file is at mount root (no path segments), the parentFid IS the mount root.
+	// Check if it exists on server directly — if not, use "0" (Quark root) as base.
+	if len(levels) == 0 {
+		if parentFid == "" || parentFid == "0" || parentFid == "root" {
+			return nil
+		}
+		if fs.dirExistsOnServer(parentFid) {
+			return nil
+		}
+		// Mount root parent doesn't exist — use Quark root "0" and recreate the path
+		// by looking up the mount root node to get its name
+		var mountRootNode *node
+		if v, ok := fs.nodes.Load("/"); ok {
+			mountRootNode = v.(*node)
+		}
+		if mountRootNode != nil {
+			mountRootNode.mu.RLock()
+			mountName := mountRootNode.name
+			mountRootNode.mu.RUnlock()
+			if mountName != "" {
+				encName := fs.cipher.EncryptSegment(mountName)
+				driver.Log.Printf("ensureParentDirExists: mount root parent missing, recreating %s under root\n", mountName)
+				newFid, createErr := fs.driver.CreateDir("0", encName)
+				if createErr != nil {
+					return fmt.Errorf("failed to recreate mount root dir %s: %v", mountName, createErr)
+				}
+				mountRootNode.mu.Lock()
+				mountRootNode.fid = newFid
+				mountRootNode.parentFid = "0"
+				mountRootNode.isDirty = false
+				mountRootNode.baseServerMtime = time.Now().UnixMilli()
+				mountRootNode.lastMetadataCheck = time.Now()
+				mountRootNode.mu.Unlock()
+				fs.storeNode("/", mountRootNode)
+				return nil
+			}
+		}
+		return fmt.Errorf("mount root parent dir fid=%s does not exist on server and cannot recreate", parentFid)
+	}
+
 	// Walk from the deepest level upward, finding the deepest ancestor that exists on server
 	curFid := ""
 	for i := len(levels) - 1; i >= 0; i-- {
