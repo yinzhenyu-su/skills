@@ -45,10 +45,11 @@ func NewManager(d *driver.QuarkDriver, c *crypt.RcloneCipher, s *staging.Store) 
 	return &Manager{driver: d, cipher: c, staging: s}
 }
 
-// deleteExistingFileByName lists files in parentFid and deletes any file with matching encrypted name.
-// This prevents duplicate files with (1) suffix when re-uploading an edited file.
-// It also invalidates the directory cache before listing to ensure fresh data.
-func (m *Manager) deleteExistingFileByName(parentFid, encName string) error {
+// deleteExistingFileByName lists files in parentFid and deletes any file with matching
+// plaintext name. This prevents duplicate files with (1) suffix when re-uploading.
+// Uses plaintext comparison because EncryptSegment generates a different ciphertext
+// each time (random nonce), so comparing encrypted names won't find previous uploads.
+func (m *Manager) deleteExistingFileByName(parentFid, plainName string) error {
 	// Skip for root directory or empty parent
 	if parentFid == "" || parentFid == "0" || parentFid == "root" {
 		return nil
@@ -61,8 +62,6 @@ func (m *Manager) deleteExistingFileByName(parentFid, encName string) error {
 		}
 	}()
 
-	// Use driver's cache for listing. It has a TTL (default 60s).
-	// This avoids O(N^2) API calls during batch uploads.
 	files, err := m.driver.ListFiles(parentFid)
 	if err != nil {
 		driver.Log.Printf("deleteExistingFileByName: warning: failed to list files in parent %s: %v\n", parentFid, err)
@@ -70,13 +69,17 @@ func (m *Manager) deleteExistingFileByName(parentFid, encName string) error {
 	}
 
 	for _, f := range files {
-		if f.FileName == encName {
-			driver.Log.Printf("deleteExistingFileByName: found existing file %s (fid=%s), deleting before re-upload\n", encName, f.Fid)
+		decName, decErr := m.cipher.DecryptSegment(f.FileName)
+		if decErr != nil {
+			continue
+		}
+		if decName == plainName {
+			driver.Log.Printf("deleteExistingFileByName: found existing file %s (fid=%s), deleting before re-upload\n", decName, f.Fid)
 			if err := m.driver.Delete([]string{f.Fid}); err != nil {
 				driver.Log.Printf("deleteExistingFileByName: warning: failed to delete existing file: %v\n", err)
 				return nil
 			}
-			// Invalidate cache ONLY after a successful deletion so subsequent ListFiles or UploadPre sees the change.
+			// Invalidate cache ONLY after a successful deletion
 			m.driver.RemoveDirCache(parentFid)
 			return nil
 		}
@@ -100,10 +103,10 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	result.Nonce = nonce
 	result.EncryptedSize = encSize
 
-	// Check if file with same name already exists in parent directory.
+	// Check if file with same plaintext name already exists in parent directory.
 	// If so, delete it first to avoid duplicate files with (1) suffix.
-	if err := m.deleteExistingFileByName(req.ParentFid, encName); err != nil {
-		driver.Log.Printf("Sync: warning: failed to check/delete existing file %s in parent %s: %v\n", encName, req.ParentFid, err)
+	if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
+		driver.Log.Printf("Sync: warning: failed to check/delete existing file %s in parent %s: %v\n", req.Name, req.ParentFid, err)
 	}
 
 	preStart := time.Now()
