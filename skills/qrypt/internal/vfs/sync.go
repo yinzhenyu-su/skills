@@ -19,18 +19,19 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		return nil
 	}
 
-	// Quick check: try listing children — if it works, parent exists
-	_, err := fs.driver.ListFiles(parentFid)
-	if err == nil {
+	// Verify parent exists by checking if its grandparent lists it as a child.
+	// We can't use ListFiles(parentFid) because Quark API returns HTTP 200 with
+	// empty list for non-existent directories — not an error.
+	if fs.dirExistsOnServer(parentFid) {
 		return nil
 	}
 
-	// Parent doesn't exist (or API error). Walk up the node tree to find the
+	// Parent doesn't exist on server. Walk up the node tree to find the
 	// highest ancestor that still exists on the server.
 	type dirSeg struct {
-		name  string
+		name    string
 		encName string
-		node  *node
+		node    *node
 	}
 	var missing []dirSeg
 
@@ -46,15 +47,11 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		nName := n.name
 		n.mu.RUnlock()
 
-		// Root
 		if pFid == "" || pFid == "0" || pFid == "root" {
 			break
 		}
 
-		_, pErr := fs.driver.ListFiles(pFid)
-		if pErr == nil {
-			// Parent exists on server — curFid might or might not exist.
-			// We'll recreate from curFid downward if needed.
+		if fs.dirExistsOnServer(pFid) {
 			break
 		}
 
@@ -68,14 +65,13 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 	}
 
 	if len(missing) == 0 {
-		// No ancestors were missing from server — original parentFid should work
-		// but ListFiles failed. Try once more with cache clear.
+		// Walk-up found parent exists but original check failed — could be cache issue.
+		// Clear cache and re-verify.
 		fs.driver.RemoveDirCache(parentFid)
-		_, err2 := fs.driver.ListFiles(parentFid)
-		if err2 == nil {
+		if fs.dirExistsOnServer(parentFid) {
 			return nil
 		}
-		return fmt.Errorf("parent dir fid=%s does not exist on server: %v", parentFid, err)
+		return fmt.Errorf("parent dir fid=%s does not exist on server", parentFid)
 	}
 
 	// Reverse: walk from existing ancestor down to the immediate parent
@@ -126,6 +122,32 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 	}
 
 	return nil
+}
+
+// dirExistsOnServer checks if a directory with the given fid exists by verifying
+// it as a child of its own parent node. This avoids the ListFiles quirk where
+// Quark API returns HTTP 200 with empty list for non-existent directories.
+func (fs *QryptFS) dirExistsOnServer(dirFid string) bool {
+	if dirFid == "" || dirFid == "0" || dirFid == "root" {
+		return true
+	}
+	v, ok := fs.fidNodes.Load(dirFid)
+	if !ok {
+		return false
+	}
+	n := v.(*node)
+	n.mu.RLock()
+	pFid := n.parentFid
+	encName := fs.cipher.EncryptSegment(n.name)
+	n.mu.RUnlock()
+
+	if pFid == "" || pFid == "0" || pFid == "root" {
+		// Mount root — always exists
+		return true
+	}
+
+	_, err := fs.driver.FindChildByName(pFid, encName)
+	return err == nil
 }
 
 func (fs *QryptFS) recoverDirtyFiles() {
