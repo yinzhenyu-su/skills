@@ -717,6 +717,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	if sizeErr != nil {
 		return fmt.Errorf("failed to stat snapshot for %s: %v", path, sizeErr)
 	}
+	driver.Log.Printf("syncFile: snapshot ready for %s: node.size=%d, actualSize=%d, localPath=%s\n", path, snapshotSize, actualSize, localPath)
 	// Safety: never upload when staging file is empty but node thinks there's data.
 	// This catches double-sync bugs where first sync deleted the staging file.
 	if actualSize == 0 && snapshotSize > 0 {
