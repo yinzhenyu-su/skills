@@ -485,11 +485,11 @@ func TestPerfOptim_MountOptions_IncludeFUSECache(t *testing.T) {
 
 	if !strings.Contains(optsStr, "attr_timeout") {
 		t.Log("OPTIMIZATION: mount options missing 'attr_timeout' — kernel won't cache attributes")
-		t.Log("Suggested: add '-o', 'attr_timeout=60'")
+		t.Log("Suggested: add '-o', 'attr_timeout=5'")
 	}
 	if !strings.Contains(optsStr, "entry_timeout") {
 		t.Log("OPTIMIZATION: mount options missing 'entry_timeout' — kernel won't cache directory entries")
-		t.Log("Suggested: add '-o', 'entry_timeout=60'")
+		t.Log("Suggested: add '-o', 'entry_timeout=5'")
 	}
 }
 

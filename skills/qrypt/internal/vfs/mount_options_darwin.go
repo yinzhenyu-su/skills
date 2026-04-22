@@ -9,8 +9,8 @@ func MountOptions(allowOther bool) []string {
 		"-o", "noappledouble",   // 减少 AppleDouble 文件
 		"-o", "defer_permissions", // macOS 推荐
 		"-o", "volname=QuarkDrive",
-		"-o", "attr_timeout=60",   // 内核缓存文件属性 60s（匹配 MetadataTTL）
-		"-o", "entry_timeout=60",  // 内核缓存目录条目 60s
+		"-o", "attr_timeout=5",    // 内核缓存文件属性 5s（远程删除更快可见）
+		"-o", "entry_timeout=5",   // 内核缓存目录条目 5s（远程删除更快可见）
 	}
 	if allowOther {
 		opts = append(opts, "-o", "allow_other")
