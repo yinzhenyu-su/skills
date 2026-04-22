@@ -29,7 +29,10 @@ var (
 	MetadataTTL = 60 * time.Second
 )
 
-var errNonRetryableSync = errors.New("non-retryable sync error")
+var (
+	errNonRetryableSync = errors.New("non-retryable sync error")
+	errDirGone          = errors.New("parent directory deleted during upload")
+)
 
 type node struct {
 	fid             string
@@ -49,10 +52,12 @@ type node struct {
 	baseServerSize  int64     // 上次同步成功的服务端明文大小
 	lastMetadataCheck time.Time // 上次从服务器拉取元数据的时间
 	lastUploadTime  time.Time // 上次上传完成的时间（用于防止 API 索引延迟导致误删）
+	lastRemoteCheck time.Time // 上次远程列表检查的时间（用于 readdir 同步）
 	lastReadBlock   int64     // 上次读取的块索引
 	readSeqCount    int       // 连续顺序读取的块数
 	lastPendingSave time.Time
 	lastPendingSize   int64
+	source            string            // "remote" | "local" | "merged" — 文件来源
 	children          map[string]*node // 子节点缓存 (name -> *node), 避免 O(N) 扫描
 	mu                sync.RWMutex
 }
@@ -94,6 +99,7 @@ type QryptFS struct {
 	uploadChan      chan syncTask
 	syncing         sync.Map // *node -> struct{} (防止并发同步同一节点)
 	retryState      sync.Map // *node -> int (基于节点的自动重试次数)
+	dirGoneRetry    sync.Map // *node -> int (目录被删除重试次数)
 	syncObserver    syncObserver
 	staging         *staging.Store
 	uploader        *uploadpkg.Manager

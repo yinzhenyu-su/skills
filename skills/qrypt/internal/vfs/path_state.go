@@ -539,19 +539,35 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		rf, exists := remoteMap[name]
 		if !exists {
 			// 远端已删除
-			if !strings.HasPrefix(fid, "local_") {
-				if !isDirty {
-					driver.Log.Printf("MergeRemoteChanges: remote deleted %s, removing local node\n", entry.path)
-					fs.deleteNodePath(entry.path, n)
-				} else {
-					// 冲突：远端删了，但我本地改了。将 fid 转为 local_ 保证继续上传为新文件
-					driver.Log.Printf("MergeRemoteChanges: CONFLICT (remote deleted, local dirty) for %s. Turning into local node.\n", entry.path)
-					n.mu.Lock()
-					if !strings.HasPrefix(n.fid, "local_") {
-						n.fid = "local_" + n.name + "_" + fmt.Sprint(time.Now().UnixNano())
-					}
-					n.mu.Unlock()
+			if n.source == "local" {
+				// 本地新建的文件，远程不可见，跳过删除
+				driver.Log.Printf("MergeRemoteChanges: skipping delete for local-only file %s\n", entry.path)
+				continue
+			}
+			if n.source == "merged" {
+				// 远程删了，但我本地改过 → 冲突：转为 local 重新上传
+				driver.Log.Printf("MergeRemoteChanges: CONFLICT (remote deleted, local merged) for %s. Keeping local.\n", entry.path)
+				n.mu.Lock()
+				if !strings.HasPrefix(n.fid, "local_") {
+					n.fid = "local_" + n.name + "_" + fmt.Sprint(time.Now().UnixNano())
 				}
+				n.source = "merged"
+				n.mu.Unlock()
+				continue
+			}
+			// source == "remote" or unknown
+			if !isDirty {
+				driver.Log.Printf("MergeRemoteChanges: remote deleted %s, removing local node\n", entry.path)
+				fs.deleteNodePath(entry.path, n)
+			} else {
+				// 冲突：远端删了，但我本地改了。将 fid 转为 local_ 保证继续上传为新文件
+				driver.Log.Printf("MergeRemoteChanges: CONFLICT (remote deleted, local dirty) for %s. Turning into local node.\n", entry.path)
+				n.mu.Lock()
+				if !strings.HasPrefix(n.fid, "local_") {
+					n.fid = "local_" + n.name + "_" + fmt.Sprint(time.Now().UnixNano())
+				}
+				n.source = "merged"
+				n.mu.Unlock()
 			}
 			continue
 		}
@@ -576,6 +592,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 					n.baseServerMtime = remoteMtime
 					n.baseServerSize = decSize
 					n.lastMetadataCheck = time.Now()
+					n.source = "remote"
 					n.mu.Unlock()
 					// 失效缓存
 					if fs.cache != nil {
@@ -616,6 +633,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			baseServerMtime:   modTime.UnixMilli(),
 			baseServerSize:    decSize,
 			lastMetadataCheck: time.Now(),
+			source:            "remote",
 		})
 		driver.Log.Printf("MergeRemoteChanges: added new remote file %s\n", childPath)
 	}
@@ -656,6 +674,7 @@ func (fs *QryptFS) resolveConflict(path string, n *node, rf driver.File) {
 		baseServerMtime:   modTime.UnixMilli(),
 		baseServerSize:    decSize,
 		lastMetadataCheck: time.Now(),
+		source:            "remote",
 	})
 }
 
@@ -835,6 +854,7 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 		baseServerMtime:   time.Now().UnixMilli(),
 		baseServerSize:    0,
 		lastMetadataCheck: time.Now(),
+		source:            "local",
 	})
 	fs.driver.RemoveDirCache(parentNode.fid)
 

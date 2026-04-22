@@ -35,6 +35,7 @@ func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uin
 		baseServerMtime:   0, // New local file has no base mtime
 		baseServerSize:    0,
 		lastMetadataCheck: time.Now(),
+		source:            "local",
 	}
 
 	nonce, err := fs.cipher.GenerateRandomNonce()

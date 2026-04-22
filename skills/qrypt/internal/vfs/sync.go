@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -416,7 +417,32 @@ func (fs *QryptFS) uploadWorker() {
 					return
 				}
 
-			attempt := 0
+				// Parent directory was deleted during upload — already rebuilt in syncFile.
+				// Retry immediately (short delay) with a separate limit of 1 attempt.
+				if errors.Is(err, errDirGone) {
+					dirGoneAttempt := 0
+					if v, ok := fs.dirGoneRetry.Load(n); ok {
+						dirGoneAttempt = v.(int)
+					}
+					dirGoneAttempt++
+					fs.dirGoneRetry.Store(n, dirGoneAttempt)
+					if dirGoneAttempt > 1 {
+						driver.Log.Printf("Background Sync dir-gone for %s (fid=%s) reached retry limit: %v. Keep pending.\n", path, n.fid, err)
+						fs.dirGoneRetry.Delete(n)
+						n.mu.Lock()
+						n.syncQueued = false
+						n.mu.Unlock()
+						return
+					}
+					driver.Log.Printf("Background Sync dir-gone for %s (fid=%s), retrying immediately (attempt %d)...\n", path, n.fid, dirGoneAttempt)
+					go func(nodeToRetry *node) {
+						time.Sleep(2 * time.Second) // brief delay for dir recreation to propagate
+						fs.enqueueSync(nodeToRetry)
+					}(n)
+					return
+				}
+
+				attempt := 0
 			if v, ok := fs.retryState.Load(n); ok {
 				attempt = v.(int)
 			}
@@ -426,6 +452,7 @@ func (fs *QryptFS) uploadWorker() {
 			if attempt >= fs.maxRetries {
 				driver.Log.Printf("Background Sync Error for %s (fid=%s) reached max retries (%d): %v. Keep pending for manual retry.\n", path, n.fid, attempt, err)
 				fs.retryState.Delete(n)
+				fs.dirGoneRetry.Delete(n)
 				n.mu.Lock()
 				n.syncQueued = false
 				n.mu.Unlock()
@@ -446,6 +473,7 @@ func (fs *QryptFS) uploadWorker() {
 			}
 
 			fs.retryState.Delete(n)
+			fs.dirGoneRetry.Delete(n)
 			driver.Log.Printf("Successfully synced %s (fid=%s) to Quark Drive\n", path, n.fid)
 		}(task)
 	}
@@ -483,6 +511,7 @@ func (fs *QryptFS) cleanupLocalUploadState(path string, n *node, isDir bool) {
 	n.mu.Unlock()
 
 	fs.retryState.Delete(n)
+	fs.dirGoneRetry.Delete(n)
 	if fs.cache != nil {
 		_ = fs.cache.RemovePendingNode(path)
 		_ = fs.cache.RemovePendingNodesByFid(n.fid)
@@ -520,6 +549,7 @@ func (fs *QryptFS) recursiveCleanup(path string, n *node) {
 	n.isDirty = false
 	n.mu.Unlock()
 	fs.retryState.Delete(n)
+	fs.dirGoneRetry.Delete(n)
 }
 
 func (fs *QryptFS) maybeSavePendingNodeLocked(path string, n *node, force bool) error {
@@ -616,7 +646,17 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	fid := n.fid
 	baseMtime := n.baseServerMtime
 	localPath := n.localPath
+	lastUpload := n.lastUploadTime
 	n.mu.Unlock()
+
+	// Guard: skip re-sync if this file was just uploaded (< 30s ago) and has a real server FID.
+	// Quark API indexing can take 10-20 seconds — a second sync triggered by delayed Write
+	// would see the file "missing" from ListFiles and incorrectly re-upload as a duplicate.
+	if !strings.HasPrefix(fid, "local_") && !lastUpload.IsZero() && time.Since(lastUpload) < 30*time.Second {
+		driver.Log.Printf("syncFile: skipping %s (just uploaded %dms ago, fid=%s — waiting for Quark indexing)\n",
+			path, time.Since(lastUpload).Milliseconds(), fid)
+		return nil
+	}
 	stats.SnapshotSize = snapshotSize
 
 	// 1b. Check for same-name conflict on server (external upload with different FID)
@@ -762,6 +802,30 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	stats.PartCount = result.PartCount
 	stats.UploadedBytes = result.UploadedBytes
 	if err != nil {
+		// Check if parent directory was deleted during upload (race condition).
+		// ensureParentDirExists ran before upload, but dir could have been deleted
+		// between that check and UploadFinish. If so, rebuild and signal retry.
+		if !fs.dirExistsOnServer(parentFid) {
+			driver.Log.Printf("syncFile: parent dir %s deleted during upload of %s, will rebuild and retry\n", parentFid, path)
+			fs.driver.RemoveDirCache(parentFid)
+			if rebuildErr := fs.ensureParentDirExists(path, parentFid); rebuildErr != nil {
+				driver.Log.Printf("syncFile: failed to rebuild parent dir for %s: %v\n", path, rebuildErr)
+			}
+			// Refresh parentFid in node (dir recreation changes FID)
+			parentDirPath := filepath.Dir(path)
+			if pv, ok := fs.nodes.Load(parentDirPath); ok {
+				pn := pv.(*node)
+				pn.mu.RLock()
+				newParentFid := pn.fid
+				pn.mu.RUnlock()
+				if newParentFid != parentFid {
+					n.mu.Lock()
+					n.parentFid = newParentFid
+					n.mu.Unlock()
+				}
+			}
+			return errDirGone
+		}
 		return err
 	}
 
