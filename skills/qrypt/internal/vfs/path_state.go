@@ -607,6 +607,12 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			}
 		} else {
 			// 本地是 local_，但远端出现了同名文件（可能是别人上传了同名文件）
+			// 但如果刚上传过（30s 内），远程文件很可能是我们自己的上传，
+			// 因为 syncFile 在 API 未索引时将 fid 转回了 local_。
+			if !lastUpload.IsZero() && time.Since(lastUpload) < 30*time.Second {
+				driver.Log.Printf("MergeRemoteChanges: skipping conflict for %s (just uploaded %dms ago, remote file likely ours)\n", entry.path, time.Since(lastUpload).Milliseconds())
+				continue
+			}
 			driver.Log.Printf("MergeRemoteChanges: CONFLICT (local new, remote exists) for %s. Triggering side-by-side rename.\n", entry.path)
 			fs.resolveConflict(entry.path, n, rf)
 		}
