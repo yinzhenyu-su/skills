@@ -461,6 +461,12 @@ func (fs *QryptFS) recoverPendingOps() {
 }
 
 func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remoteFiles []driver.File) {
+	// Skip if this directory (or an ancestor) is being deleted — prevents re-adding children
+	if fs.isUnderDeletingDir(parentPath) {
+		driver.Log.Printf("MergeRemoteChanges: skipping %s (directory being deleted)\n", parentPath)
+		return
+	}
+
 	seenFids := make(map[string]bool)
 	remoteMap := make(map[string]driver.File)
 
@@ -909,12 +915,29 @@ func (fs *QryptFS) Unlink(path string) (errc int) {
 	return 0
 }
 
+// isUnderDeletingDir checks if the given path is under a directory currently being deleted
+func (fs *QryptFS) isUnderDeletingDir(path string) bool {
+	p := path
+	for p != "" && p != "/" {
+		if _, ok := fs.deletingPaths.Load(p); ok {
+			return true
+		}
+		p = filepath.Dir(p)
+	}
+	return false
+}
+
 // Rmdir 删除文件夹
 func (fs *QryptFS) Rmdir(path string) (errc int) {
 	driver.Log.Printf("[FUSE] Rmdir: path=%s\n", path)
 	if isFinderTrashDir(path) {
 		return 0
 	}
+
+	// Mark directory as being deleted to prevent MergeRemoteChanges from re-adding children
+	fs.deletingPaths.Store(path, struct{}{})
+	defer fs.deletingPaths.Delete(path)
+
 	n, errc := fs.lookup(path)
 	if errc != 0 {
 		return errc

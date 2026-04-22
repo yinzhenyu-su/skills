@@ -95,6 +95,7 @@ type QryptFS struct {
 	nodes           sync.Map // path -> *node
 	fidNodes        sync.Map // fid -> *node (用于快速反查)
 	fetching        sync.Map // batchKey -> chan struct{} (用于合并请求)
+	deletingPaths   sync.Map // path -> struct{} (正在删除的目录，防止 MergeRemoteChanges 重新添加)
 	memCache        *lru.Cache[string, []byte] // fid_idx -> []byte (有界内存二级缓存)
 	uploadChan      chan syncTask
 	syncing         sync.Map // *node -> struct{} (防止并发同步同一节点)
