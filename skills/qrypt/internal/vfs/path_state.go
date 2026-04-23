@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -95,6 +96,7 @@ func (fs *QryptFS) currentPathForNode(n *node) string {
 }
 
 func (fs *QryptFS) storeNode(path string, n *node) {
+	path = filepath.Clean(path)
 	n.mu.Lock()
 	n.currentPath = path
 	if n.isFolder && n.children == nil {
@@ -113,7 +115,17 @@ func (fs *QryptFS) storeNode(path string, n *node) {
 			if p.children == nil {
 				p.children = make(map[string]*node)
 			}
+
+			// --- 核心修复：防止自引用循环 ---
+			if n.fid != "" && n.fid == p.fid {
+				driver.Log.Printf("CRITICAL: detected self-reference attempt for path %s (FID %s). Blocking.\n", path, n.fid)
+				p.mu.Unlock()
+				return
+			}
+			// -----------------------------
+
 			p.children[filepath.Base(path)] = n
+			p.mtime = time.Now() // 更新父目录修改时间
 			p.mu.Unlock()
 		}
 	}
@@ -184,34 +196,168 @@ func (fs *QryptFS) replaceNodePath(oldPath, newPath string, n *node) {
 }
 
 func (fs *QryptFS) deleteNodePath(path string, n *node) {
+	path = filepath.Clean(path)
 	fs.nodes.Delete(path)
+
+	// 如果是目录，递归清理所有子孙节点的缓存，防止重建后出现 FID 过时的“幽灵节点”
+	if n != nil {
+		n.mu.RLock()
+		isFolder := n.isFolder
+		n.mu.RUnlock()
+		if isFolder {
+			go fs.deleteSubtreePaths(path, n)
+		}
+	}
 
 	// 从父节点移除引用
 	if path != "/" {
 		parentPath := filepath.Dir(path)
 		if v, ok := fs.nodes.Load(parentPath); ok {
 			p := v.(*node)
-			p.mu.Lock()
-			if p.children != nil {
-				delete(p.children, filepath.Base(path))
+			// --- 核心修复：使用 TryLock 更新修改时间，防止删除过程中的 ABBA 死锁 ---
+			if p.mu.TryLock() {
+				if p.children != nil {
+					delete(p.children, filepath.Base(path))
+				}
+				p.mtime = time.Now()
+				p.mu.Unlock()
+			} else {
+				// 如果拿不到锁，至少在不持有锁的情况下从 map 移除引用
+				// 注意：sync.Map 本身是线程安全的，这里主要保护的是 p.children map
+				// 我们需要一个更安全的方式来处理 children map 的并发删除
+				fs.safeRemoveChild(p, filepath.Base(path))
 			}
-			p.mu.Unlock()
 		}
 	}
 
-	if n == nil {
+	// 内存中状态清理逻辑：不再锁定子节点 n，因为正在删除中，最小化锁冲突
+	var fid string
+	var localPath string
+	var isFolder bool
+	if n != nil {
+		n.mu.RLock()
+		fid = n.fid
+		localPath = n.localPath
+		isFolder = n.isFolder
+		n.mu.RUnlock()
+
+		if n.currentPath == path {
+			n.currentPath = ""
+		}
+
+		// 如果是普通文件且有本地 staging，立即物理清理（不依赖 API）
+		if localPath != "" && fs.staging != nil {
+			_ = fs.staging.Remove(localPath)
+		}
+		
+		// 如果是目录，仅执行内存树的递归清理，绝对不产生额外的异步 API 任务
+		if isFolder {
+			go fs.deleteSubtreePaths(path, n)
+		}
+	}
+
+	if fid != "" {
+		// 内存索引先行移除
+		if !strings.HasPrefix(fid, "local_") {
+			fs.fidNodes.Delete(fid)
+		}
+	}
+}
+
+func (fs *QryptFS) deleteSubtreePaths(parentPath string, n *node) {
+	if n == nil || !n.isFolder {
 		return
 	}
-	n.mu.Lock()
-	fid := n.fid
-	if n.currentPath == path {
-		n.currentPath = ""
-	}
-	n.mu.Unlock()
 
-	if fid != "" && !strings.HasPrefix(fid, "local_") {
-		fs.fidNodes.Delete(fid)
+	prefix := parentPath
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
 	}
+
+	n.mu.RLock()
+	type childEntry struct {
+		name  string
+		child *node
+	}
+	var children []childEntry
+	for name, child := range n.children {
+		children = append(children, childEntry{name, child})
+	}
+	n.mu.RUnlock()
+
+	var fidsToPurge []string
+	var pathsToPurge []string
+
+	for _, c := range children {
+		childPath := prefix + c.name
+
+		// 核心加固：对象级精准清理
+		// 只有当内存中该路径对应的依然是我们要删除的那个旧节点时，才执行清理
+		if v, ok := fs.nodes.Load(childPath); ok && v.(*node) == c.child {
+			fs.nodes.Delete(childPath)
+		}
+
+		if c.child != nil {
+			c.child.mu.RLock()
+			fid := c.child.fid
+			isFolder := c.child.isFolder
+			localPath := c.child.localPath
+			c.child.mu.RUnlock()
+
+			if fid != "" && !strings.HasPrefix(fid, "local_") {
+				// 只有当 fidNodes 指向的也是同一个对象时才删除索引
+				if v, ok := fs.fidNodes.Load(fid); ok && v.(*node) == c.child {
+					fs.fidNodes.Delete(fid)
+				}
+				fidsToPurge = append(fidsToPurge, fid)
+				// 物理清理磁盘分块
+				if fs.cache != nil {
+					_ = fs.cache.RemoveChunksByFid(fid)
+				}
+			}
+
+			// 如果有正在排队的上传，清理 staging
+			if localPath != "" && fs.staging != nil {
+				_ = fs.staging.Remove(localPath)
+			}
+
+			if isFolder {
+				fs.deleteSubtreePaths(childPath, c.child)
+			}
+		}
+	}
+
+	// 批量清理数据库状态
+	if fs.cache != nil && (len(fidsToPurge) > 0 || len(pathsToPurge) > 0) {
+		_ = fs.cache.BatchDeleteNodeState(fidsToPurge, pathsToPurge)
+		if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
+			_ = db.BatchMarkOpsDone(fidsToPurge, pathsToPurge)
+		}
+	}
+}
+
+// safeRemoveChild 尝试安全地从父节点移除子节点引用。
+// 如果无法立即获得锁，它会启动一个短时间的重试，或者在后台完成。
+func (fs *QryptFS) safeRemoveChild(p *node, baseName string) {
+	go func() {
+		for i := 0; i < 10; i++ {
+			if p.mu.TryLock() {
+				if p.children != nil {
+					delete(p.children, baseName)
+				}
+				p.mtime = time.Now()
+				p.mu.Unlock()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		// 最终手段：强制锁定（此时风险已降级）
+		p.mu.Lock()
+		if p.children != nil {
+			delete(p.children, baseName)
+		}
+		p.mu.Unlock()
+	}()
 }
 
 func (fs *QryptFS) persistPendingPath(oldPath, newPath string, n *node) {
@@ -283,6 +429,17 @@ func (fs *QryptFS) recursiveRename(oldPath, newPath string, n *node) {
 }
 
 func (fs *QryptFS) lookup(path string) (*node, int) {
+	return fs.lookupExtended(path, true)
+}
+
+func (fs *QryptFS) lookupExtended(path string, refresh bool) (*node, int) {
+	path = filepath.Clean(path)
+	// --- 核心修复：拦截正在删除的路径 ---
+	if fs.isUnderDeletingDir(path) {
+		return nil, -fuse.ENOENT
+	}
+	// ---------------------------------
+
 	if v, ok := fs.nodes.Load(path); ok {
 		n := v.(*node)
 
@@ -294,18 +451,25 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 		parentFid := n.parentFid
 		n.mu.RUnlock()
 
-		// For synced nodes (non-local fid):
-		// - If within TTL, trust cached metadata (no API call).
-		// - If TTL expired, refresh metadata via ListFiles (which also verifies existence).
-		// This eliminates redundant fileExistsOnServer calls on every lookup.
 		if !strings.HasPrefix(fid, "local_") {
-			if !isFolder && !isDirty && time.Since(lastCheck) > MetadataTTL {
+			if refresh && !isFolder && !isDirty && time.Since(lastCheck) > MetadataTTL {
+				// 如果已经是墓碑，直接返回 ENOENT
+				if _, inDeletion := fs.activeDeletions.Load(fid); inDeletion {
+					fs.deleteNodePath(path, n)
+					return nil, -fuse.ENOENT
+				}
+
 				// Refresh single file metadata + verify existence in one ListFiles call
-				files, err := fs.driver.ListFiles(parentFid)
+				files, err := fs.fetchFiles(parentFid)
 				found := false
 				if err == nil {
 					for _, f := range files {
 						if f.Fid == fid {
+							// 还是检查一次是否变成了墓碑
+							if _, inDeletion := fs.activeDeletions.Load(fid); inDeletion {
+								break
+							}
+
 							decSize, _ := fs.cipher.DecryptedSize(f.Int64Size())
 							n.mu.Lock()
 							n.size = decSize
@@ -320,7 +484,12 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 						}
 					}
 				}
+
 				if !found && path != "/" {
+					if n.source == "local" || n.source == "merged" {
+						return n, 0
+					}
+
 					driver.Log.Printf("lookup: file %s (fid=%s) deleted from server, removing from cache\n", path, fid)
 					fs.deleteNodePath(path, n)
 					return nil, -fuse.ENOENT
@@ -348,8 +517,20 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 			continue
 		}
 
+		// --- 再次拦截正在删除的中间路径 ---
+		if fs.isUnderDeletingDir(currentPath) {
+			return nil, -fuse.ENOENT
+		}
+		// ---------------------------------
+
 		// 否则，列出父目录内容来寻找
-		files, err := fs.driver.ListFiles(currentFid)
+		// --- 核心修复：检查当前父目录是否是墓碑 ---
+		if _, inDeletion := fs.activeDeletions.Load(currentFid); inDeletion {
+			return nil, -fuse.ENOENT
+		}
+		// ---------------------------------------
+
+		files, err := fs.fetchFiles(currentFid)
 		if err != nil {
 			return nil, -fuse.EIO
 		}
@@ -360,6 +541,13 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 			if decName != part {
 				continue
 			}
+
+			// --- 核心修复：防止幽灵复活 ---
+			if _, inDeletion := fs.activeDeletions.Load(f.Fid); inDeletion {
+				found = false // 故意不设置 found，返回 ENOENT
+				break
+			}
+			// --------------------------
 
 			// 保护逻辑：如果本地已有该路径的 Dirty 节点，不覆盖它
 			if v, ok := fs.nodes.Load(currentPath); ok {
@@ -381,7 +569,7 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 			if !f.IsDir() {
 				lastCheck = time.Now()
 			}
-			n := &node{
+			newNode := &node{
 				fid:               f.Fid,
 				parentFid:         currentFid,
 				name:              decName,
@@ -393,8 +581,9 @@ func (fs *QryptFS) lookup(path string) (*node, int) {
 				baseServerMtime:   modTime.UnixMilli(),
 				baseServerSize:    decSize,
 				lastMetadataCheck: lastCheck,
+				source:            "remote",
 			}
-			fs.storeNode(currentPath, n)
+			fs.storeNode(currentPath, newNode)
 			currentFid = f.Fid
 			found = true
 			break
@@ -442,8 +631,14 @@ func (fs *QryptFS) recoverPendingOps() {
 		switch l.OpType {
 		case "MKDIR":
 			_, err = fs.driver.CreateDir(p.ParentFid, p.Name)
-		case "UNLINK", "RMDIR":
-			err = fs.driver.Delete(p.Fids)
+		case "UNLINK", "RMDIR", "DELETE":
+			deleteFids := p.Fids
+			if len(deleteFids) == 0 && p.Fid != "" {
+				deleteFids = []string{p.Fid}
+			}
+			if len(deleteFids) > 0 {
+				err = fs.driver.Delete(deleteFids)
+			}
 		case "RENAME":
 			if p.ParentFid != "" {
 				_ = fs.driver.Move(p.Fids, p.ParentFid, p.CurrentDirFid)
@@ -455,24 +650,61 @@ func (fs *QryptFS) recoverPendingOps() {
 			driver.Log.Printf("recoverPendingOps: retry %d (%s) SUCCEEDED\n", l.ID, l.OpType)
 			_ = db.UpdateOpsLogStatus(l.ID, "DONE")
 		} else {
-			driver.Log.Printf("recoverPendingOps: retry %d failed: %v\n", l.ID, err)
+			msg := err.Error()
+			if strings.Contains(msg, driver.QuarkErrAlreadyDeleted) || strings.Contains(msg, "404") || strings.Contains(msg, "not found") {
+				driver.Log.Printf("recoverPendingOps: retry %d (%s) SUCCEEDED (already deleted)\n", l.ID, l.OpType)
+				_ = db.UpdateOpsLogStatus(l.ID, "DONE")
+			} else {
+				driver.Log.Printf("recoverPendingOps: retry %d failed: %v\n", l.ID, err)
+			}
 		}
 	}
 }
 
 func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remoteFiles []driver.File) {
-	// Skip if this directory (or an ancestor) is being deleted — prevents re-adding children
-	if fs.isUnderDeletingDir(parentPath) {
-		driver.Log.Printf("MergeRemoteChanges: skipping %s (directory being deleted)\n", parentPath)
+	if parentFid == "" {
 		return
 	}
 
+	// 1. 使用 merging 锁进行合并操作去重，防止同一目录被并发执行多次 Merge（高并发刷新/预取场景）
+	waitChan, loading := fs.merging.LoadOrStore(parentFid, make(chan struct{}))
+	if loading {
+		<-waitChan.(chan struct{})
+		return
+	}
+	defer func() {
+		close(waitChan.(chan struct{}))
+		fs.merging.Delete(parentFid)
+	}()
+
+	// Skip if this directory (or an ancestor) is being deleted — prevents re-adding children
+	// 同时如果在 Rmdir 保护期内，也直接跳过更新，防止删了又加
+	if fs.isUnderDeletingDir(parentPath) {
+		driver.Log.Printf("MergeRemoteChanges: skipping %s (directory or ancestor being deleted)\n", parentPath)
+		return
+	}
+
+	// --- 核心修复：检查父目录本身是否已在删除队列中 ---
+	if _, inDeletion := fs.activeDeletions.Load(parentFid); inDeletion {
+		driver.Log.Printf("MergeRemoteChanges: skipping %s (parent FID %s is tombstoned)\n", parentPath, parentFid)
+		return
+	}
+	// ---------------------------------------------
+
 	seenFids := make(map[string]bool)
 	remoteMap := make(map[string]driver.File)
+	remoteFids := make(map[string]bool)
 
 	for _, f := range remoteFiles {
+		// --- 核心修复：过滤自我引用，防止幽灵双胞胎 ---
+		if f.Fid == parentFid {
+			continue
+		}
+		// ----------------------------------------
+
 		seenFids[f.Fid] = true
-		
+		remoteFids[f.Fid] = true
+
 		decName := ""
 		// 1. 优先使用缓存中已知的解密名称
 		if v, ok := fs.fidNodes.Load(f.Fid); ok {
@@ -481,11 +713,26 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			decName = pn.name
 			pn.mu.RUnlock()
 		}
-		// 2. 如果未知，则进行昂贵的解密
+		// 2. 如果内存没有，尝试从持久化数据库缓存中读取
+		if decName == "" && fs.cache != nil {
+			if cached, ok, _ := fs.cache.GetCachedName(f.Fid, f.FileName); ok {
+				decName = cached
+			}
+		}
+		// 3. 如果还是未知，则进行昂贵的解密并存入缓存
 		if decName == "" {
 			decName, _ = fs.cipher.DecryptSegment(f.FileName)
+			if decName != "" && fs.cache != nil {
+				_ = fs.cache.SaveCachedName(f.Fid, f.FileName, decName)
+			}
 		}
-		
+
+		// --- 核心修复：禁止非法名称 ---
+		if decName == "" || decName == "." || decName == ".." {
+			continue
+		}
+		// ----------------------------
+
 		// 跳过同名文件（夸克网盘允许 xxx 和 xxx(1) 共存，解密后可能重名）
 		if _, exists := remoteMap[decName]; exists {
 			driver.Log.Printf("MergeRemoteChanges: skipping duplicate remote file '%s' (fid=%s) in %s\n", decName, f.Fid, parentPath)
@@ -517,6 +764,8 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 	}
 
 	seenLocalNames := make(map[string]bool)
+	syncInProgressCount := 0
+	remoteDeletedCount := 0
 	for _, entry := range localEntries {
 		n := entry.node
 		n.mu.RLock()
@@ -526,55 +775,66 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		baseMtime := n.baseServerMtime
 		syncQueued := n.syncQueued
 		lastUpload := n.lastUploadTime
+		expectedFid := n.expectedFid
 		n.mu.RUnlock()
 
 		seenLocalNames[name] = true
 
-		// 跳过正在同步的文件
+		// 跳过正在同步的文件，记录数量但不逐个打印日志（高频场景下会刷屏）
 		if syncQueued {
-			driver.Log.Printf("MergeRemoteChanges: skipping %s (sync in progress)\n", entry.path)
-			continue
-		}
-		// 刚上传完成的文件（30秒内），跳过以防 API 索引延迟导致误判为"远程删除"
-		// 夸克 API 索引新文件可能需要几秒到几十秒
-		if !isDirty && !lastUpload.IsZero() && time.Since(lastUpload) < 30*time.Second {
-			driver.Log.Printf("MergeRemoteChanges: skipping %s (just uploaded %dms ago)\n", entry.path, time.Since(lastUpload).Milliseconds())
+			syncInProgressCount++
 			continue
 		}
 
 		rf, exists := remoteMap[name]
+
+		// 改进：引入 ExpectedFID 追踪（彻底消除 30s 依赖）
+		if exists && rf.Fid == expectedFid {
+			n.mu.Lock()
+			if n.fid != expectedFid {
+				driver.Log.Printf("MergeRemoteChanges: %s matched expectedFid %s, updating node FID and source\n", entry.path, expectedFid)
+				n.fid = expectedFid
+			}
+			n.source = "remote"
+			n.mu.Unlock()
+			// 既然已经匹配到预期的 FID，继续后续元数据更新流程
+		}
+
+		// 刚上传完成的文件，跳过以防 API 索引延迟导致误判为"远程删除"
+		// 这里优先信任 local 状态，如果 source 没设置，回退到时间判断
+		if !isDirty && (n.source == "local" || n.source == "merged" || (!lastUpload.IsZero() && time.Since(lastUpload) < 30*time.Second)) {
+			// 如果还没在远程列表中确认过，即便列表里没有，也继续保留
+			if !exists {
+				driver.Log.Printf("MergeRemoteChanges: %s (source=%s, lastUpload=%v) not in remote list yet, keeping local node\n", entry.path, n.source, lastUpload)
+				continue
+			}
+			// 如果在列表中看到了，且 FID 一致，说明已索引，转为 remote 状态
+			if rf.Fid == fid {
+				n.mu.Lock()
+				if n.source != "remote" {
+					n.source = "remote"
+					driver.Log.Printf("MergeRemoteChanges: %s confirmed on server, transitioned to remote source\n", entry.path)
+				}
+				n.mu.Unlock()
+			}
+		}
+
 		if !exists {
-			// 远端已删除
-			if n.source == "local" {
-				// 本地新建的文件，远程不可见，跳过删除
-				driver.Log.Printf("MergeRemoteChanges: skipping delete for local-only file %s\n", entry.path)
+			// 远端不存在该文件
+			if isDirty {
+				driver.Log.Printf("MergeRemoteChanges: %s is dirty but not on remote, keeping local\n", entry.path)
 				continue
 			}
-			if n.source == "merged" {
-				// 远程删了，但我本地改过 → 冲突：转为 local 重新上传
-				driver.Log.Printf("MergeRemoteChanges: CONFLICT (remote deleted, local merged) for %s. Keeping local.\n", entry.path)
-				n.mu.Lock()
-				if !strings.HasPrefix(n.fid, "local_") {
-					n.fid = "local_" + n.name + "_" + fmt.Sprint(time.Now().UnixNano())
-				}
-				n.source = "merged"
-				n.mu.Unlock()
+
+			if n.source == "local" || n.source == "merged" {
+				// 本地新建或冲突合并中的文件，且上面没被 rf.Fid == fid 匹配到（说明 FID 变了或确实没索引）
+				driver.Log.Printf("MergeRemoteChanges: skipping delete for local-owned file %s\n", entry.path)
 				continue
 			}
-			// source == "remote" or unknown
-			if !isDirty {
-				driver.Log.Printf("MergeRemoteChanges: remote deleted %s, removing local node\n", entry.path)
-				fs.deleteNodePath(entry.path, n)
-			} else {
-				// 冲突：远端删了，但我本地改了。将 fid 转为 local_ 保证继续上传为新文件
-				driver.Log.Printf("MergeRemoteChanges: CONFLICT (remote deleted, local dirty) for %s. Turning into local node.\n", entry.path)
-				n.mu.Lock()
-				if !strings.HasPrefix(n.fid, "local_") {
-					n.fid = "local_" + n.name + "_" + fmt.Sprint(time.Now().UnixNano())
-				}
-				n.source = "merged"
-				n.mu.Unlock()
-			}
+
+			// 只有 source == "remote" 的文件，才完全相信远程列表的“不存在”即为“已删除”
+			fs.deleteNodePath(entry.path, n)
+			remoteDeletedCount++
 			continue
 		}
 
@@ -586,7 +846,11 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			}
 
 			remoteMtime := rf.ModTime().UnixMilli()
-			if remoteMtime > baseMtime+2000 {
+			n.mu.RLock()
+			source := n.source
+			n.mu.RUnlock()
+
+			if source == "remote" && baseMtime > 0 && remoteMtime > baseMtime+2000 {
 				if !isDirty {
 					// 纯远端更新
 					decSize, _ := fs.cipher.DecryptedSize(rf.Int64Size())
@@ -624,9 +888,24 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		}
 	}
 
+	if syncInProgressCount > 0 {
+		driver.Log.Printf("MergeRemoteChanges: skipped %d files in %s (sync in progress)\n", syncInProgressCount, parentPath)
+	}
+	if remoteDeletedCount > 0 {
+		driver.Log.Printf("MergeRemoteChanges: removed %d local nodes in %s (remote deleted)\n", remoteDeletedCount, parentPath)
+	}
+
 	// 2. 处理远端有但本地没有的新文件
+	addedCount := 0
 	for name, rf := range remoteMap {
 		if seenLocalNames[name] {
+			continue
+		}
+
+		// 证据驱动的“墓碑”机制：
+		// 如果该 FID 在删除队列中，我们绝对不把它作为“新文件”加回来。
+		if _, inDeletion := fs.activeDeletions.Load(rf.Fid); inDeletion {
+			driver.Log.Printf("MergeRemoteChanges: blocking resurrected zombie file %s (fid=%s)\n", name, rf.Fid)
 			continue
 		}
 
@@ -647,7 +926,75 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			lastMetadataCheck: time.Now(),
 			source:            "remote",
 		})
-		driver.Log.Printf("MergeRemoteChanges: added new remote file %s\n", childPath)
+		addedCount++
+	}
+	if addedCount > 0 {
+		driver.Log.Printf("MergeRemoteChanges: added %d new remote files to %s\n", addedCount, parentPath)
+	}
+
+	// 3. 证据驱动的清理：
+	// 只检查当前目录下的子墓碑
+	if val, ok := fs.deletionsByParent.Load(parentFid); ok {
+		childMap := val.(*sync.Map)
+		childMap.Range(func(key, value interface{}) bool {
+			fid := key.(string)
+			if stateVal, exists := fs.activeDeletions.Load(fid); exists {
+				state := stateVal.(*deletionState)
+				if state.apiDone {
+					if !remoteFids[fid] {
+						// 证据：API 已调成功 + 远端列表已不包含该 FID = 索引已同步
+						driver.Log.Printf("MergeRemoteChanges: evidence confirmed - FID %s is gone from server list, clearing tombstone and path protection\n", fid)
+						
+						// 同时清除路径保护
+						if state.path != "" {
+							fs.deletingPaths.Delete(state.path)
+						}
+
+						fs.activeDeletions.Delete(fid)
+						childMap.Delete(fid)
+
+						// 递归清理逻辑：如果刚消失的是一个目录，将其下的所有后代墓碑也清理掉
+						// 因为父目录都没了，我们永远不会再刷新它来获取后代消失的证据。
+						fs.purgeTombstonesRecursively(fid)
+					}
+				}
+			} else {
+				// 状态不对称，清理索引
+				childMap.Delete(fid)
+			}
+			return true
+		})
+	}
+}
+
+// purgeTombstonesRecursively 递归清理某个 FID 下的所有子孙墓碑
+func (fs *QryptFS) purgeTombstonesRecursively(parentFid string) {
+	if parentFid == "" {
+		return
+	}
+
+	if val, ok := fs.deletionsByParent.Load(parentFid); ok {
+		childMap := val.(*sync.Map)
+		childMap.Range(func(key, value interface{}) bool {
+			fid := key.(string)
+			// 防环检查
+			if fid == parentFid {
+				childMap.Delete(fid)
+				return true
+			}
+
+			if stateVal, ok := fs.activeDeletions.Load(fid); ok {
+				state := stateVal.(*deletionState)
+				if state.path != "" {
+					fs.deletingPaths.Delete(state.path)
+				}
+			}
+
+			fs.activeDeletions.Delete(fid)
+			fs.purgeTombstonesRecursively(fid) // 继续向下递归
+			return true
+		})
+		fs.deletionsByParent.Delete(parentFid)
 	}
 }
 
@@ -712,6 +1059,10 @@ func (fs *QryptFS) Getattr(path string, stat *fuse.Stat_t, fh uint64) (errc int)
 	if n.isFolder {
 		stat.Mode = fuse.S_IFDIR | 0755
 		stat.Nlink = 2
+		// 将文件夹大小设为子项数量，有助于某些工具展示
+		n.mu.RLock()
+		stat.Size = int64(len(n.children))
+		n.mu.RUnlock()
 	} else {
 		stat.Mode = fuse.S_IFREG | 0644
 		stat.Size = n.size
@@ -745,52 +1096,92 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 	n.mu.RLock()
 	lastCheck := n.lastMetadataCheck
 	childCount := len(n.children)
+	parentFid := n.fid // 获取 FID 用于后续无锁调用
 	n.mu.RUnlock()
 
-	// 增加防御逻辑：如果子节点为空，且不是刚刚检查过(1s内)，则强制刷新一次
-	forceRefresh := childCount == 0 && time.Since(lastCheck) > 1*time.Second
+	// 增加防御逻辑：如果子节点为空，且不是刚刚检查过(5s内)，则强制刷新一次
+	forceRefresh := childCount == 0 && time.Since(lastCheck) > 5*time.Second
 
 	if time.Since(lastCheck) > MetadataTTL || forceRefresh {
-		files, err := fs.driver.ListFiles(n.fid)
+		// --- 修复：在无锁状态下进行网络请求和合并操作 ---
+		startFetch := time.Now()
+		files, err := fs.fetchFiles(parentFid)
 		if err != nil {
 			driver.Log.Printf("[FUSE] Readdir ListFiles failed for %s: %v\n", path, err)
 			// 如果获取失败，仍然尝试用本地缓存展示
 		} else {
-			fs.MergeRemoteChanges(path, n.fid, files)
+			fetchDuration := time.Since(startFetch)
+			startMerge := time.Now()
+			fs.MergeRemoteChanges(path, parentFid, files)
+			mergeDuration := time.Since(startMerge)
+
+			if fetchDuration > 2*time.Second || mergeDuration > 2*time.Second {
+				driver.Log.Printf("[PERF] Readdir slow path %s: fetch=%v, merge=%v, files=%d\n", path, fetchDuration, mergeDuration, len(files))
+			}
+
 			n.mu.Lock()
 			n.lastMetadataCheck = time.Now()
 			n.mu.Unlock()
 
 			// OPTIMIZATION: Background prefetch child directories
 			n.mu.RLock()
+			var childrenToPrefetch []*node
 			for _, child := range n.children {
+				childrenToPrefetch = append(childrenToPrefetch, child)
+			}
+			n.mu.RUnlock()
+
+			for _, child := range childrenToPrefetch {
 				child.mu.RLock()
 				isDir := child.isFolder
 				childFid := child.fid
+				childPath := child.currentPath
 				childLastCheck := child.lastMetadataCheck
 				child.mu.RUnlock()
-				if isDir && time.Since(childLastCheck) > MetadataTTL {
-					go func(fid string) {
-						prefetchFiles, err := fs.driver.ListFiles(fid)
+
+				// 如果子目录正在删除中，不要预取它，否则会把刚删掉的文件又拉回来
+				if isDir && childFid != "" && !strings.HasPrefix(childFid, "local_") && time.Since(childLastCheck) > MetadataTTL {
+					if _, inDeletion := fs.activeDeletions.Load(childFid); inDeletion {
+						continue
+					}
+					if fs.isUnderDeletingDir(childPath) {
+						continue
+					}
+
+					go func(fid, cpath string) {
+						// 使用信号量限制并发预取
+						select {
+						case fs.prefetchSem <- struct{}{}:
+							defer func() { <-fs.prefetchSem }()
+						default:
+							// 队列已满，放弃本次预取，优先保证主线程
+							return
+						}
+
+						prefetchFiles, err := fs.fetchFiles(fid)
 						if err != nil {
 							return
 						}
-						if cpn, ok := fs.fidNodes.Load(fid); ok {
-							fs.MergeRemoteChanges(cpn.(*node).currentPath, fid, prefetchFiles)
-							cpn.(*node).mu.Lock()
-							cpn.(*node).lastMetadataCheck = time.Now()
-							cpn.(*node).mu.Unlock()
+						// 再次检查，防止在网络请求期间开始了删除
+						if fs.isUnderDeletingDir(cpath) {
+							return
 						}
-					}(childFid)
+						fs.MergeRemoteChanges(cpath, fid, prefetchFiles)
+						if cpn, ok := fs.fidNodes.Load(fid); ok {
+							cn := cpn.(*node)
+							cn.mu.Lock()
+							cn.lastMetadataCheck = time.Now()
+							cn.mu.Unlock()
+						}
+					}(childFid, childPath)
 				}
 			}
-			n.mu.RUnlock()
 		}
 	}
 
 	uid, gid, _ := fuse.Getcontext()
 
-	// 使用父子引用，避免 O(N) 扫描，且能够展示本地尚未同步的文件
+	// 重新获取读锁以进行列表填充
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
@@ -847,7 +1238,27 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 
 	fid, err := fs.driver.CreateDir(parentNode.fid, encName)
 	if err != nil {
-		return -fuse.EIO
+		// --- 核心修复：处理“目录已存在”冲突 ---
+		if strings.Contains(err.Error(), driver.QuarkErrDirAlreadyExists) {
+			driver.Log.Printf("Mkdir: %s already exists on server, attempting to adopt FID\n", path)
+			// 尝试找回已存在的 FID
+			if foundFid, findErr := fs.driver.FindChildByName(parentNode.fid, encName); findErr == nil {
+				fid = foundFid
+				// 重要：如果该 FID 正在删除队列中（墓碑），必须立即撤销它
+				if _, inDeletion := fs.activeDeletions.Load(fid); inDeletion {
+					driver.Log.Printf("Mkdir: revoking tombstone for adopted FID %s\n", fid)
+					fs.activeDeletions.Delete(fid)
+					// 同时清理父目录索引中的记录
+					if val, ok := fs.deletionsByParent.Load(parentNode.fid); ok {
+						val.(*sync.Map).Delete(fid)
+					}
+				}
+			} else {
+				return -fuse.EIO
+			}
+		} else {
+			return -fuse.EIO
+		}
 	}
 
 	if logID > 0 && fs.cache != nil {
@@ -855,6 +1266,35 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 			_ = db.UpdateOpsLogStatus(logID, "DONE")
 		}
 	}
+
+	// --- 核心修复：重建目录时，无差别清除该路径下的所有旧状态 ---
+	// 1. 清除路径拦截
+	fs.deletingPaths.Delete(path)
+	prefix := path
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	fs.deletingPaths.Range(func(key, value interface{}) bool {
+		if strings.HasPrefix(key.(string), prefix) {
+			fs.deletingPaths.Delete(key)
+		}
+		return true
+	})
+
+	// 2. 强力清除该路径及其子路径下的所有墓碑（Tombstones）
+	// 不再依赖复杂的 FID 递归，直接遍历 activeDeletions 清理匹配路径的任务
+	fs.activeDeletions.Range(func(key, value interface{}) bool {
+		state := value.(*deletionState)
+		if state.path == path || strings.HasPrefix(state.path, prefix) {
+			fs.activeDeletions.Delete(key)
+			// 同时清理父级索引
+			if val, ok := fs.deletionsByParent.Load(state.parentFid); ok {
+				val.(*sync.Map).Delete(key)
+			}
+		}
+		return true
+	})
+	// ------------------------------------------------------
 
 	fs.storeNode(path, &node{
 		fid:               fid,
@@ -868,6 +1308,11 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 		lastMetadataCheck: time.Now(),
 		source:            "local",
 	})
+	fs.driver.ClearNegativeCache(parentNode.fid, name)
+	// 额外清理：如果该路径曾被记录为负缓存，确保彻底清除
+	if v, ok := fs.nodes.Load(parentPath); ok {
+		fs.driver.ClearNegativeCache(v.(*node).fid, name)
+	}
 	fs.driver.RemoveDirCache(parentNode.fid)
 
 	return 0
@@ -879,7 +1324,8 @@ func (fs *QryptFS) Unlink(path string) (errc int) {
 	if isFinderTrashPath(path) {
 		return 0
 	}
-	n, errc := fs.lookup(path)
+
+	n, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
 		return errc
 	}
@@ -889,29 +1335,43 @@ func (fs *QryptFS) Unlink(path string) (errc int) {
 	}
 
 	if !strings.HasPrefix(n.fid, "local_") {
-		var logID int64
-		if fs.cache != nil {
-			if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
-				payload, _ := json.Marshal(opsPayload{Fids: []string{n.fid}})
-				logID, _ = db.AddOpsLogEntry("UNLINK", path, "", string(payload))
-			}
+		// --- 核心改进：检查是否已经在删除队列中，防止重复任务 ---
+		if _, exists := fs.activeDeletions.Load(n.fid); exists {
+			fs.deleteNodePath(path, n)
+			return 0
 		}
 
-		err := fs.driver.Delete([]string{n.fid})
-		if err != nil {
-			driver.Log.Printf("Unlink failed for %s (fid=%s): %v\n", path, n.fid, err)
-			return -fuse.EIO
-		}
+		// 添加状态化的“墓碑”标记
+		fs.activeDeletions.Store(n.fid, &deletionState{
+			parentFid: n.parentFid,
+			path:      path,
+			apiDone:   false, // 初始为 false，等待 worker 完成 API 调用
+		})
+		// 维护辅助索引
+		actualMap, _ := fs.deletionsByParent.LoadOrStore(n.parentFid, &sync.Map{})
+		actualMap.(*sync.Map).Store(n.fid, true)
 
-		if logID > 0 && fs.cache != nil {
-			if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
-				_ = db.UpdateOpsLogStatus(logID, "DONE")
-			}
+		// 异步处理：先发往 opsLogChan (由后台 worker 批量入库)，再发往 metadataOpChan (执行删除)
+		task := metadataTask{
+			opType: "DELETE",
+			path:   path,
+			node:   n,
+			fids:   []string{n.fid},
+		}
+		fs.opsLogChan <- task
+		fs.metadataOpChan <- task
+	} else {
+		// 本地文件，也改为异步清理，释放 FUSE 线程
+		fs.metadataOpChan <- metadataTask{
+			opType: "LOCAL_CLEANUP",
+			path:   path,
+			node:   n,
 		}
 	}
 
-	fs.cleanupLocalUploadState(path, n, false)
-	fs.driver.RemoveDirCache(n.parentFid)
+	// 内存删除放在最后，确保墓碑已立好
+	fs.deleteNodePath(path, n)
+
 	return 0
 }
 
@@ -930,15 +1390,11 @@ func (fs *QryptFS) isUnderDeletingDir(path string) bool {
 // Rmdir 删除文件夹
 func (fs *QryptFS) Rmdir(path string) (errc int) {
 	driver.Log.Printf("[FUSE] Rmdir: path=%s\n", path)
-	if isFinderTrashDir(path) {
+	if isFinderTrashPath(path) {
 		return 0
 	}
 
-	// Mark directory as being deleted to prevent MergeRemoteChanges from re-adding children
-	fs.deletingPaths.Store(path, struct{}{})
-	defer fs.deletingPaths.Delete(path)
-
-	n, errc := fs.lookup(path)
+	n, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
 		return errc
 	}
@@ -947,30 +1403,89 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 		return -fuse.ENOTDIR
 	}
 
-	if !strings.HasPrefix(n.fid, "local_") {
-		var logID int64
-		if fs.cache != nil {
-			if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
-				payload, _ := json.Marshal(opsPayload{Fids: []string{n.fid}})
-				logID, _ = db.AddOpsLogEntry("RMDIR", path, "", string(payload))
+	// --- 标准行为：检查是否为空（忽略正在删除的子项） ---
+	n.mu.RLock()
+	type childInfo struct {
+		fid  string
+		path string
+		node *node
+	}
+	var children []childInfo
+	for name, child := range n.children {
+		child.mu.RLock()
+		children = append(children, childInfo{
+			fid:  child.fid,
+			path: filepath.Join(path, name),
+			node: child,
+		})
+		child.mu.RUnlock()
+	}
+	n.mu.RUnlock()
+
+	isEmpty := true
+	for _, c := range children {
+		if c.fid != "" && !strings.HasPrefix(c.fid, "local_") {
+			if _, inDeletion := fs.activeDeletions.Load(c.fid); inDeletion {
+				continue // 忽略已标记删除的
 			}
 		}
-
-		err := fs.driver.Delete([]string{n.fid})
-		if err != nil {
-			driver.Log.Printf("Rmdir failed for %s (fid=%s): %v\n", path, n.fid, err)
-			return -fuse.EIO
+		// 也要检查路径是否在删除保护中
+		if fs.isUnderDeletingDir(c.path) {
+			continue
 		}
-
-		if logID > 0 && fs.cache != nil {
-			if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
-				_ = db.UpdateOpsLogStatus(logID, "DONE")
-			}
-		}
+		isEmpty = false
+		break
 	}
 
-	fs.cleanupLocalUploadState(path, n, true)
-	fs.driver.RemoveDirCache(n.parentFid)
+	if !isEmpty {
+		driver.Log.Printf("Rmdir: %s is not empty in memory, returning ENOTEMPTY\n", path)
+		return -fuse.ENOTEMPTY
+	}
+	// ---------------------------------------------
+
+	// Mark directory as being deleted to prevent MergeRemoteChanges from re-adding children
+	fs.deletingPaths.Store(path, struct{}{})
+
+
+	if !strings.HasPrefix(n.fid, "local_") {
+		// --- 核心改进：检查是否已经在删除队列中 ---
+		if _, exists := fs.activeDeletions.Load(n.fid); exists {
+			fs.deleteNodePath(path, n)
+			return 0
+		}
+
+		// 添加状态化的“墓碑”标记
+		fs.activeDeletions.Store(n.fid, &deletionState{
+			parentFid: n.parentFid,
+			path:      path,
+			apiDone:   false,
+		})
+		// 维护辅助索引
+		actualMap, _ := fs.deletionsByParent.LoadOrStore(n.parentFid, &sync.Map{})
+		actualMap.(*sync.Map).Store(n.fid, true)
+
+		// 异步处理
+		task := metadataTask{
+			opType: "DELETE",
+			path:   path,
+			node:   n,
+			fids:   []string{n.fid},
+		}
+		fs.opsLogChan <- task
+		fs.metadataOpChan <- task
+	} else {
+		// 本地目录异步清理
+		fs.metadataOpChan <- metadataTask{
+			opType: "LOCAL_CLEANUP_DIR",
+			path:   path,
+			node:   n,
+		}
+		fs.deletingPaths.Delete(path)
+	}
+
+	// 内存删除放在最后，待 MergeRemoteChanges 确认消失后再彻底移除保护
+	fs.deleteNodePath(path, n)
+
 	return 0
 }
 
@@ -1023,7 +1538,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 				if moveErr == nil {
 					break
 				}
-				if strings.Contains(moveErr.Error(), "23008") || strings.Contains(moveErr.Error(), "conflict") {
+				if strings.Contains(moveErr.Error(), driver.QuarkErrDirAlreadyExists) || strings.Contains(moveErr.Error(), "conflict") {
 					driver.Log.Printf("Rename Move: transient error on attempt %d for %s: %v\n", attempt+1, oldPath, moveErr)
 					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 					fs.driver.RemoveDirCache(newParentNode.fid)
@@ -1067,7 +1582,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 				if renameErr == nil {
 					break
 				}
-				if strings.Contains(renameErr.Error(), "23008") || strings.Contains(renameErr.Error(), "conflict") {
+				if strings.Contains(renameErr.Error(), driver.QuarkErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
 					driver.Log.Printf("Rename: transient error on attempt %d for %s: %v\n", attempt+1, oldPath, renameErr)
 					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 					continue
@@ -1102,6 +1617,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 
 	parentNode, errc := fs.lookup(newParent)
 	if errc == 0 {
+		fs.driver.ClearNegativeCache(parentNode.fid, newName)
 		fs.driver.RemoveDirCache(parentNode.fid)
 	}
 	if oldParent != newParent {
@@ -1136,4 +1652,53 @@ func (fs *QryptFS) Access(path string, mask uint32) (errc int) {
 		return errc
 	}
 	return 0
+}
+
+// fetchFiles gated version of ListFiles to deduplicate concurrent requests
+func (fs *QryptFS) fetchFiles(fid string) ([]driver.File, error) {
+	if fid == "" {
+		return nil, nil
+	}
+
+	// 1. 尝试从同步锁中获取
+	waitChan, loading := fs.fetching.LoadOrStore(fid, make(chan struct{}))
+	if loading {
+		// 已经有协程在拉取了，等待它完成，增加超时保护
+		select {
+		case <-waitChan.(chan struct{}):
+			// 完成后，驱动层缓存应该是最新的，直接拉取驱动缓存
+			return fs.driver.ListFiles(fid)
+		case <-time.After(30 * time.Second):
+			return nil, fmt.Errorf("fetchFiles timeout waiting for concurrent fetch")
+		}
+	}
+
+	// 2. 我是第一个拉取的，负责执行并通知其他协程
+	defer func() {
+		close(waitChan.(chan struct{}))
+		fs.fetching.Delete(fid)
+	}()
+
+	return fs.driver.ListFiles(fid)
+}
+
+// maybeSavePendingNodeLocked saves the node state to the persistent database if needed.
+// Must be called with node.mu locked.
+func (fs *QryptFS) maybeSavePendingNodeLocked(path string, n *node, force bool) error {
+	if fs.cache == nil {
+		return nil
+	}
+	
+	now := time.Now()
+	if !force && now.Sub(n.lastPendingSave) < pendingNodeSaveInterval && 
+	   (n.size - n.lastPendingSize) < pendingNodeSaveSizeStep {
+		return nil
+	}
+
+	err := fs.cache.SavePendingNode(path, n.fid, n.parentFid, n.name, n.localPath, n.size, n.isFolder, n.fileNonce[:], n.baseServerMtime, n.baseServerSize)
+	if err == nil {
+		n.lastPendingSave = now
+		n.lastPendingSize = n.size
+	}
+	return err
 }

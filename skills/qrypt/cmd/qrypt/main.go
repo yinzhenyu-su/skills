@@ -120,8 +120,8 @@ func runMount(cmd *cobra.Command, args []string) {
 
 	// 5. 初始化驱动并验证
 	d := driver.NewQuarkDriver(cfg.Quark.Cookie)
-	if err := d.Auth(); err != nil {
-		fmt.Printf("认证失败: %v\n", err)
+	d.SetCipher(cipher) // 设置加密引擎以便解析路径
+	if err := d.Auth(); err != nil {		fmt.Printf("认证失败: %v\n", err)
 		os.Exit(1)
 	}
 

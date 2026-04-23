@@ -15,13 +15,19 @@ import (
 )
 
 const (
-	// FetchBatchBlocks 定义了一次批量下载的块数 (128 * 64KB = 8MB)
-	FetchBatchBlocks        = 128
+	// FetchBatchSizeMB 定义了一次批量下载的大小 (单位: MB)
+	FetchBatchSizeMB = 32
+	// FetchBatchBlocks 根据 MB 自动计算块数 (32MB / 64KB = 512)
+	FetchBatchBlocks = (FetchBatchSizeMB * 1024) / 64
+
+	// MemCacheSizeMB 内存缓存总体上限 (单位: MB)
+	MemCacheSizeMB = 512
+	// MemCacheMaxEntries 根据 MB 自动计算条目数 (512MB / 64KB = 8192)
+	MemCacheMaxEntries = (MemCacheSizeMB * 1024) / 64
+
 	maxAutoRetryAttempts    = 5
 	pendingNodeSaveInterval = 250 * time.Millisecond
 	pendingNodeSaveSizeStep = 1 * 1024 * 1024
-	// MemCacheMaxEntries 默认内存缓存条目数 (≈32MB，够4个prefetch batch)
-	MemCacheMaxEntries = 512
 )
 
 var (
@@ -58,6 +64,8 @@ type node struct {
 	lastPendingSave time.Time
 	lastPendingSize   int64
 	source            string            // "remote" | "local" | "merged" — 文件来源
+	expectedFid       string            // 预期服务端返回的 FID（用于抵御索引延迟导致的冲突）
+	syncTimer         *time.Timer       // 写入防抖计时器
 	children          map[string]*node // 子节点缓存 (name -> *node), 避免 O(N) 扫描
 	mu                sync.RWMutex
 }
@@ -85,6 +93,20 @@ type syncObserver interface {
 	OnSyncFinish(snapshot syncPerformanceSnapshot, err error)
 }
 
+type metadataTask struct {
+	opType string
+	logID  int64
+	path   string
+	node   *node
+	fids   []string
+}
+
+type deletionState struct {
+	parentFid string
+	path      string // 记录删除时的路径，用于证据确认后清理 deletingPaths
+	apiDone   bool
+}
+
 // QryptFS 实现了 fuse.FileSystem 接口
 type QryptFS struct {
 	fuse.FileSystemBase
@@ -95,12 +117,18 @@ type QryptFS struct {
 	nodes           sync.Map // path -> *node
 	fidNodes        sync.Map // fid -> *node (用于快速反查)
 	fetching        sync.Map // batchKey -> chan struct{} (用于合并请求)
-	deletingPaths   sync.Map // path -> struct{} (正在删除的目录，防止 MergeRemoteChanges 重新添加)
+	merging         sync.Map // fid -> chan struct{} (用于合并 MergeRemoteChanges 操作)
+	deletingPaths   sync.Map // path -> struct{} (正在删除的目录)
+	activeDeletions sync.Map // fid -> *deletionState (正在执行或等待同步的删除任务)
+	deletionsByParent sync.Map // parentFid -> *sync.Map (辅助索引：快速找到某个目录下的所有子墓碑)
 	memCache        *lru.Cache[string, []byte] // fid_idx -> []byte (有界内存二级缓存)
 	uploadChan      chan syncTask
-	syncing         sync.Map // *node -> struct{} (防止并发同步同一节点)
-	retryState      sync.Map // *node -> int (基于节点的自动重试次数)
-	dirGoneRetry    sync.Map // *node -> int (目录被删除重试次数)
+	metadataOpChan  chan metadataTask // Background metadata task queue
+	opsLogChan      chan metadataTask // New: Buffered channel for ops log entries
+	prefetchSem     chan struct{}     // Limit directory prefetch concurrency
+	syncing         sync.Map          // *node -> struct{} (防止并发同步同一节点)
+	retryState      sync.Map          // *node -> int (基于节点的自动重试次数)
+	dirGoneRetry    sync.Map          // *node -> int (目录被删除重试次数)
 	syncObserver    syncObserver
 	staging         *staging.Store
 	uploader        *uploadpkg.Manager

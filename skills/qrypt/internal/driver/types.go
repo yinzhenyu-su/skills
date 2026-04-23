@@ -24,6 +24,13 @@ type Resp struct {
 	Message string `json:"message"`
 }
 
+const (
+	// Quark Error Codes
+	QuarkErrFileNotFound = "23001"
+	QuarkErrAlreadyDeleted = "23004"
+	QuarkErrDirAlreadyExists = "23008"
+)
+
 type File struct {
 	Fid        string `json:"fid"`
 	FileName   string `json:"file_name"`

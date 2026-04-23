@@ -29,12 +29,23 @@ var (
 type QuarkDriver struct {
 	client      *http.Client
 	cookie      string
+	cipher      Cipher   // 用于解析路径时加密
 	urlCache    sync.Map // fid -> cachedURL
 	dirCache    sync.Map // pdir_fid -> DirCache
 	negCache    sync.Map // "parentFid:name" -> expiry
-	sem         chan struct{}
+	sem         chan struct{} // 通用请求 (GetDownloadURL等)
+	mgmtSem     chan struct{} // 管理操作 (Delete, Rename, Move)
+	metaSem     chan struct{} // 元数据读取 (ListFiles, Sort)
 	DirCacheTTL time.Duration
 	NegCacheTTL time.Duration
+}
+
+type Cipher interface {
+	EncryptSegment(plaintext string) string
+}
+
+func (d *QuarkDriver) SetCipher(c Cipher) {
+	d.cipher = c
 }
 
 type cachedURL struct {
@@ -73,7 +84,9 @@ func NewQuarkDriver(cookie string) *QuarkDriver {
 	return &QuarkDriver{
 		client:      newHTTPClient(),
 		cookie:      cookie,
-		sem:         make(chan struct{}, 10), // 限制最大 10 个并发请求
+		sem:         make(chan struct{}, 200), // 增加通用容量
+		mgmtSem:     make(chan struct{}, 500), // 显著增加管理操作容量，支持大规模删除
+		metaSem:     make(chan struct{}, 500), // 元数据专用，支持大规模刷新
 		DirCacheTTL: 60 * time.Second,
 		NegCacheTTL: 60 * time.Second,
 	}
@@ -89,6 +102,12 @@ func (d *QuarkDriver) isMgmtPath(path string) bool {
 	return strings.HasPrefix(path, "/file/delete") ||
 		strings.HasPrefix(path, "/file/rename") ||
 		strings.HasPrefix(path, "/file/move")
+}
+
+func (d *QuarkDriver) isMetaPath(path string) bool {
+	return strings.HasPrefix(path, "/file/list") ||
+		strings.HasPrefix(path, "/file/sort") ||
+		strings.HasPrefix(path, "/file/search")
 }
 
 func shouldRetryWithAltBase(err error) bool {
@@ -134,9 +153,19 @@ func (d *QuarkDriver) requestWithBase(method, baseURL, path string, query map[st
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	// 使用信号量限制并发
-	d.sem <- struct{}{}
-	defer func() { <-d.sem }()
+	// --- 改进：根据接口类型选择信号量 ---
+	var sem chan struct{}
+	if d.isMgmtPath(path) {
+		sem = d.mgmtSem
+	} else if d.isMetaPath(path) {
+		sem = d.metaSem
+	} else {
+		sem = d.sem
+	}
+
+	sem <- struct{}{}
+	defer func() { <-sem }()
+	// ---------------------------------
 
 	resp, err := d.client.Do(req)
 	if err != nil {
@@ -635,13 +664,16 @@ func (d *QuarkDriver) ListFiles(parentFid string) ([]File, error) {
 // RemoveDirCache 移除指定目录的缓存
 func (d *QuarkDriver) RemoveDirCache(parentFid string) {
 	d.dirCache.Delete(parentFid)
-	// 同时移除该目录下所有文件的负缓存（FindChildByName 使用）
-	d.negCache.Range(func(key, value interface{}) bool {
-		if k, ok := key.(string); ok && strings.HasPrefix(k, parentFid+":") {
-			d.negCache.Delete(key)
-		}
-		return true
-	})
+	// 性能优化：不再在此处遍历清理 negCache。
+	// negCache 主要是为了加速 FindChildByName（针对不存在的文件）。
+	// 在大规模删除场景下，遍历万级别的 Map 会导致 FUSE 线程锁死。
+	// 负缓存有自己的 TTL (NegativeCacheTTL)，让其自然过期即可。
+}
+
+// ClearNegativeCache 专门用于需要立即清除负缓存的场景（如新建文件）
+func (d *QuarkDriver) ClearNegativeCache(parentFid, name string) {
+	key := parentFid + ":" + name
+	d.negCache.Delete(key)
 }
 
 // FindChildByName 查找子节点
@@ -672,20 +704,46 @@ func (d *QuarkDriver) FindChildByName(parentFid, name string) (string, error) {
 	return "", fmt.Errorf("child not found: %s", name)
 }
 
-// ResolvePath 解析路径
-func (d *QuarkDriver) ResolvePath(encryptedPath string) (string, error) {
-	segments := strings.Split(strings.Trim(encryptedPath, "/"), "/")
+// ResolvePath 解析路径 (混合模式：明文或加密，且对加密名称不区分大小写)
+func (d *QuarkDriver) ResolvePath(path string) (string, error) {
+	segments := strings.Split(strings.Trim(path, "/"), "/")
 	currentFid := "0"
 
 	for _, seg := range segments {
 		if seg == "" {
 			continue
 		}
-		fid, err := d.FindChildByName(currentFid, seg)
+
+		// 获取当前目录列表进行深度比对
+		files, err := d.ListFiles(currentFid)
 		if err != nil {
 			return "", err
 		}
-		currentFid = fid
+
+		found := false
+		encSeg := ""
+		if d.cipher != nil {
+			encSeg = d.cipher.EncryptSegment(seg)
+		}
+
+		for _, f := range files {
+			// 1. 匹配明文
+			if f.FileName == seg {
+				currentFid = f.Fid
+				found = true
+				break
+			}
+			// 2. 匹配加密 (不区分大小写)
+			if encSeg != "" && strings.EqualFold(f.FileName, encSeg) {
+				currentFid = f.Fid
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return "", fmt.Errorf("child not found: %s", seg)
+		}
 	}
 
 	return currentFid, nil

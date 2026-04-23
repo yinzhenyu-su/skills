@@ -1,63 +1,11 @@
-# CLAUDE.md
+# 项目文档
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## 工作指南
 
-## 项目概览
-
-skills 是一个 AI 技能和工具的 monorepo，采用 **OpenSpec**（规范驱动开发）流程管理功能变更。
-
-核心组件：
-
-- `skills/fund-manager/` — Rust CLI 基金管理工具（详见其 [CLAUDE.md](skills/fund-manager/CLAUDE.md)）
-- `skills/trending.md` — 热搜技能定义（微博、知乎、头条、抖音、百度）
-- `openspec/` — OpenSpec 规范和变更记录
-
-## 常用命令
-
-### Fund Manager（在 `skills/fund-manager/` 下运行）
-
-```bash
-cargo build            # 构建
-cargo run -- [args]    # 运行
-cargo test             # 测试
-```
-
-### OpenSpec 工作流
-
-通过 Claude Code skills 或 `.claude/commands/opsx/` 中的命令使用：
-
-- `opsx-propose` — 创建变更提案（proposal.md + design.md + tasks.md）
-- `opsx-explore` — 探索模式，思考和调查问题
-- `opsx-apply` — 实施变更任务
-- `opsx-archive` — 完成后归档变更
-
-变更生命周期：propose → explore → apply → archive
-
-归档变更位于 `openspec/changes/archive/`，活跃变更位于 `openspec/changes/`。
-
-## 目录结构
-
-```
-.
-├── openspec/
-│   ├── config.yaml           # OpenSpec 配置（schema: spec-driven）
-│   ├── specs/                # 活跃规范（各含 spec.md）
-│   └── changes/
-│       ├── archive/          # 已归档变更（各含 proposal.md, design.md, tasks.md）
-│       └── <active-changes>/ # 进行中的变更
-├── skills/
-│   ├── fund-manager/         # Rust CLI 基金管理工具
-│   └── trending.md           # 热搜技能定义
-├── .claude/                  # Claude Code 配置
-│   ├── commands/opsx/        # opsx 命令定义
-│   └── skills/               # 技能定义
-├── .gemini/                  # Gemini CLI 配置
-└── .github/prompts/          # GitHub Copilot 提示词
-```
-
-## 开发规范
-
-1. **规范驱动** — 重大功能变更先通过 OpenSpec 流程定义，再实施
-2. **Rust 代码风格** — 使用 `cargo fmt` 格式化，遵循标准惯例
-3. **提交信息** — 使用 feat/fix/docs 等标准类型，归档变更用 `docs(openspec): archive change <name>`
-4. **归档文件需提交** — `openspec/changes/archive/` 下的文件也要提交到仓库
+- 每个项目中都可以有一个 `docs` 目录，用于存放项目相关的文档，比如设计文档、变更记录、FAQ 等。比如 `skills/qrypt/docs`。
+- 不要轻易执行文件改动，在变更前先理解代码逻辑，不确定的逻辑和业务需求需要询问用户。
+- 使用工具或脚本帮助判断你不清楚的事实依据，比如判断用户描述的问题是否真实存在，或者某个改动是否会引入新的问题。
+- 对于复杂的改动，改动前设计一个测试方案是个好习惯，比如 `[文档目录]/tests/YYYY-MM-DD-[改动主题]-test.md`。
+- 复杂的代码逻辑在执行改动前先把原本问题和解决方案保存到项目的 md 文档中比如 `[文档目录]/todo/YYYY-MM-DD-[改动主题].md`。
+- 如果一个问题反复出现或者难以解决，把这个问题记录到 `[文档目录]/FAQ.md`，并在代码中添加注释指向这个文档。
+- 对于复杂的改动，完成改动后提示用户可以批准改动是否通过，如果通过了把这次改动的方案文档移动到 `[文档目录]/done/YYYY-MM-DD-[改动主题].md`，如果没有通过把这次改动的方案文档移动到 `[文档目录]/rejected/YYYY-MM-DD-[改动主题].md`。

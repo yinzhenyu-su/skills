@@ -155,7 +155,7 @@ func ensureRemotePath(d *driver.QuarkDriver, path string) (string, error) {
 				if err == nil {
 					break
 				}
-				if strings.Contains(err.Error(), "23008") || strings.Contains(err.Error(), "conflict") {
+				if strings.Contains(err.Error(), driver.QuarkErrDirAlreadyExists) || strings.Contains(err.Error(), "conflict") {
 					// Directory might be in "doloading" transient state — wait and retry
 					time.Sleep(time.Duration(createAttempt+1) * 2 * time.Second)
 					d.RemoveDirCache(currentFid)
@@ -243,7 +243,6 @@ func setupQryptFSInternal(t *testing.T, config *e2eConfig, clearCache bool) (*Qr
 	// 6. 后台挂载
 	options := []string{
 		"-o", "rw",
-		"-o", "nonempty",
 	}
 	if runtime.GOOS == "darwin" {
 		options = append(options,
@@ -254,6 +253,7 @@ func setupQryptFSInternal(t *testing.T, config *e2eConfig, clearCache bool) (*Qr
 		)
 	} else {
 		options = append(options,
+			"-o", "nonempty",
 			"-o", "allow_other",
 			"-o", "default_permissions",
 		)

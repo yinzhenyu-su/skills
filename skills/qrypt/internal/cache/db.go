@@ -550,3 +550,118 @@ func (c *CacheDB) CleanupStagingMetas(maxAge time.Duration, orphanFids []string)
 
 	return nil
 }
+
+// OpsLogData 用于批量添加时的简易结构
+type OpsLogData struct {
+	OpType     string
+	SourcePath string
+	TargetPath string
+	Payload    string
+}
+
+// BatchAddOpsLog 批量添加操作日志
+func (c *CacheDB) BatchAddOpsLog(logs []OpsLogData) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("INSERT INTO ops_log (op_type, source_path, target_path, payload) VALUES (?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, l := range logs {
+		_, _ = stmt.Exec(l.OpType, l.SourcePath, l.TargetPath, l.Payload)
+	}
+	return tx.Commit()
+}
+
+// BatchMarkOpsDone 批量标记操作日志为完成
+func (c *CacheDB) BatchMarkOpsDone(fids []string, paths []string) error {
+	if len(fids) == 0 && len(paths) == 0 {
+		return nil
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if len(fids) > 0 {
+		stmt, err := tx.Prepare("UPDATE ops_log SET status = 'DONE' WHERE status = 'PENDING' AND payload LIKE ?")
+		if err == nil {
+			for _, fid := range fids {
+				if fid != "" {
+					// 核心修复：允许 local_ FID 的任务被标记完成
+					_, _ = stmt.Exec("%" + fid + "%")
+				}
+			}
+			stmt.Close()
+		}
+	}
+
+	if len(paths) > 0 {
+		stmt, err := tx.Prepare("UPDATE ops_log SET status = 'DONE' WHERE status = 'PENDING' AND source_path = ?")
+		if err == nil {
+			for _, p := range paths {
+				_, _ = stmt.Exec(p)
+			}
+			stmt.Close()
+		}
+	}
+
+	return tx.Commit()
+}
+
+// BatchDeleteNodeState 在一个事务中批量删除多个节点的元数据记录
+func (c *CacheDB) BatchDeleteNodeState(fids []string, paths []string) error {
+	if len(fids) == 0 && len(paths) == 0 {
+		return nil
+	}
+
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if len(paths) > 0 {
+		stmt, err := tx.Prepare("DELETE FROM pending_nodes WHERE path = ?")
+		if err == nil {
+			for _, p := range paths {
+				_, _ = stmt.Exec(p)
+			}
+			stmt.Close()
+		}
+	}
+
+	if len(fids) > 0 {
+		stmt1, _ := tx.Prepare("DELETE FROM pending_nodes WHERE fid = ?")
+		stmt2, _ := tx.Prepare("DELETE FROM chunks WHERE fid = ?")
+		stmt3, _ := tx.Prepare("DELETE FROM staging_meta WHERE fid = ?")
+		stmt4, _ := tx.Prepare("DELETE FROM name_cache WHERE fid = ?")
+		
+		for _, f := range fids {
+			if f == "" {
+				continue
+			}
+			// 核心修复：不再跳过 local_ 前缀，确保清理 staging_meta 和 pending_nodes 中的本地任务
+			if stmt1 != nil { _, _ = stmt1.Exec(f) }
+			if stmt2 != nil { _, _ = stmt2.Exec(f) }
+			if stmt3 != nil { _, _ = stmt3.Exec(f) }
+			if stmt4 != nil { _, _ = stmt4.Exec(f) }
+		}
+		if stmt1 != nil { stmt1.Close() }
+		if stmt2 != nil { stmt2.Close() }
+		if stmt3 != nil { stmt3.Close() }
+		if stmt4 != nil { stmt4.Close() }
+	}
+
+	return tx.Commit()
+}

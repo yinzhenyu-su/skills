@@ -46,14 +46,17 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ro
 	}
 
 	fs := &QryptFS{
-		driver:          d,
-		cache:           c,
-		rootFid:         rootFid,
-		cipher:          cipher,
-		uploadChan:      make(chan syncTask, 1000), // 允许排队 1000 个文件
-		staging:         stagingStore,
-		memCache:        memCache,
-		maxRetries:      maxRetries,
+		driver:         d,
+		cache:          c,
+		rootFid:        rootFid,
+		cipher:         cipher,
+		uploadChan:     make(chan syncTask, 1000), // 允许排队 1000 个文件
+		metadataOpChan: make(chan metadataTask, 100000), // 增加到 10w，防止批量删除卡死
+		opsLogChan:     make(chan metadataTask, 100000), // 用于异步写入 ops_log
+		prefetchSem:    make(chan struct{}, 30),        // 限制并发预取数量
+		staging:        stagingStore,
+		memCache:       memCache,
+		maxRetries:     maxRetries,
 	}
 	if stagingStore != nil {
 		fs.uploader = uploadpkg.NewManager(d, cipher, stagingStore)
@@ -65,7 +68,12 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ro
 		go fs.uploadWorker()
 	}
 
-	// 恢复上次未完成的任务
+	// 启动后台元数据工作协程 (改为 1 个以提升批量效率并减少 DB 锁竞争)
+	go fs.metadataWorker()
+
+	// 启动异步日志工作协程
+	go fs.opsLogWorker()
+
 	fs.recoverDirtyFiles()
 	fs.recoverPendingOps()
 

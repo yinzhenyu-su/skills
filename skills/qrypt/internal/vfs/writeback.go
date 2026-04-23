@@ -53,6 +53,7 @@ func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uin
 	n.localPath = localPath
 
 	fs.storeNode(path, n)
+	fs.driver.ClearNegativeCache(parentNode.fid, name)
 	n.mu.Lock()
 	if err := fs.maybeSavePendingNodeLocked(path, n, true); err != nil {
 		driver.Log.Printf("Warning: failed to save pending node after Create for %s: %v\n", path, err)
@@ -73,7 +74,7 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
 		return 0
 	}
-	node, errc := fs.lookup(path)
+	node, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
 		return 0
 	}
@@ -110,15 +111,16 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 	if err := fs.maybeSavePendingNodeLocked(path, node, false); err != nil {
 		driver.Log.Printf("Warning: failed to save pending node after Write for %s: %v\n", path, err)
 	}
-	node.mu.Unlock()
 
-	// Trigger sync from Write with a short delay to allow concurrent writes to batch.
-	// On macOS, FUSE may call Release before Write completes, so we must sync from Write.
-	// The delay gives time for the OS to flush all queued writes before we snapshot.
-	go func() {
-		time.Sleep(100 * time.Millisecond)
+	// Trigger sync with debounce.
+	if node.syncTimer != nil {
+		node.syncTimer.Stop()
+	}
+	node.syncTimer = time.AfterFunc(100*time.Millisecond, func() {
 		fs.enqueueSync(node)
-	}()
+	})
+
+	node.mu.Unlock()
 	return written
 }
 
@@ -245,26 +247,12 @@ func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 		return errc
 	}
 
-	node.mu.RLock()
-	localPath := node.localPath
-	isDirty := node.isDirty
-	node.mu.RUnlock()
+	node.mu.Lock()
+	// 不再停止 syncTimer。如果 Write 刚刚触发了计时器，让它继续运行。
+	// Release 只是作为一个额外的同步信号。
+	node.mu.Unlock()
 
-	if !isDirty {
-		// Never written (e.g., `touch`). Sync to create a valid 0-byte file on server.
-		fs.enqueueSync(node)
-		return 0
-	}
-
-	// isDirty=true: data was written. Check if staging file has content before syncing.
-	// On macOS, FUSE may call Release before Write completes, leaving staging empty.
-	// In that case, skip — Write() already triggers sync directly.
-	if localPath != "" {
-		if size, err := fs.staging.FileSize(localPath); err == nil && size > 0 {
-			fs.enqueueSync(node)
-		} else {
-			driver.Log.Printf("Release: skipping sync for %s (staging empty but isDirty=true, Write will sync)\n", path)
-		}
-	}
+	// 无论是否 dirty，都尝试排队（enqueueSync 内部有状态检查）
+	fs.enqueueSync(node)
 	return 0
 }

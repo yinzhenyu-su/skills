@@ -68,7 +68,7 @@ func TestMergeRemoteChanges_DeleteStaleRemoteFile(t *testing.T) {
 	}
 	fs.storeNode("/", root)
 
-	// 创建很久之前同步的文件（lastUploadTime = 1分钟前）
+	// 创建很久之前同步的文件（lastUploadTime = 6分钟前）
 	oldFile := &node{
 		fid:             "file_fid",
 		parentFid:       "root_fid",
@@ -76,7 +76,7 @@ func TestMergeRemoteChanges_DeleteStaleRemoteFile(t *testing.T) {
 		currentPath:     "/old_file.txt",
 		size:            512,
 		isDirty:         false,
-		lastUploadTime:  time.Now().Add(-1 * time.Minute), // 1分钟前同步
+		lastUploadTime:  time.Now().Add(-6 * time.Minute), // 6分钟前同步
 	}
 	fs.storeNode("/old_file.txt", oldFile)
 

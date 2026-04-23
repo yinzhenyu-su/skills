@@ -13,7 +13,7 @@ import (
 // Read 读取文件内容
 func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int) {
 	driver.Log.Printf("[FUSE] Read: path=%s, len=%d, offset=%d, fh=%d\n", path, len(buff), ofst, fh)
-	node, errc := fs.lookup(path)
+	node, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
 		return 0
 	}
