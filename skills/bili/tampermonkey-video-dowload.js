@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哔哩视频下载
 // @namespace    http://tampermonkey.net/
-// @version      2026.4.25.210153
+// @version      2026.4.25.211634
 // @description  B站视频流下载工具（DASH 视频+音频分流）
 // @author       yinzhenyu
 // @homepage     https://github.com/yinzhenyu-su/skills
@@ -24,8 +24,6 @@
 
 	let host = null;
 	let titleObserver = null;
-	let toolbarObserver = null;
-	let toolbarObserverTarget = null;
 	let latestPlayInfo = null;
 	let latestPlayInfoMeta = null;
 	let activePlayinfoSignature = null;
@@ -35,43 +33,31 @@
 		if (host) { host.remove(); host = null; }
 	}
 
+	function clamp(value, min, max) {
+		return Math.min(Math.max(value, min), max);
+	}
+
+	function getInitialHostPosition() {
+		const shareWrap = document.querySelector('.video-share-wrap');
+		if (!shareWrap) {
+			return {
+				left: Math.max(window.innerWidth - 156, 16),
+				top: Math.max(window.innerHeight - 96, 16),
+			};
+		}
+
+		const rect = shareWrap.getBoundingClientRect();
+		return {
+			left: clamp(rect.right + 12, 16, Math.max(window.innerWidth - 156, 16)),
+			top: clamp(rect.top + Math.max((rect.height - 28) / 2, 0), 16, Math.max(window.innerHeight - 44, 16)),
+		};
+	}
+
 	function mountHost() {
 		if (!host || host.isConnected)
 			return;
 
-		const shareWrap = document.querySelector('.video-share-wrap');
-		const toolbarItemWrap = shareWrap && shareWrap.parentElement && shareWrap.parentElement.classList.contains('toolbar-left-item-wrap')
-			? shareWrap.parentElement
-			: null;
-
-		if (toolbarItemWrap && toolbarItemWrap.parentNode)
-			toolbarItemWrap.insertAdjacentElement('afterend', host);
-		else if (shareWrap && shareWrap.parentNode)
-			shareWrap.insertAdjacentElement('afterend', host);
-		else
-			document.body.appendChild(host);
-	}
-
-	function getToolbarContainer() {
-		return document.querySelector('.video-toolbar-container');
-	}
-
-	function ensureToolbarObserver() {
-		const toolbarContainer = getToolbarContainer();
-		if (!toolbarContainer)
-			return;
-
-		if (toolbarObserver && toolbarObserverTarget === toolbarContainer)
-			return;
-
-		if (toolbarObserver)
-			toolbarObserver.disconnect();
-
-		toolbarObserver = new MutationObserver(() => {
-			mountHost();
-		});
-		toolbarObserver.observe(toolbarContainer, { childList: true, subtree: true });
-		toolbarObserverTarget = toolbarContainer;
+		document.body.appendChild(host);
 	}
 
 	function init() {
@@ -268,7 +254,6 @@
 
 	storePlayInfo(pageWindow.__playinfo__);
 	hookPlayurlResponses();
-	ensureToolbarObserver();
 	waitForPlayinfo(init);
 
 	// 监听 B 站 SPA 路由跳转
@@ -346,17 +331,20 @@
 
 		/* ---- Shadow DOM（隔离 B 站样式） ---- */
 		host = document.createElement('div');
-		host.className = 'video-toolbar-left-item bili-dl-entry';
+		host.className = 'bili-dl-entry';
+		const initialPosition = getInitialHostPosition();
 		// 用 setAttribute 写 style 以最高优先级覆盖 B 站可能的全局 CSS
 		host.setAttribute('style', [
 			'display:flex !important',
 			'align-items:center !important',
 			'flex-shrink:0 !important',
-			'position:relative !important',
+			'position:fixed !important',
+			`left:${initialPosition.left}px !important`,
+			`top:${initialPosition.top}px !important`,
 			'overflow:visible !important',
 			'z-index:2147483647 !important',
-			'height:28px !important',
-			'margin-left:12px !important',
+			'height:auto !important',
+			'margin:0 !important',
 			'line-height:normal !important',
 			'font-family:sans-serif !important',
 			'font-size:13px !important',
@@ -585,7 +573,66 @@
 		}
 
 		let hideTimer = null;
-		mainBtn.addEventListener('click', () => panel.classList.toggle('open'));
+		let dragState = null;
+		let suppressClick = false;
+		mainBtn.addEventListener('click', (event) => {
+			if (suppressClick) {
+				suppressClick = false;
+				event.preventDefault();
+				event.stopPropagation();
+				return;
+			}
+			panel.classList.toggle('open');
+		});
+
+		mainBtn.addEventListener('pointerdown', (event) => {
+			if (event.button !== 0)
+				return;
+
+			const rect = host.getBoundingClientRect();
+			dragState = {
+				startX: event.clientX,
+				startY: event.clientY,
+				originLeft: rect.left,
+				originTop: rect.top,
+				dragged: false,
+				pointerId: event.pointerId,
+			};
+			mainBtn.setPointerCapture(event.pointerId);
+		});
+
+		mainBtn.addEventListener('pointermove', (event) => {
+			if (!dragState || event.pointerId !== dragState.pointerId)
+				return;
+
+			const deltaX = event.clientX - dragState.startX;
+			const deltaY = event.clientY - dragState.startY;
+			if (!dragState.dragged && Math.hypot(deltaX, deltaY) > 4)
+				dragState.dragged = true;
+
+			if (!dragState.dragged)
+				return;
+
+			event.preventDefault();
+			panel.classList.remove('open');
+			const nextLeft = clamp(dragState.originLeft + deltaX, 8, Math.max(window.innerWidth - host.offsetWidth - 8, 8));
+			const nextTop = clamp(dragState.originTop + deltaY, 8, Math.max(window.innerHeight - host.offsetHeight - 8, 8));
+			host.style.left = `${nextLeft}px`;
+			host.style.top = `${nextTop}px`;
+		});
+
+		const stopDragging = (event) => {
+			if (!dragState || event.pointerId !== dragState.pointerId)
+				return;
+
+			if (mainBtn.hasPointerCapture(event.pointerId))
+				mainBtn.releasePointerCapture(event.pointerId);
+			suppressClick = dragState.dragged;
+			dragState = null;
+		};
+
+		mainBtn.addEventListener('pointerup', stopDragging);
+		mainBtn.addEventListener('pointercancel', stopDragging);
 		wrapper.addEventListener('mouseleave', () => {
 			hideTimer = setTimeout(() => panel.classList.remove('open'), 1000);
 		});
