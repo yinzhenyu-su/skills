@@ -22,6 +22,9 @@
 
 	let host = null;
 	let titleObserver = null;
+	let latestPlayInfo = null;
+	let latestPlayInfoMeta = null;
+	let activePlayinfoSignature = null;
 
 	function cleanup() {
 		if (titleObserver) { titleObserver.disconnect(); titleObserver = null; }
@@ -29,8 +32,14 @@
 	}
 
 	function init() {
+		const playInfo = getMatchedPlayInfo();
+		if (!playInfo) {
+			console.warn('[bili-dl] No matched playinfo found for current page');
+			return;
+		}
 		cleanup();
-		run();
+		activePlayinfoSignature = getPlayinfoSignature(playInfo);
+		run(playInfo);
 	}
 
 	function getVideoTitle() {
@@ -66,23 +75,153 @@
 		});
 	}
 
-	function waitForPlayinfo(cb, timeout = 10000) {
-		const expectedUrl = location.href;
-		// 先等 __playinfo__ 消失（B 站切换时会清掉），再等新数据出现
+	function getCurrentPageInfo() {
+		const state = pageWindow.__INITIAL_STATE__ || {};
+		const pathnameMatch = location.pathname.match(/\/video\/([^/?]+)/);
+		const search = new URLSearchParams(location.search);
+		const pageNo = Number.parseInt(search.get('p') || '1', 10) || 1;
+		const pages = state.videoData && Array.isArray(state.videoData.pages) ? state.videoData.pages : [];
+		const matchedPage = pages.find((item) => item.page === pageNo);
+		return {
+			bvid: pathnameMatch ? pathnameMatch[1] : (state.bvid || ''),
+			cid: matchedPage ? String(matchedPage.cid) : (state.cid ? String(state.cid) : ''),
+			pageNo,
+		};
+	}
+
+	function extractPlayinfoMeta(playInfo, requestUrl = '') {
+		const data = playInfo && playInfo.data;
+		const url = new URL(requestUrl || location.href, location.origin);
+		return {
+			bvid: url.searchParams.get('bvid') || '',
+			cid: data && data.cid ? String(data.cid) : (url.searchParams.get('cid') || ''),
+		};
+	}
+
+	function isPlayinfoPayload(payload) {
+		return !!(payload && payload.code === 0 && payload.data && (payload.data.dash || payload.data.durl));
+	}
+
+	function getMatchedPlayInfo() {
+		const current = getCurrentPageInfo();
+
+		if (latestPlayInfo && isPlayInfoForCurrentPage(latestPlayInfoMeta, current))
+			return latestPlayInfo;
+
+		const pagePlayInfo = pageWindow.__playinfo__;
+		if (!isPlayinfoPayload(pagePlayInfo))
+			return null;
+
+		const meta = extractPlayinfoMeta(pagePlayInfo);
+		return isPlayInfoForCurrentPage(meta, current) ? pagePlayInfo : null;
+	}
+
+	function isPlayInfoForCurrentPage(meta, current = getCurrentPageInfo()) {
+		if (!meta)
+			return false;
+
+		if (current.cid && meta.cid)
+			return current.cid === meta.cid;
+
+		if (current.bvid && meta.bvid)
+			return current.bvid === meta.bvid;
+
+		return false;
+	}
+
+	function storePlayInfo(playInfo, requestUrl = '') {
+		if (!isPlayinfoPayload(playInfo))
+			return;
+
+		latestPlayInfo = playInfo;
+		latestPlayInfoMeta = extractPlayinfoMeta(playInfo, requestUrl);
+
+		if (isPlayInfoForCurrentPage(latestPlayInfoMeta)) {
+			const signature = getPlayinfoSignature(playInfo);
+			if (signature && signature !== activePlayinfoSignature) {
+				console.log('[bili-dl] playurl updated, refreshing panel...');
+				init();
+			}
+		}
+	}
+
+	function getPlayinfoSignature(playInfo) {
+		if (!playInfo || !playInfo.data)
+			return null;
+
+		const data = playInfo.data;
+		const dashVideo = data.dash && data.dash.video && data.dash.video[0];
+		const durlVideo = data.durl && data.durl[0];
+		const videoUrl = (dashVideo && (dashVideo.baseUrl || dashVideo.base_url)) || (durlVideo && durlVideo.url) || '';
+		const acceptQuality = data.accept_quality ? data.accept_quality.join(',') : '';
+		return [data.cid || '', data.quality || '', acceptQuality, videoUrl].join('|');
+	}
+
+	function waitForPlayinfo(cb, timeout = 10000, previousSignature = null) {
+		// 页面内切换后优先等待新的 playurl 响应，其次回退到首屏内联的 __playinfo__
 		const start = Date.now();
 		const timer = setInterval(() => {
 			if (Date.now() - start > timeout) {
 				clearInterval(timer);
-				console.error('[bili-dl] __playinfo__ not found after timeout');
+				console.error('[bili-dl] playinfo not found after timeout');
 				return;
 			}
-			if (typeof pageWindow.__playinfo__ !== 'undefined' && location.href === expectedUrl) {
+			const playInfo = getMatchedPlayInfo();
+			const currentSignature = getPlayinfoSignature(playInfo);
+			if (currentSignature && currentSignature !== previousSignature) {
 				clearInterval(timer);
 				cb();
 			}
 		}, 200);
 	}
 
+	function hookPlayurlResponses() {
+		const PLAYURL_RE = /\/x\/player\/(wbi\/)?playurl/i;
+
+		const originalFetch = window.fetch;
+		if (typeof originalFetch === 'function') {
+			window.fetch = async function (...args) {
+				const response = await originalFetch.apply(this, args);
+				try {
+					const requestUrl = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+					if (PLAYURL_RE.test(requestUrl)) {
+						response.clone().json().then((payload) => {
+							storePlayInfo(payload, requestUrl);
+						}).catch(() => { });
+					}
+				}
+				catch (error) {
+					console.warn('[bili-dl] fetch hook failed', error);
+				}
+				return response;
+			};
+		}
+
+		const originalOpen = XMLHttpRequest.prototype.open;
+		const originalSend = XMLHttpRequest.prototype.send;
+		XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+			this.__biliDlUrl = url;
+			return originalOpen.call(this, method, url, ...rest);
+		};
+		XMLHttpRequest.prototype.send = function (...args) {
+			this.addEventListener('load', () => {
+				try {
+					const requestUrl = this.__biliDlUrl || '';
+					if (!PLAYURL_RE.test(requestUrl) || typeof this.responseText !== 'string')
+						return;
+
+					storePlayInfo(JSON.parse(this.responseText), requestUrl);
+				}
+				catch (error) {
+					console.warn('[bili-dl] xhr hook failed', error);
+				}
+			});
+			return originalSend.apply(this, args);
+		};
+	}
+
+	storePlayInfo(pageWindow.__playinfo__);
+	hookPlayurlResponses();
 	waitForPlayinfo(init);
 
 	// 监听 B 站 SPA 路由跳转
@@ -90,10 +229,11 @@
 	const onUrlChange = () => {
 		if (location.href === currentUrl)
 			return;
+		const previousSignature = activePlayinfoSignature;
 		currentUrl = location.href;
 		if (/\/video\//.test(location.pathname)) {
 			console.log('[bili-dl] URL changed, reinitializing...');
-			waitForPlayinfo(init);
+			waitForPlayinfo(init, 10000, previousSignature);
 		}
 		else {
 			cleanup();
@@ -111,8 +251,7 @@
 	});
 	window.addEventListener('popstate', onUrlChange);
 
-	function run() {
-		const playInfo = pageWindow.__playinfo__;
+	function run(playInfo) {
 		const title = getVideoTitle();
 		const data = playInfo.data || {};
 		const videoStreams = (data.dash && data.dash.video) || data.durl || [];
