@@ -1,9 +1,11 @@
 // ==UserScript==
+// @license MIT
 // @name         哔哩视频下载
 // @namespace    http://tampermonkey.net/
 // @version      2026-04-25
 // @description  B站视频流下载工具（DASH 视频+音频分流）
-// @author       You
+// @author       yinzhenyu
+// @homepage     https://github.com/yinzhenyu/skills
 // @match        https://www.bilibili.com/video/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=bilibili.com
 // @grant        GM_download
