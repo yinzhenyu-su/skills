@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哔哩视频下载
 // @namespace    http://tampermonkey.net/
-// @version      2026-04-25
+// @version      2026.4.25.210153
 // @description  B站视频流下载工具（DASH 视频+音频分流）
 // @author       yinzhenyu
 // @homepage     https://github.com/yinzhenyu-su/skills
@@ -24,6 +24,8 @@
 
 	let host = null;
 	let titleObserver = null;
+	let toolbarObserver = null;
+	let toolbarObserverTarget = null;
 	let latestPlayInfo = null;
 	let latestPlayInfoMeta = null;
 	let activePlayinfoSignature = null;
@@ -31,6 +33,45 @@
 	function cleanup() {
 		if (titleObserver) { titleObserver.disconnect(); titleObserver = null; }
 		if (host) { host.remove(); host = null; }
+	}
+
+	function mountHost() {
+		if (!host || host.isConnected)
+			return;
+
+		const shareWrap = document.querySelector('.video-share-wrap');
+		const toolbarItemWrap = shareWrap && shareWrap.parentElement && shareWrap.parentElement.classList.contains('toolbar-left-item-wrap')
+			? shareWrap.parentElement
+			: null;
+
+		if (toolbarItemWrap && toolbarItemWrap.parentNode)
+			toolbarItemWrap.insertAdjacentElement('afterend', host);
+		else if (shareWrap && shareWrap.parentNode)
+			shareWrap.insertAdjacentElement('afterend', host);
+		else
+			document.body.appendChild(host);
+	}
+
+	function getToolbarContainer() {
+		return document.querySelector('.video-toolbar-container');
+	}
+
+	function ensureToolbarObserver() {
+		const toolbarContainer = getToolbarContainer();
+		if (!toolbarContainer)
+			return;
+
+		if (toolbarObserver && toolbarObserverTarget === toolbarContainer)
+			return;
+
+		if (toolbarObserver)
+			toolbarObserver.disconnect();
+
+		toolbarObserver = new MutationObserver(() => {
+			mountHost();
+		});
+		toolbarObserver.observe(toolbarContainer, { childList: true, subtree: true });
+		toolbarObserverTarget = toolbarContainer;
 	}
 
 	function init() {
@@ -113,6 +154,9 @@
 		const pagePlayInfo = pageWindow.__playinfo__;
 		if (!isPlayinfoPayload(pagePlayInfo))
 			return null;
+
+		if (activePlayinfoSignature === null)
+			return pagePlayInfo;
 
 		const meta = extractPlayinfoMeta(pagePlayInfo);
 		return isPlayInfoForCurrentPage(meta, current) ? pagePlayInfo : null;
@@ -224,6 +268,7 @@
 
 	storePlayInfo(pageWindow.__playinfo__);
 	hookPlayurlResponses();
+	ensureToolbarObserver();
 	waitForPlayinfo(init);
 
 	// 监听 B 站 SPA 路由跳转
@@ -301,16 +346,20 @@
 
 		/* ---- Shadow DOM（隔离 B 站样式） ---- */
 		host = document.createElement('div');
+		host.className = 'video-toolbar-left-item bili-dl-entry';
 		// 用 setAttribute 写 style 以最高优先级覆盖 B 站可能的全局 CSS
 		host.setAttribute('style', [
-			'position:fixed !important',
-			'top:20px !important',
-			'right:20px !important',
+			'display:flex !important',
+			'align-items:center !important',
+			'flex-shrink:0 !important',
+			'position:relative !important',
+			'overflow:visible !important',
 			'z-index:2147483647 !important',
-			'display:block !important',
+			'height:28px !important',
+			'margin-left:12px !important',
 			'line-height:normal !important',
 			'font-family:sans-serif !important',
-			'font-size:14px !important',
+			'font-size:13px !important',
 			'pointer-events:auto !important',
 			'visibility:visible !important',
 			'opacity:1 !important',
@@ -322,31 +371,38 @@
 		style.textContent = `
         :host { all: initial; }
 
-        .wrapper { position: relative; display: inline-block; }
+		.wrapper { position: relative; display: flex; align-items: center; height: 28px; overflow: visible; }
 
         .main-btn {
-            display: inline-flex; align-items: center; gap: 6px;
-            padding: 8px 16px; cursor: pointer;
-            background: #00aeec; color: #fff;
-            border: none; border-radius: 4px;
-            font-size: 14px; font-family: sans-serif; font-weight: bold;
-            box-shadow: 0 2px 8px rgba(0,174,236,.35);
-            transition: background 0.2s;
+			display: inline-flex; align-items: center; gap: 4px;
+			height: 28px; padding: 0 10px; cursor: pointer;
+			background: #f6f7f8; color: #18191c;
+			border: 1px solid #e3e5e7; border-radius: 14px;
+			font-size: 13px; font-family: sans-serif; font-weight: 500;
+			white-space: nowrap;
+			box-sizing: border-box;
+			transition: background 0.2s, border-color 0.2s, color 0.2s;
         }
-        .main-btn:hover { background: #0099d4; }
+		.main-btn:hover {
+			background: #e8f3ff;
+			border-color: #91caff;
+			color: #1677ff;
+		}
 
         .panel {
-            position: absolute; right: 0; top: calc(100% + 6px);
-            min-width: 270px; max-height: 420px; overflow-y: auto;
+			position: absolute; right: 0; bottom: calc(100% + 8px);
+			width: 400px; max-width: min(400px, calc(100vw - 24px));
+			min-width: 270px; max-height: 420px; overflow-y: auto; overflow-x: hidden;
             background: #fff; border: 1px solid #e2e2e2; border-radius: 6px;
-            box-shadow: 0 6px 20px rgba(0,0,0,.15); padding: 8px;
+			box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 8px;
             box-sizing: border-box;
-            opacity: 0; transform: translateY(-6px);
+			z-index: 2147483647;
+			opacity: 0; transform: translateY(6px);
             visibility: hidden; pointer-events: none;
             transition: opacity 0.3s ease, transform 0.3s ease, visibility 0.3s;
         }
         .panel.open {
-            opacity: 1; transform: translateY(0);
+			opacity: 1; transform: translateY(0);
             visibility: visible; pointer-events: auto;
         }
 
@@ -391,7 +447,8 @@
             display: block; margin-top: 4px; background: #f5f5f5;
             padding: 3px 6px; border-radius: 3px;
             font-family: monospace; font-size: 10px;
-            word-break: break-all; cursor: pointer;
+			white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+			cursor: pointer;
         }
         .hint-bar code:hover { background: #e8f4ff; }
 
@@ -399,8 +456,9 @@
             padding: 6px 4px 8px;
             font-size: 12px; font-family: sans-serif; color: #333; font-weight: bold;
             border-bottom: 1px solid #f0f0f0; margin-bottom: 6px;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-            max-width: 100%; box-sizing: border-box;
+			white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+			line-height: 1.5;
+			max-width: 100%; box-sizing: border-box;
         }
     `;
 		shadow.appendChild(style);
@@ -513,10 +571,15 @@
 			hint.className = 'hint-bar';
 			hint.innerHTML = `⚠ DASH 格式需分别下载视频和音频，再用 FFmpeg 合并：
             <code title="点击复制">${cmd}</code>`;
-			hint.querySelector('code').addEventListener('click', (e) => {
+			const codeEl = hint.querySelector('code');
+			codeEl.__biliDlCmd = cmd;
+			codeEl.addEventListener('click', () => {
 				GM_setClipboard(cmd);
-				e.target.textContent = '✓ 已复制！';
-				setTimeout(() => { e.target.textContent = cmd; }, 2000);
+				codeEl.textContent = '✓ 已复制！';
+				clearTimeout(codeEl.__biliDlRestoreTimer);
+				codeEl.__biliDlRestoreTimer = setTimeout(() => {
+					codeEl.textContent = codeEl.__biliDlCmd;
+				}, 2000);
 			});
 			panel.appendChild(hint);
 		}
@@ -533,7 +596,8 @@
 		wrapper.appendChild(mainBtn);
 		wrapper.appendChild(panel);
 		shadow.appendChild(wrapper);
-		document.body.appendChild(host);
+
+		mountHost();
 
 		console.log('[bili-dl] injected, videos:', bestVideoStreams.length, 'audio:', !!bestAudio);
 	} // end run()
