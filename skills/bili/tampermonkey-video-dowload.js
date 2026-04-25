@@ -38,18 +38,9 @@
 	}
 
 	function getInitialHostPosition() {
-		const shareWrap = document.querySelector('.video-share-wrap');
-		if (!shareWrap) {
-			return {
-				left: Math.max(window.innerWidth - 156, 16),
-				top: Math.max(window.innerHeight - 96, 16),
-			};
-		}
-
-		const rect = shareWrap.getBoundingClientRect();
 		return {
-			left: clamp(rect.right + 12, 16, Math.max(window.innerWidth - 156, 16)),
-			top: clamp(rect.top + Math.max((rect.height - 28) / 2, 0), 16, Math.max(window.innerHeight - 44, 16)),
+			left: Math.max(window.innerWidth - 156, 16),
+			top: 16,
 		};
 	}
 
@@ -378,14 +369,14 @@
 		}
 
         .panel {
-			position: absolute; right: 0; bottom: calc(100% + 8px);
+			position: absolute; right: 0; top: calc(100% + 8px);
 			width: 400px; max-width: min(400px, calc(100vw - 24px));
 			min-width: 270px; max-height: 420px; overflow-y: auto; overflow-x: hidden;
             background: #fff; border: 1px solid #e2e2e2; border-radius: 6px;
 			box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 8px;
             box-sizing: border-box;
 			z-index: 2147483647;
-			opacity: 0; transform: translateY(6px);
+			opacity: 0; transform: translateY(-6px);
             visibility: hidden; pointer-events: none;
             transition: opacity 0.3s ease, transform 0.3s ease, visibility 0.3s;
         }
