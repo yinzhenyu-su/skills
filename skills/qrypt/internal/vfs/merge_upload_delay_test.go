@@ -131,6 +131,52 @@ func TestMergeRemoteChanges_SkipSyncInProgress(t *testing.T) {
 	}
 }
 
+// TestMergeRemoteChanges_SkipLocalFidFile 验证 local_ fid 前缀保护：
+// 通过 ensureParentDirExists 等路径创建的节点 source 未设置（空字符串），
+// 但 fid 以 local_ 开头表示从未上传过，MergeRemoteChanges 不应删除。
+func TestMergeRemoteChanges_SkipLocalFidFile(t *testing.T) {
+	fs := &QryptFS{
+		nodes:    sync.Map{},
+		fidNodes: sync.Map{},
+	}
+
+	root := &node{
+		fid:         "root_fid",
+		currentPath: "/",
+		isFolder:    true,
+		children:    make(map[string]*node),
+	}
+	fs.storeNode("/", root)
+
+	// 文件由 ensureParentDirExists 创建：source 为空，fid 以 local_ 开头
+	// isDirty=false, syncQueued=false, lastUploadTime=零值（从未上传过）
+	localFidFile := &node{
+		fid:         "local_newfile.txt_1234567890", // local_ 前缀
+		parentFid:   "root_fid",
+		name:        "newfile.txt",
+		currentPath: "/newfile.txt",
+		size:        0,
+		isDirty:     false,
+		source:      "",          // 未设置！
+		syncQueued:  false,
+		// lastUploadTime 零值 — 从未上传过
+	}
+	fs.storeNode("/newfile.txt", localFidFile)
+
+	// 远程列表为空（文件从未上传，自然不在远程）
+	remoteFiles := []driver.File{}
+
+	fs.MergeRemoteChanges("/", "root_fid", remoteFiles)
+
+	// 验证文件不被误删
+	if _, ok := fs.nodes.Load("/newfile.txt"); !ok {
+		t.Error("local_ fid file with empty source was incorrectly deleted by MergeRemoteChanges")
+	}
+	if _, ok := root.children["newfile.txt"]; !ok {
+		t.Error("local_ fid file was removed from parent.children")
+	}
+}
+
 // TestMergeRemoteChanges_UpdateRemoteFile 验证远程文件更新能正常同步
 func TestMergeRemoteChanges_UpdateRemoteFile(t *testing.T) {
 	fs := &QryptFS{

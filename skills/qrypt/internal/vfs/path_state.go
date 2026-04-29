@@ -825,10 +825,16 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 				driver.Log.Printf("MergeRemoteChanges: %s is dirty but not on remote, keeping local\n", entry.path)
 				continue
 			}
-
 			if n.source == "local" || n.source == "merged" {
 				// 本地新建或冲突合并中的文件，且上面没被 rf.Fid == fid 匹配到（说明 FID 变了或确实没索引）
 				driver.Log.Printf("MergeRemoteChanges: skipping delete for local-owned file %s\n", entry.path)
+				continue
+			}
+			// 未上传过的本地文件（fid 以 local_ 开头），跳过删除
+			// source 字段在部分创建路径（ensureParentDirExists, resolveConflict 等）未设置，
+			// 仅靠 source=="local" 不够可靠，fid 前缀是更直接的判断依据
+			if strings.HasPrefix(fid, "local_") {
+				driver.Log.Printf("MergeRemoteChanges: skipping delete for local_ fid file %s (fid=%s)\n", entry.path, fid)
 				continue
 			}
 
