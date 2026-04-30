@@ -138,6 +138,14 @@ func (t *ghostTestTransport) hasRequest(path string) bool {
 	return false
 }
 
+func (t *ghostTestTransport) getRequests() []trackedRequest {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make([]trackedRequest, len(t.requests))
+	copy(result, t.requests)
+	return result
+}
+
 func (t *ghostTestTransport) countRequests(path string) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()

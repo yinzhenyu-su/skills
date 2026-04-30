@@ -583,6 +583,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	if snapshotSize == 0 && stagingFileSize == 0 && n.isDirty {
 		driver.Log.Printf("syncFile: skipping empty upload for %s (staging empty but isDirty=true, Write may still be in flight)\n", path)
 		n.mu.Lock()
+		n.isDirty = false     // 清除 dirty，防止 defer 中 re-enqueue 无限循环
 		n.syncQueued = false
 		n.mu.Unlock()
 		return nil
