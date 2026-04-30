@@ -90,6 +90,15 @@ func (m *Manager) deleteExistingFileByName(parentFid, plainName string) error {
 		return nil
 	}
 
+	// [DEBUG] 打印所有文件，用于排查 (1) 重名问题
+	driver.Log.Printf("deleteExistingFileByName: ListFiles returned %d files in parent %s, looking for plainName=%s\n",
+		len(files), parentFid, plainName)
+	for _, f := range files {
+		decName, decErr := m.cipher.DecryptSegment(f.FileName)
+		driver.Log.Printf("deleteExistingFileByName:   fid=%s enc=%s dec=%s size=%d decErr=%v\n",
+			f.Fid, f.FileName, decName, f.Int64Size(), decErr)
+	}
+
 	for _, f := range files {
 		decName, decErr := m.cipher.DecryptSegment(f.FileName)
 		if decErr != nil {
@@ -132,6 +141,10 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 		return result, err
 	}
 
+	// [DEBUG] UploadPre 结果，用于排查 (1) 重名问题
+	driver.Log.Printf("Sync DEBUG: UploadPre result for %s: finish=%v fid=%s encName=%s plainSize=%d encSize=%d\n",
+		req.Name, pre.Data.Finish, pre.Data.Fid, encName, req.PlainSize, encSize)
+
 	// If UploadPre returned finish=true (dedup), verify the dedup file has the
 	// correct name. If not, it's a hash collision or stale dedup — delete the
 	// old file and re-create UploadPre to get a fresh upload task.
@@ -153,6 +166,7 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 
 	// If not dedup, delete existing file with same name to prevent (1) duplicates
 	if !pre.Data.Finish {
+		driver.Log.Printf("Sync DEBUG: not dedup, calling deleteExistingFileByName for %s in parent %s\n", req.Name, req.ParentFid)
 		if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
 			driver.Log.Printf("Sync: warning: failed to check/delete existing file %s in parent %s: %v\n", req.Name, req.ParentFid, err)
 		}

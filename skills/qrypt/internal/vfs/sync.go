@@ -567,6 +567,16 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	lastUpload := n.lastUploadTime
 	n.mu.Unlock()
 
+	// [DEBUG] 上传前状态快照，用于排查 (1) 重名问题
+	var stagingFileSize int64 = -1
+	if localPath != "" && fs.staging != nil {
+		if sz, err := fs.staging.FileSize(localPath); err == nil {
+			stagingFileSize = sz
+		}
+	}
+	driver.Log.Printf("syncFile DEBUG: path=%s snapshotSize=%d stagingFileSize=%d fid=%s parentFid=%s localPath=%s\n",
+		path, snapshotSize, stagingFileSize, fid, parentFid, localPath)
+
 	// Guard: skip re-sync if this file was just uploaded (< 10s ago) and has a real server FID.
 	if !strings.HasPrefix(fid, "local_") && !lastUpload.IsZero() && time.Since(lastUpload) < 10*time.Second {
 		return nil
@@ -643,6 +653,14 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		LocalPath: localPath,
 		PlainSize: snapshotSize,
 	})
+
+	// [DEBUG] Sync 结果，用于排查 (1) 重名问题
+	if err != nil {
+		driver.Log.Printf("syncFile DEBUG: Sync FAILED for %s: %v\n", path, err)
+	} else {
+		driver.Log.Printf("syncFile DEBUG: Sync OK for %s: resultFid=%s encSize=%d\n", path, result.Fid, result.EncryptedSize)
+	}
+
 	if err != nil {
 		if errors.Is(err, errDirGone) {
 			driver.Log.Printf("Sync: parent directory %s gone, will retry recreation\n", parentFid)
