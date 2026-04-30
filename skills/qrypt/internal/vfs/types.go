@@ -3,6 +3,7 @@ package vfs
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/golang-lru/v2"
@@ -66,9 +67,19 @@ type node struct {
 	source            string            // "remote" | "local" | "merged" — 文件来源
 	expectedFid       string            // 预期服务端返回的 FID（用于抵御索引延迟导致的冲突）
 	syncTimer         *time.Timer       // 写入防抖计时器
+	writeInFlight     int32             // 正在进行的 Write 操作计数（atomic）
 	children          map[string]*node // 子节点缓存 (name -> *node), 避免 O(N) 扫描
 	mu                sync.RWMutex
 }
+
+// addWriteInFlight 原子递增写入计数
+func (n *node) addWriteInFlight() { atomic.AddInt32(&n.writeInFlight, 1) }
+
+// doneWriteInFlight 原子递减写入计数
+func (n *node) doneWriteInFlight() { atomic.AddInt32(&n.writeInFlight, -1) }
+
+// hasWriteInFlight 检查是否有进行中的写入
+func (n *node) hasWriteInFlight() bool { return atomic.LoadInt32(&n.writeInFlight) > 0 }
 
 type syncTask struct {
 	node     *node

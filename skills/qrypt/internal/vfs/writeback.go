@@ -79,6 +79,10 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 		return 0
 	}
 
+	// 标记有写入正在进行，防止 syncFile 在数据落盘前上传
+	node.addWriteInFlight()
+	defer node.doneWriteInFlight()
+
 	node.mu.Lock()
 
 	if fs.staging == nil {
@@ -247,9 +251,15 @@ func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 		return errc
 	}
 
+	// 如果还有 Write 操作在进行中，不触发 sync —— Write 的 defer 会递减计数，
+	// 最后一个 Write 完成后由 Write 自身的 debounce 触发上传。
+	if node.hasWriteInFlight() {
+		driver.Log.Printf("Release: skipping sync for %s (writeInFlight), Write will trigger sync\n", path)
+		return 0
+	}
+
 	node.mu.Lock()
 	// 不再停止 syncTimer。如果 Write 刚刚触发了计时器，让它继续运行。
-	// Release 只是作为一个额外的同步信号。
 	node.mu.Unlock()
 
 	// 无论是否 dirty，都尝试排队（enqueueSync 内部有状态检查）

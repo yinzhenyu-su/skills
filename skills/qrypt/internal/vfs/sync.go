@@ -512,8 +512,9 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 
 	startedAt := time.Now()
 	stats := syncPerformanceSnapshot{Path: path}
+	deferredWriteWait := false // writeInFlight 延迟重排标志，为 true 时 defer 跳过 re-enqueue
 
-	// 核心加固：在进入上传前，再次确认节点是否依然处于“活跃”状态（未被删除）
+	// 核心加固：在进入上传前，再次确认节点是否依然处于"活跃"状态（未被删除）
 	n.mu.RLock()
 	currentPath := n.currentPath
 	n.mu.RUnlock()
@@ -531,10 +532,11 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		n.mu.Lock()
 		n.syncQueued = false
 		// 核心加固：如果同步完成后文件依然是脏的（说明上传期间有新写入），立即补发同步
+		// 但如果 writeInFlight 延迟重排已安排 AfterFunc，则跳过
 		isStillDirty := n.isDirty
 		n.mu.Unlock()
 
-		if isStillDirty && err == nil {
+		if isStillDirty && err == nil && !deferredWriteWait {
 			driver.Log.Printf("syncFile: %s still dirty after sync, re-enqueuing...\n", path)
 			fs.enqueueSync(n)
 		}
@@ -565,6 +567,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	baseMtime := n.baseServerMtime
 	localPath := n.localPath
 	lastUpload := n.lastUploadTime
+	writeInFlight := n.hasWriteInFlight()
 	n.mu.Unlock()
 
 	// [DEBUG] 上传前状态快照，用于排查 (1) 重名问题
@@ -577,15 +580,18 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	driver.Log.Printf("syncFile [DBG] path=%s snapshotSize=%d stagingFileSize=%d fid=%s parentFid=%s localPath=%s\n",
 		path, snapshotSize, stagingFileSize, fid, parentFid, localPath)
 
-	// 跳过空文件上传：如果 node 认为有数据（isDirty=true）但 staging 文件为空，
-	// 说明 Write() 尚未到达（macOS FUSE 先 Release 后 Write 的竞态）。
-	// 此时上传只会产生 32B 空文件，等 Write() 到达后会重新触发 sync。
-	if snapshotSize == 0 && stagingFileSize == 0 && n.isDirty {
-		driver.Log.Printf("syncFile: skipping empty upload for %s (staging empty but isDirty=true, Write may still be in flight)\n", path)
+	// 写入尚未完成：Write() 还在 staging 追加数据，或者 staging 文件大小还没追上 node.size。
+	// 此时上传只会产生不完整的文件，延迟 50ms 重新排队等待写入完成。
+	if writeInFlight || (stagingFileSize >= 0 && stagingFileSize < snapshotSize) {
+		driver.Log.Printf("syncFile: deferring %s (writeInFlight=%v, stagingSize=%d < nodeSize=%d) — waiting for Write to complete\n",
+			path, writeInFlight, stagingFileSize, snapshotSize)
+		deferredWriteWait = true
 		n.mu.Lock()
-		n.isDirty = false     // 清除 dirty，防止 defer 中 re-enqueue 无限循环
-		n.syncQueued = false
+		n.syncQueued = false // 释放队列位，允许重新排队
 		n.mu.Unlock()
+		time.AfterFunc(50*time.Millisecond, func() {
+			fs.enqueueSync(n)
+		})
 		return nil
 	}
 

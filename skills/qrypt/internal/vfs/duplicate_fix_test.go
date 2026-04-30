@@ -97,10 +97,10 @@ func TestSync_DeleteExistingBeforeUploadPre(t *testing.T) {
 	t.Logf("✅ Request order correct: ListFiles[%d] → UploadPre[%d]", listFilesIdx, uploadPreIdx)
 }
 
-// TestSyncFile_SkipsEmptyStagingUpload 验证修复：
-// 当 snapshotSize==0 && stagingFileSize==0 && isDirty 时，
-// syncFile 应跳过上传（macOS FUSE 先 Release 后 Write 的竞态保护）。
-func TestSyncFile_SkipsEmptyStagingUpload(t *testing.T) {
+// TestSyncFile_DefersWhenWriteInFlight 验证修复：
+// 当 writeInFlight > 0（Write 正在进行中）时，syncFile 应延迟重排而非直接上传，
+// 避免上传不完整的数据。
+func TestSyncFile_DefersWhenWriteInFlight(t *testing.T) {
 	transport := &ghostTestTransport{
 		partLatency:    1 * time.Millisecond,
 		controlLatency: 1 * time.Millisecond,
@@ -140,43 +140,120 @@ func TestSyncFile_SkipsEmptyStagingUpload(t *testing.T) {
 	}
 	fs.storeNode("/dist", distNode)
 
-	// 创建 staging 文件但不写入任何数据（模拟 Create() 后 Release()，Write 未到达）
-	localPath, err := fs.staging.Create("local_empty_test")
+	// 创建 staging 文件并写入部分数据（模拟写入进行中）
+	localPath, err := fs.staging.Create("local_wif_test")
+	if err != nil {
+		t.Fatalf("staging create failed: %v", err)
+	}
+	partialData := make([]byte, 512)
+	for i := range partialData {
+		partialData[i] = byte(i % 251)
+	}
+	if _, err := fs.staging.WriteAt(localPath, partialData, 0); err != nil {
+		t.Fatalf("staging write failed: %v", err)
+	}
+
+	fileNode := &node{
+		fid: "local_wif_test", parentFid: "dist_fid", name: "partial.txt",
+		size: 1024, currentPath: "/dist/partial.txt", localPath: localPath,
+		isDirty: true, isFolder: false, mtime: time.Now(),
+	}
+	// 模拟 Write 正在进行中
+	fileNode.addWriteInFlight()
+	fs.storeNode("/dist/partial.txt", fileNode)
+
+	// 直接调用 syncFile
+	err = fs.syncFile("/dist/partial.txt", fileNode)
+	if err != nil {
+		t.Fatalf("syncFile returned error: %v", err)
+	}
+
+	// 验证：没有上传请求（应被 defer）
+	if transport.hasRequest("/file/upload/pre") {
+		t.Error("syncFile should have deferred when writeInFlight > 0, but UploadPre was called")
+	}
+
+	// 验证：syncQueued 应被清除（允许重新排队）
+	fileNode.mu.RLock()
+	syncQueued := fileNode.syncQueued
+	fileNode.mu.RUnlock()
+	if syncQueued {
+		t.Error("syncQueued should be false after defer (to allow re-queue)")
+	}
+
+	// 验证：isDirty 应保持 true（数据还没上传）
+	fileNode.mu.RLock()
+	isDirty := fileNode.isDirty
+	fileNode.mu.RUnlock()
+	if !isDirty {
+		t.Error("isDirty should still be true after defer")
+	}
+
+	t.Log("✅ syncFile correctly deferred upload when writeInFlight > 0")
+}
+
+// TestSyncFile_UploadsEmptyFileWhenNoWriteInFlight 验证：
+// touch 创建的空文件（writeInFlight=0, size=0, staging=0）应正常上传，
+// 不会被 writeInFlight 保护误拦截。
+func TestSyncFile_UploadsEmptyFileWhenNoWriteInFlight(t *testing.T) {
+	transport := &ghostTestTransport{
+		partLatency:    1 * time.Millisecond,
+		controlLatency: 1 * time.Millisecond,
+	}
+
+	oldBase, oldV2, oldAlt := driver.QuarkBaseURL, driver.QuarkV2URL, driver.QuarkV2AltURL
+	driver.QuarkBaseURL = "https://drive-pc.quark.cn/1/clouddrive"
+	driver.QuarkV2URL = "https://drive-pc.quark.cn/2/clouddrive"
+	driver.QuarkV2AltURL = "https://drive-pc.quark.cn/1/clouddrive"
+	defer func() {
+		driver.QuarkBaseURL = oldBase
+		driver.QuarkV2URL = oldV2
+		driver.QuarkV2AltURL = oldAlt
+	}()
+
+	fs := buildGhostTestFS(t, transport)
+
+	distNode := &node{
+		fid: "dist_fid", parentFid: "root_fid", name: "dist",
+		currentPath: "/dist", isFolder: true, mtime: time.Now(),
+		children: make(map[string]*node),
+	}
+	fs.storeNode("/dist", distNode)
+
+	// 创建 staging 文件但不写入数据（模拟 touch 空文件）
+	localPath, err := fs.staging.Create("local_touch_test")
 	if err != nil {
 		t.Fatalf("staging create failed: %v", err)
 	}
 
 	fileNode := &node{
-		fid: "local_empty_test", parentFid: "dist_fid", name: "empty.txt",
+		fid: "local_touch_test", parentFid: "dist_fid", name: "empty.txt",
 		size: 0, currentPath: "/dist/empty.txt", localPath: localPath,
 		isDirty: true, isFolder: false, mtime: time.Now(),
 	}
+	// writeInFlight = 0（没有 Write 在进行中）
 	fs.storeNode("/dist/empty.txt", fileNode)
 
-	// 直接调用 syncFile
+	// 调用 syncFile
 	err = fs.syncFile("/dist/empty.txt", fileNode)
 	if err != nil {
 		t.Fatalf("syncFile returned error: %v", err)
 	}
 
-	// 验证：没有上传请求
-	if transport.hasRequest("/file/upload/pre") {
-		t.Error("syncFile should have skipped empty upload, but UploadPre was called")
+	// 验证：应有上传请求（空文件是合法的）
+	if !transport.hasRequest("/file/upload/pre") {
+		t.Error("syncFile should have uploaded empty file (touch), but UploadPre was not called")
 	}
 
-	// 验证：isDirty 和 syncQueued 应被清除
+	// 验证：文件应标记为已同步
 	fileNode.mu.RLock()
 	isDirty := fileNode.isDirty
-	syncQueued := fileNode.syncQueued
 	fileNode.mu.RUnlock()
 	if isDirty {
-		t.Error("isDirty should be false after skip")
-	}
-	if syncQueued {
-		t.Error("syncQueued should be false after skip")
+		t.Error("file should not be dirty after successful sync")
 	}
 
-	t.Log("✅ syncFile correctly skipped empty staging upload")
+	t.Log("✅ syncFile correctly uploaded empty file when no writeInFlight (touch)")
 }
 
 // TestSyncFile_UploadsWhenStagingHasData 验证：
