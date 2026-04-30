@@ -142,7 +142,7 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	}
 
 	// [DEBUG] UploadPre 结果，用于排查 (1) 重名问题
-	driver.Log.Printf("Sync DEBUG: UploadPre result for %s: finish=%v fid=%s encName=%s plainSize=%d encSize=%d\n",
+	driver.Log.Printf("Sync [DBG] UploadPre result for %s: finish=%v fid=%s encName=%s plainSize=%d encSize=%d\n",
 		req.Name, pre.Data.Finish, pre.Data.Fid, encName, req.PlainSize, encSize)
 
 	// If UploadPre returned finish=true (dedup), verify the dedup file has the
@@ -166,7 +166,7 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 
 	// If not dedup, delete existing file with same name to prevent (1) duplicates
 	if !pre.Data.Finish {
-		driver.Log.Printf("Sync DEBUG: not dedup, calling deleteExistingFileByName for %s in parent %s\n", req.Name, req.ParentFid)
+		driver.Log.Printf("Sync [DBG] not dedup, calling deleteExistingFileByName for %s in parent %s\n", req.Name, req.ParentFid)
 		if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
 			driver.Log.Printf("Sync: warning: failed to check/delete existing file %s in parent %s: %v\n", req.Name, req.ParentFid, err)
 		}

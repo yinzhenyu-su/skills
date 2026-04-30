@@ -574,7 +574,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 			stagingFileSize = sz
 		}
 	}
-	driver.Log.Printf("syncFile DEBUG: path=%s snapshotSize=%d stagingFileSize=%d fid=%s parentFid=%s localPath=%s\n",
+	driver.Log.Printf("syncFile [DBG] path=%s snapshotSize=%d stagingFileSize=%d fid=%s parentFid=%s localPath=%s\n",
 		path, snapshotSize, stagingFileSize, fid, parentFid, localPath)
 
 	// Guard: skip re-sync if this file was just uploaded (< 10s ago) and has a real server FID.
@@ -656,9 +656,9 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 
 	// [DEBUG] Sync 结果，用于排查 (1) 重名问题
 	if err != nil {
-		driver.Log.Printf("syncFile DEBUG: Sync FAILED for %s: %v\n", path, err)
+		driver.Log.Printf("syncFile [DBG] Sync FAILED for %s: %v\n", path, err)
 	} else {
-		driver.Log.Printf("syncFile DEBUG: Sync OK for %s: resultFid=%s encSize=%d\n", path, result.Fid, result.EncryptedSize)
+		driver.Log.Printf("syncFile [DBG] Sync OK for %s: resultFid=%s encSize=%d\n", path, result.Fid, result.EncryptedSize)
 	}
 
 	if err != nil {
