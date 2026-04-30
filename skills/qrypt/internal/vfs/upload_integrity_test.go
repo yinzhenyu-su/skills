@@ -281,7 +281,7 @@ func TestE2E_WriteDuringSync(t *testing.T) {
 		t.Fatalf("Failed to generate content: %v", err)
 	}
 
-	// Write first chunk (triggers sync via enqueueSync with 100ms delay)
+	// Write first chunk
 	testFile := filepath.Join(config.mountPoint, fileName)
 	f, err := os.Create(testFile)
 	if err != nil {
@@ -293,6 +293,8 @@ func TestE2E_WriteDuringSync(t *testing.T) {
 	}
 
 	// Wait past the 100ms enqueue delay, so sync starts capturing partial data
+	// Note: With Release-only design, sync happens on Close. This sleep is kept
+	// to simulate real-world timing where writes happen over time.
 	time.Sleep(150 * time.Millisecond)
 
 	// Write remaining chunks while sync might be in progress
@@ -486,8 +488,8 @@ func TestE2E_FlushIsNoOp(t *testing.T) {
 		t.Fatalf("Flush returned error: %d", errc)
 	}
 
-	// The file should NOT be synced yet (only Write's delayed enqueueSync will do it)
-	// Wait for Write-triggered sync
+	// The file should NOT be synced yet (only Release/Close will trigger sync)
+	// Wait for Release-triggered sync (os.WriteFile does Create+Write+Close)
 	waitForSync(t, fs, "/"+fileName)
 
 	// Verify content

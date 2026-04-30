@@ -66,7 +66,7 @@ type node struct {
 	lastPendingSize   int64
 	source            string            // "remote" | "local" | "merged" — 文件来源
 	expectedFid       string            // 预期服务端返回的 FID（用于抵御索引延迟导致的冲突）
-	syncTimer         *time.Timer       // 写入防抖计时器
+	uploadedFid       string            // 上次成功上传后的远程 FID（用于 FID 直接替换，绕过 ListFiles 索引延迟）
 	writeInFlight     int32             // 正在进行的 Write 操作计数（atomic）
 	children          map[string]*node // 子节点缓存 (name -> *node), 避免 O(N) 扫描
 	mu                sync.RWMutex

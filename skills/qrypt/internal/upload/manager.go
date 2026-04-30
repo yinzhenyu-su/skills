@@ -20,6 +20,7 @@ type SyncRequest struct {
 	ParentFid string
 	LocalPath string
 	PlainSize int64
+	OldFid    string // 上次成功上传的 FID，用于 FID 直接替换（绕过 ListFiles 索引延迟）
 }
 
 type SyncResult struct {
@@ -134,12 +135,24 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	result.Nonce = nonce
 	result.EncryptedSize = encSize
 
-	// 先删除同名旧文件，再创建 placeholder。
-	// 如果顺序反过来（先 UploadPre 再删除），UploadPre 创建的 placeholder
-	// 会与旧文件产生同名冲突，Quark 自动加 (1) 后缀导致重复文件。
-	driver.Log.Printf("Sync [DBG] pre-delete existing file %s in parent %s before UploadPre\n", req.Name, req.ParentFid)
-	if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
-		driver.Log.Printf("Sync: warning: pre-delete failed for %s in parent %s: %v\n", req.Name, req.ParentFid, err)
+	// 先删除旧文件，再创建 placeholder。
+	// 如果有 OldFid（上次上传的 FID），直接用 FID 删除，绕过 ListFiles 索引延迟。
+	// 如果没有 OldFid（首次上传），退化为按名删除。
+	if req.OldFid != "" {
+		driver.Log.Printf("Sync [DBG] deleting old file by FID %s (replacing %s in parent %s)\n", req.OldFid, req.Name, req.ParentFid)
+		if err := m.driver.Delete([]string{req.OldFid}); err != nil {
+			driver.Log.Printf("Sync: warning: FID delete failed for %s, falling back to name-based delete: %v\n", req.OldFid, err)
+			if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
+				driver.Log.Printf("Sync: warning: name-based delete also failed for %s in parent %s: %v\n", req.Name, req.ParentFid, err)
+			}
+		} else {
+			m.driver.RemoveDirCache(req.ParentFid)
+		}
+	} else {
+		driver.Log.Printf("Sync [DBG] no OldFid, falling back to deleteExistingFileByName for %s in parent %s\n", req.Name, req.ParentFid)
+		if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
+			driver.Log.Printf("Sync: warning: pre-delete failed for %s in parent %s: %v\n", req.Name, req.ParentFid, err)
+		}
 	}
 
 	preStart := time.Now()

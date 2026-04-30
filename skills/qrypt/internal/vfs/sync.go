@@ -512,7 +512,6 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 
 	startedAt := time.Now()
 	stats := syncPerformanceSnapshot{Path: path}
-	deferredWriteWait := false // writeInFlight 延迟重排标志，为 true 时 defer 跳过 re-enqueue
 
 	// 核心加固：在进入上传前，再次确认节点是否依然处于"活跃"状态（未被删除）
 	n.mu.RLock()
@@ -532,11 +531,10 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		n.mu.Lock()
 		n.syncQueued = false
 		// 核心加固：如果同步完成后文件依然是脏的（说明上传期间有新写入），立即补发同步
-		// 但如果 writeInFlight 延迟重排已安排 AfterFunc，则跳过
 		isStillDirty := n.isDirty
 		n.mu.Unlock()
 
-		if isStillDirty && err == nil && !deferredWriteWait {
+		if isStillDirty && err == nil {
 			driver.Log.Printf("syncFile: %s still dirty after sync, re-enqueuing...\n", path)
 			fs.enqueueSync(n)
 		}
@@ -567,7 +565,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	baseMtime := n.baseServerMtime
 	localPath := n.localPath
 	lastUpload := n.lastUploadTime
-	writeInFlight := n.hasWriteInFlight()
+	oldUploadedFid := n.uploadedFid // 记录上次上传的 FID，用于 FID 直接替换
 	n.mu.Unlock()
 
 	// [DEBUG] 上传前状态快照，用于排查 (1) 重名问题
@@ -579,21 +577,6 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	}
 	driver.Log.Printf("syncFile [DBG] path=%s snapshotSize=%d stagingFileSize=%d fid=%s parentFid=%s localPath=%s\n",
 		path, snapshotSize, stagingFileSize, fid, parentFid, localPath)
-
-	// 写入尚未完成：Write() 还在 staging 追加数据，或者 staging 文件大小还没追上 node.size。
-	// 此时上传只会产生不完整的文件，延迟 50ms 重新排队等待写入完成。
-	if writeInFlight || (stagingFileSize >= 0 && stagingFileSize < snapshotSize) {
-		driver.Log.Printf("syncFile: deferring %s (writeInFlight=%v, stagingSize=%d < nodeSize=%d) — waiting for Write to complete\n",
-			path, writeInFlight, stagingFileSize, snapshotSize)
-		deferredWriteWait = true
-		n.mu.Lock()
-		n.syncQueued = false // 释放队列位，允许重新排队
-		n.mu.Unlock()
-		time.AfterFunc(50*time.Millisecond, func() {
-			fs.enqueueSync(n)
-		})
-		return nil
-	}
 
 	// Guard: skip re-sync if this file was just uploaded (< 10s ago) and has a real server FID.
 	if !strings.HasPrefix(fid, "local_") && !lastUpload.IsZero() && time.Since(lastUpload) < 10*time.Second {
@@ -670,6 +653,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		ParentFid: parentFid,
 		LocalPath: localPath,
 		PlainSize: snapshotSize,
+		OldFid:    oldUploadedFid, // FID 直接替换，绕过 ListFiles 索引延迟
 	})
 
 	// [DEBUG] Sync 结果，用于排查 (1) 重名问题
@@ -710,13 +694,16 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	n.fileNonce = result.Nonce
 	n.hasNonce = true
 	n.encSize = result.EncryptedSize
-	if n.mtime.Equal(snapshotMtime) {
-		n.isDirty = false
-		n.baseServerMtime = snapshotMtime.UnixMilli()
-		n.baseServerSize = n.size
-		n.lastMetadataCheck = time.Now()
-		n.lastUploadTime = time.Now()
-	}
+	n.uploadedFid = result.Fid // 记录上传后的 FID，用于下次 re-upload 时 FID 直接替换
+	// 上传成功即清除 dirty（无条件），不比较 mtime。
+	// 设计：Release 是唯一的 sync 触发点，上传时所有 Write 已完成。
+	// 如果上传期间有新 Write（文件被重新打开），Write 会重新设置 isDirty=true，
+	// 下一次 Release 会再次触发 sync。
+	n.isDirty = false
+	n.baseServerMtime = snapshotMtime.UnixMilli()
+	n.baseServerSize = n.size
+	n.lastMetadataCheck = time.Now()
+	n.lastUploadTime = time.Now()
 	currentPath = n.currentPath
 	localPath = n.localPath
 	clearPending := !n.isDirty

@@ -97,10 +97,10 @@ func TestSync_DeleteExistingBeforeUploadPre(t *testing.T) {
 	t.Logf("✅ Request order correct: ListFiles[%d] → UploadPre[%d]", listFilesIdx, uploadPreIdx)
 }
 
-// TestSyncFile_DefersWhenWriteInFlight 验证修复：
-// 当 writeInFlight > 0（Write 正在进行中）时，syncFile 应延迟重排而非直接上传，
-// 避免上传不完整的数据。
-func TestSyncFile_DefersWhenWriteInFlight(t *testing.T) {
+// TestSyncFile_UploadsEvenWhenWriteInFlight 验证新设计：
+// Release-only sync 模式下，syncFile 不再检查 writeInFlight，
+// 因为 Release 是唯一的 sync 触发点，所有 Write 已完成。
+func TestSyncFile_UploadsEvenWhenWriteInFlight(t *testing.T) {
 	transport := &ghostTestTransport{
 		partLatency:    1 * time.Millisecond,
 		controlLatency: 1 * time.Millisecond,
@@ -140,25 +140,25 @@ func TestSyncFile_DefersWhenWriteInFlight(t *testing.T) {
 	}
 	fs.storeNode("/dist", distNode)
 
-	// 创建 staging 文件并写入部分数据（模拟写入进行中）
+	// 创建 staging 文件并写入数据
 	localPath, err := fs.staging.Create("local_wif_test")
 	if err != nil {
 		t.Fatalf("staging create failed: %v", err)
 	}
-	partialData := make([]byte, 512)
-	for i := range partialData {
-		partialData[i] = byte(i % 251)
+	data := make([]byte, 512)
+	for i := range data {
+		data[i] = byte(i % 251)
 	}
-	if _, err := fs.staging.WriteAt(localPath, partialData, 0); err != nil {
+	if _, err := fs.staging.WriteAt(localPath, data, 0); err != nil {
 		t.Fatalf("staging write failed: %v", err)
 	}
 
 	fileNode := &node{
 		fid: "local_wif_test", parentFid: "dist_fid", name: "partial.txt",
-		size: 1024, currentPath: "/dist/partial.txt", localPath: localPath,
+		size: 512, currentPath: "/dist/partial.txt", localPath: localPath,
 		isDirty: true, isFolder: false, mtime: time.Now(),
 	}
-	// 模拟 Write 正在进行中
+	// 模拟 Write 正在进行中（新设计下 syncFile 不再检查此标志）
 	fileNode.addWriteInFlight()
 	fs.storeNode("/dist/partial.txt", fileNode)
 
@@ -168,28 +168,28 @@ func TestSyncFile_DefersWhenWriteInFlight(t *testing.T) {
 		t.Fatalf("syncFile returned error: %v", err)
 	}
 
-	// 验证：没有上传请求（应被 defer）
-	if transport.hasRequest("/file/upload/pre") {
-		t.Error("syncFile should have deferred when writeInFlight > 0, but UploadPre was called")
+	// 新设计：syncFile 应该正常上传（不检查 writeInFlight）
+	if !transport.hasRequest("/file/upload/pre") {
+		t.Error("syncFile should have proceeded with upload (Release-only design doesn't check writeInFlight)")
 	}
 
-	// 验证：syncQueued 应被清除（允许重新排队）
-	fileNode.mu.RLock()
-	syncQueued := fileNode.syncQueued
-	fileNode.mu.RUnlock()
-	if syncQueued {
-		t.Error("syncQueued should be false after defer (to allow re-queue)")
-	}
-
-	// 验证：isDirty 应保持 true（数据还没上传）
+	// 验证：isDirty 应被清除
 	fileNode.mu.RLock()
 	isDirty := fileNode.isDirty
 	fileNode.mu.RUnlock()
-	if !isDirty {
-		t.Error("isDirty should still be true after defer")
+	if isDirty {
+		t.Error("isDirty should be false after successful upload")
 	}
 
-	t.Log("✅ syncFile correctly deferred upload when writeInFlight > 0")
+	// 验证：uploadedFid 应被设置
+	fileNode.mu.RLock()
+	uploadedFid := fileNode.uploadedFid
+	fileNode.mu.RUnlock()
+	if uploadedFid == "" {
+		t.Error("uploadedFid should be set after successful upload")
+	}
+
+	t.Log("✅ syncFile correctly proceeds with upload even when writeInFlight > 0 (Release-only design)")
 }
 
 // TestSyncFile_UploadsEmptyFileWhenNoWriteInFlight 验证：

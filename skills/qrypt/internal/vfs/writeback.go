@@ -116,14 +116,8 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 		driver.Log.Printf("Warning: failed to save pending node after Write for %s: %v\n", path, err)
 	}
 
-	// Trigger sync with debounce.
-	if node.syncTimer != nil {
-		node.syncTimer.Stop()
-	}
-	node.syncTimer = time.AfterFunc(100*time.Millisecond, func() {
-		fs.enqueueSync(node)
-	})
-
+	// 不在此处触发 sync —— 等 Release（文件关闭）时再一次性上传。
+	// 这样一个文件只上传一次，避免 mtime 竞态导致的重复文件。
 	node.mu.Unlock()
 	return written
 }
@@ -244,25 +238,21 @@ func (fs *QryptFS) Listxattr(path string, fill func(name string) bool) (errc int
 	return 0
 }
 
-// Release 文件句柄关闭时触发。主要同步由 Write 触发，这里作为兜底。
+// Release 文件句柄关闭时触发最终上传。
+// 设计：Write 只写 staging 不触发 sync，Release 是唯一的 sync 触发点。
+// 一个文件只上传一次，避免 mtime 竞态导致的重复文件。
 func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 	node, errc := fs.lookup(path)
 	if errc != 0 {
 		return errc
 	}
 
-	// 如果还有 Write 操作在进行中，不触发 sync —— Write 的 defer 会递减计数，
-	// 最后一个 Write 完成后由 Write 自身的 debounce 触发上传。
-	if node.hasWriteInFlight() {
-		driver.Log.Printf("Release: skipping sync for %s (writeInFlight), Write will trigger sync\n", path)
-		return 0
+	node.mu.RLock()
+	dirty := node.isDirty
+	node.mu.RUnlock()
+
+	if dirty {
+		fs.enqueueSync(node)
 	}
-
-	node.mu.Lock()
-	// 不再停止 syncTimer。如果 Write 刚刚触发了计时器，让它继续运行。
-	node.mu.Unlock()
-
-	// 无论是否 dirty，都尝试排队（enqueueSync 内部有状态检查）
-	fs.enqueueSync(node)
 	return 0
 }
