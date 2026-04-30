@@ -134,6 +134,14 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	result.Nonce = nonce
 	result.EncryptedSize = encSize
 
+	// 先删除同名旧文件，再创建 placeholder。
+	// 如果顺序反过来（先 UploadPre 再删除），UploadPre 创建的 placeholder
+	// 会与旧文件产生同名冲突，Quark 自动加 (1) 后缀导致重复文件。
+	driver.Log.Printf("Sync [DBG] pre-delete existing file %s in parent %s before UploadPre\n", req.Name, req.ParentFid)
+	if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
+		driver.Log.Printf("Sync: warning: pre-delete failed for %s in parent %s: %v\n", req.Name, req.ParentFid, err)
+	}
+
 	preStart := time.Now()
 	pre, err := m.driver.UploadPre(encName, req.ParentFid, encSize)
 	result.PreDuration = time.Since(preStart)
@@ -141,7 +149,7 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 		return result, err
 	}
 
-	// [DEBUG] UploadPre 结果，用于排查 (1) 重名问题
+	// [DBG] UploadPre 结果，用于排查 (1) 重名问题
 	driver.Log.Printf("Sync [DBG] UploadPre result for %s: finish=%v fid=%s encName=%s plainSize=%d encSize=%d\n",
 		req.Name, pre.Data.Finish, pre.Data.Fid, encName, req.PlainSize, encSize)
 
@@ -161,14 +169,6 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 		pre, err = m.driver.UploadPre(encName, req.ParentFid, encSize)
 		if err != nil {
 			return result, err
-		}
-	}
-
-	// If not dedup, delete existing file with same name to prevent (1) duplicates
-	if !pre.Data.Finish {
-		driver.Log.Printf("Sync [DBG] not dedup, calling deleteExistingFileByName for %s in parent %s\n", req.Name, req.ParentFid)
-		if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
-			driver.Log.Printf("Sync: warning: failed to check/delete existing file %s in parent %s: %v\n", req.Name, req.ParentFid, err)
 		}
 	}
 

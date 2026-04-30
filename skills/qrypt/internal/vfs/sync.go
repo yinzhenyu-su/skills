@@ -577,6 +577,17 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	driver.Log.Printf("syncFile [DBG] path=%s snapshotSize=%d stagingFileSize=%d fid=%s parentFid=%s localPath=%s\n",
 		path, snapshotSize, stagingFileSize, fid, parentFid, localPath)
 
+	// 跳过空文件上传：如果 node 认为有数据（isDirty=true）但 staging 文件为空，
+	// 说明 Write() 尚未到达（macOS FUSE 先 Release 后 Write 的竞态）。
+	// 此时上传只会产生 32B 空文件，等 Write() 到达后会重新触发 sync。
+	if snapshotSize == 0 && stagingFileSize == 0 && n.isDirty {
+		driver.Log.Printf("syncFile: skipping empty upload for %s (staging empty but isDirty=true, Write may still be in flight)\n", path)
+		n.mu.Lock()
+		n.syncQueued = false
+		n.mu.Unlock()
+		return nil
+	}
+
 	// Guard: skip re-sync if this file was just uploaded (< 10s ago) and has a real server FID.
 	if !strings.HasPrefix(fid, "local_") && !lastUpload.IsZero() && time.Since(lastUpload) < 10*time.Second {
 		return nil
