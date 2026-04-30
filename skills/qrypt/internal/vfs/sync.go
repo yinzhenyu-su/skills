@@ -638,7 +638,11 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	oldFid := n.fid
 	n.fid = result.Fid
 	n.expectedFid = result.Fid
-	n.source = "remote"
+	// 不在此处设置 source="remote"。原因：
+	// 上传成功后夸克 API 可能还未索引到文件，如果立即标记为 "remote"，
+	// MergeRemoteChanges 在 Readdir 时发现文件不在远程列表中，会误判为"远程已删除"并删除本地节点。
+	// source 的 "local" → "remote" 转换由 MergeRemoteChanges 在远程列表中确认文件存在后自动完成
+	// （path_state.go 中 exists && rf.Fid == expectedFid 分支）。
 	n.fileNonce = result.Nonce
 	n.hasNonce = true
 	n.encSize = result.EncryptedSize

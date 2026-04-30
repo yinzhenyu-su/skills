@@ -224,3 +224,78 @@ func TestMergeRemoteChanges_UpdateRemoteFile(t *testing.T) {
 		t.Error("file should still exist after merge")
 	}
 }
+
+// TestMergeRemoteChanges_UploadedButNotIndexed 验证上传完成后 API 未索引场景：
+// 文件上传成功后 source 保持 "local"（syncFile 不再设置 source="remote"），
+// 当远程列表中没有该文件时，MergeRemoteChanges 不应删除本地节点；
+// 当远程列表中出现该文件（FID 匹配）时，source 应自动转为 "remote"。
+func TestMergeRemoteChanges_UploadedButNotIndexed(t *testing.T) {
+	fs := &QryptFS{
+		nodes:    sync.Map{},
+		fidNodes: sync.Map{},
+	}
+
+	root := &node{
+		fid:         "root_fid",
+		currentPath: "/",
+		isFolder:    true,
+		children:    make(map[string]*node),
+	}
+	fs.storeNode("/", root)
+
+	// 模拟上传完成的文件：syncFile 已执行，fid 变为真实 FID，但 source 仍为 "local"
+	// （syncFile 不再设置 source="remote"，由 MergeRemoteChanges 确认后转换）
+	uploadedFile := &node{
+		fid:             "server_fid_123",
+		parentFid:       "root_fid",
+		name:            "app.js",
+		currentPath:     "/app.js",
+		size:            4096,
+		isDirty:         false,
+		syncQueued:      false,
+		source:          "local", // 上传后仍为 "local"（修复后的预期行为）
+		expectedFid:     "server_fid_123",
+		lastUploadTime:  time.Now().Add(-5 * time.Second), // 5秒前上传完成
+		baseServerMtime: 0,                                // 尚未被远程确认
+	}
+	fs.storeNode("/app.js", uploadedFile)
+
+	// 场景1：远程列表为空（API 未索引到文件）
+	remoteFiles := []driver.File{}
+	fs.MergeRemoteChanges("/", "root_fid", remoteFiles)
+
+	// 文件不应被误删
+	if _, ok := fs.nodes.Load("/app.js"); !ok {
+		t.Fatal("uploaded file was incorrectly deleted when remote list is empty (API not indexed yet)")
+	}
+	// source 应仍为 "local"
+	if v, ok := fs.nodes.Load("/app.js"); ok {
+		n := v.(*node)
+		if n.source != "local" {
+			t.Errorf("source should remain 'local' when not in remote list, got '%s'", n.source)
+		}
+	}
+
+	// 场景2：远程列表中出现该文件（API 已索引），FID 匹配
+	remoteFiles = []driver.File{
+		{
+			Fid:      "server_fid_123",
+			FileName: "app.js",
+			UpdatedAt: time.Now().UnixMilli(),
+			File:     true,
+		},
+	}
+	fs.MergeRemoteChanges("/", "root_fid", remoteFiles)
+
+	// 文件应存在
+	if _, ok := fs.nodes.Load("/app.js"); !ok {
+		t.Fatal("file should still exist after remote confirms it")
+	}
+	// source 应自动转为 "remote"
+	if v, ok := fs.nodes.Load("/app.js"); ok {
+		n := v.(*node)
+		if n.source != "remote" {
+			t.Errorf("source should be 'remote' after confirmed in remote list, got '%s'", n.source)
+		}
+	}
+}
