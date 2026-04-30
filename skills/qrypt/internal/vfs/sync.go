@@ -196,6 +196,8 @@ func (fs *QryptFS) uploadWorker() {
 	driver.Log.Printf("Upload worker started\n")
 	defer driver.Log.Printf("Upload worker stopped\n")
 	for task := range fs.uploadChan {
+		// 保存上传前的路径，用于上传后检测节点是否已被 Unlink 删除
+		savedPath := task.node.currentPath
 		err := fs.syncFile(task.node.currentPath, task.node)
 		if err != nil {
 			driver.Log.Printf("Sync: failed to sync %s: %v\n", task.node.currentPath, err)
@@ -205,6 +207,32 @@ func (fs *QryptFS) uploadWorker() {
 				}
 			}
 		} else {
+			// 幽灵文件检测：上传成功后，检查节点是否已被 Unlink 删除
+			// 如果节点已从内存树移除（currentPath 被清除或路径对应不同节点），
+			// 且上传得到了真实 FID，需要清理服务器上的幽灵文件
+			task.node.mu.RLock()
+			newFid := task.node.fid
+			task.node.mu.RUnlock()
+
+			if savedPath != "" && !strings.HasPrefix(newFid, "local_") {
+				stillInTree := false
+				if v, ok := fs.nodes.Load(savedPath); ok && v.(*node) == task.node {
+					stillInTree = true
+				}
+
+				if !stillInTree {
+					driver.Log.Printf("uploadWorker: ghost file detected — node at %s was removed during upload (fid=%s), sending DELETE to clean up server\n",
+						savedPath, newFid)
+					// 发送 DELETE 任务清理服务器上的幽灵文件
+					// 不需要墓碑（节点已不存在），直接发 metadataOpChan
+					fs.metadataOpChan <- metadataTask{
+						opType: "DELETE",
+						path:   savedPath,
+						fids:   []string{newFid},
+					}
+				}
+			}
+
 			if task.opsLogID > 0 && fs.cache != nil {
 				if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
 					_ = db.UpdateOpsLogStatus(task.opsLogID, "DONE")
