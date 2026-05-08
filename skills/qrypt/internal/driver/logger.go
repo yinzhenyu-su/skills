@@ -98,7 +98,7 @@ func (l *LevelLogger) Printf(format string, v ...interface{}) {
 	// Auto-detect level from format string content
 	level := LogLevelInfo
 	lower := strings.ToLower(fmt.Sprintf(format, v...))
-	if strings.Contains(lower, "debug") {
+	if strings.Contains(lower, "debug") || strings.Contains(lower, "[dbg]") {
 		level = LogLevelDebug
 	} else if strings.Contains(lower, "warning") || strings.Contains(lower, "warn") {
 		level = LogLevelWarn
