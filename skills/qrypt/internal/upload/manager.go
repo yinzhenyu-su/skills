@@ -139,7 +139,7 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	// 如果有 OldFid（上次上传的 FID），直接用 FID 删除，绕过 ListFiles 索引延迟。
 	// 如果没有 OldFid（首次上传），退化为按名删除。
 	if req.OldFid != "" {
-		driver.Log.Printf("Sync [DBG] deleting old file by FID %s (replacing %s in parent %s)\n", req.OldFid, req.Name, req.ParentFid)
+		driver.Log.Printf("Sync [DEBUG] deleting old file by FID %s (replacing %s in parent %s)\n", req.OldFid, req.Name, req.ParentFid)
 		if err := m.driver.Delete([]string{req.OldFid}); err != nil {
 			driver.Log.Printf("Sync: warning: FID delete failed for %s, falling back to name-based delete: %v\n", req.OldFid, err)
 			if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
@@ -149,7 +149,7 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 			m.driver.RemoveDirCache(req.ParentFid)
 		}
 	} else {
-		driver.Log.Printf("Sync [DBG] no OldFid, falling back to deleteExistingFileByName for %s in parent %s\n", req.Name, req.ParentFid)
+		driver.Log.Printf("Sync [DEBUG] no OldFid, falling back to deleteExistingFileByName for %s in parent %s\n", req.Name, req.ParentFid)
 		if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
 			driver.Log.Printf("Sync: warning: pre-delete failed for %s in parent %s: %v\n", req.Name, req.ParentFid, err)
 		}
@@ -162,8 +162,8 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 		return result, err
 	}
 
-	// [DBG] UploadPre 结果，用于排查 (1) 重名问题
-	driver.Log.Printf("Sync [DBG] UploadPre result for %s: finish=%v fid=%s encName=%s plainSize=%d encSize=%d\n",
+	// [DEBUG] UploadPre 结果，用于排查 (1) 重名问题
+	driver.Log.Printf("Sync [DEBUG] UploadPre result for %s: finish=%v fid=%s encName=%s plainSize=%d encSize=%d\n",
 		req.Name, pre.Data.Finish, pre.Data.Fid, encName, req.PlainSize, encSize)
 
 	// If UploadPre returned finish=true (dedup), verify the dedup file has the
