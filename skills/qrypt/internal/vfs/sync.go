@@ -548,25 +548,13 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 
 	// 核心改进：在上传前最后一次确认物理文件大小
 	// 解决 macOS FUSE 先 Release 后 Write 导致的 0 字节卡死问题
-	var stagingFileSize int64
 	if n.localPath != "" && fs.staging != nil {
 		if actualSize, err := fs.staging.FileSize(n.localPath); err == nil {
-			stagingFileSize = actualSize
 			if actualSize > 0 && n.size != actualSize {
 				driver.Log.Printf("syncFile: refreshing size for %s from staging (%d -> %d)\n", path, n.size, actualSize)
 				n.size = actualSize
 			}
 		}
-	}
-
-	// macOS FUSE 防护：Release 可能在 Write 之前到达
-	// 当 snapshotSize=0 且 stagingFileSize=0 时，说明数据还没写入 staging
-	// 跳过本次上传，等 Write 完成后 Release 会再次触发 sync
-	if n.size == 0 && stagingFileSize == 0 {
-		driver.Log.Printf("syncFile: skipping %s (snapshotSize=0, stagingFileSize=0 — waiting for Write)\n", path)
-		n.syncQueued = false
-		n.mu.Unlock()
-		return nil
 	}
 
 	snapshotSize := n.size
@@ -581,6 +569,12 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	n.mu.Unlock()
 
 	// [DEBUG] 上传前状态快照，用于排查 (1) 重名问题
+	var stagingFileSize int64
+	if localPath != "" && fs.staging != nil {
+		if sz, err := fs.staging.FileSize(localPath); err == nil {
+			stagingFileSize = sz
+		}
+	}
 	driver.Log.Printf("syncFile [DEBUG] path=%s snapshotSize=%d stagingFileSize=%d fid=%s parentFid=%s localPath=%s\n",
 		path, snapshotSize, stagingFileSize, fid, parentFid, localPath)
 
