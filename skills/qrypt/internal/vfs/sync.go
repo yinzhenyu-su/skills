@@ -557,6 +557,20 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		}
 	}
 
+	// macOS FUSE 防护：Release 可能在 Write 之前到达
+	// 当 size=0 且 staging 为空时，等待 100ms 让 Write 完成
+	// 如果 100ms 后 staging 有数据 → Write 发生了（macOS FUSE），跳过本次上传
+	// 如果 100ms 后 staging 仍为空 → 真正的空文件，正常上传 0 字节
+	if n.size == 0 && n.localPath != "" && fs.staging != nil {
+		time.Sleep(100 * time.Millisecond)
+		if actualSize, err := fs.staging.FileSize(n.localPath); err == nil && actualSize > 0 {
+			driver.Log.Printf("syncFile: skipping %s (size=0, but staging grew to %d in 100ms — Write arrived)\n", path, actualSize)
+			n.size = actualSize
+			n.mu.Unlock()
+			return nil
+		}
+	}
+
 	snapshotSize := n.size
 	snapshotName := n.name
 	snapshotMtime := n.mtime
