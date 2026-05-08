@@ -38,6 +38,7 @@ func main() {
 	mountCmd.Flags().StringP("password", "p", "", "Rclone 密码")
 	mountCmd.Flags().StringP("salt", "s", "", "Rclone salt (可选)")
 	mountCmd.Flags().StringP("root-path", "r", "", "Quark Drive 挂载路径")
+	mountCmd.Flags().String("log-level", "", "日志级别: debug, info, warn, error (覆盖配置文件)")
 
 	// init 子命令 - 生成示例配置文件
 	var initCmd = &cobra.Command{
@@ -86,6 +87,9 @@ func runMount(cmd *cobra.Command, args []string) {
 	}
 	if rootPath, _ := cmd.Flags().GetString("root-path"); rootPath != "" {
 		cfg.Quark.RootPath = rootPath
+	}
+	if logLevel, _ := cmd.Flags().GetString("log-level"); logLevel != "" {
+		cfg.Log.Level = logLevel
 	}
 
 	// 3. 验证必填参数
