@@ -38,6 +38,14 @@ type testLogger struct {
 func (l *testLogger) Printf(format string, v ...interface{}) {
 	l.t.Logf(format, v...)
 }
+func (l *testLogger) Debug(args ...interface{})                 {}
+func (l *testLogger) Debugf(format string, v ...interface{})   {}
+func (l *testLogger) Info(args ...interface{})                  {}
+func (l *testLogger) Infof(format string, v ...interface{})    {}
+func (l *testLogger) Warn(args ...interface{})                  {}
+func (l *testLogger) Warnf(format string, v ...interface{})    {}
+func (l *testLogger) Error(args ...interface{})                 {}
+func (l *testLogger) Errorf(format string, v ...interface{})   {}
 
 type perfTestLogger struct {
 	t *testing.T
@@ -49,6 +57,14 @@ func (l *perfTestLogger) Printf(format string, v ...interface{}) {
 	}
 	l.t.Logf(format, v...)
 }
+func (l *perfTestLogger) Debug(args ...interface{})                 {}
+func (l *perfTestLogger) Debugf(format string, v ...interface{})   {}
+func (l *perfTestLogger) Info(args ...interface{})                  {}
+func (l *perfTestLogger) Infof(format string, v ...interface{})    {}
+func (l *perfTestLogger) Warn(args ...interface{})                  {}
+func (l *perfTestLogger) Warnf(format string, v ...interface{})    {}
+func (l *perfTestLogger) Error(args ...interface{})                 {}
+func (l *perfTestLogger) Errorf(format string, v ...interface{})   {}
 
 func writePatternFile(path string, totalSize int64, chunk []byte) error {
 	f, err := os.Create(path)

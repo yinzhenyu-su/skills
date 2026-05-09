@@ -25,7 +25,7 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ro
 	if c != nil {
 		s, err := staging.NewStore(c.StagingDir())
 		if err != nil {
-			driver.Log.Printf("Failed to initialize staging store: %v\n", err)
+			driver.Log.Errorf("Failed to initialize staging store: %v\n", err)
 		} else {
 			stagingStore = s
 		}

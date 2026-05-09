@@ -12,7 +12,7 @@ import (
 
 // Read 读取文件内容
 func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int) {
-	driver.Log.Printf("[FUSE] Read: path=%s, len=%d, offset=%d, fh=%d\n", path, len(buff), ofst, fh)
+	driver.Log.Infof("[FUSE] Read: path=%s, len=%d, offset=%d, fh=%d\n", path, len(buff), ofst, fh)
 	node, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
 		return 0
@@ -179,7 +179,7 @@ func (fs *QryptFS) fetchBatch(n *node, batchIdx uint64) error {
 		pEnd = n.encSize - 1
 	}
 
-	driver.Log.Printf("Batch Fetch: '%s' Blocks %d-%d\n", n.name, startBlock, endBlock)
+	driver.Log.Infof("Batch Fetch: '%s' Blocks %d-%d\n", n.name, startBlock, endBlock)
 
 	rc, err := fs.driver.DownloadChunk(url, pStart, pEnd)
 	if err != nil {

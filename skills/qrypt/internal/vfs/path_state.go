@@ -118,7 +118,7 @@ func (fs *QryptFS) storeNode(path string, n *node) {
 
 			// --- 核心修复：防止自引用循环 ---
 			if n.fid != "" && n.fid == p.fid {
-				driver.Log.Printf("CRITICAL: detected self-reference attempt for path %s (FID %s). Blocking.\n", path, n.fid)
+				driver.Log.Infof("CRITICAL: detected self-reference attempt for path %s (FID %s). Blocking.\n", path, n.fid)
 				p.mu.Unlock()
 				return
 			}
@@ -490,7 +490,7 @@ func (fs *QryptFS) lookupExtended(path string, refresh bool) (*node, int) {
 						return n, 0
 					}
 
-					driver.Log.Printf("lookup: file %s (fid=%s) deleted from server, removing from cache\n", path, fid)
+					driver.Log.Infof("lookup: file %s (fid=%s) deleted from server, removing from cache\n", path, fid)
 					fs.deleteNodePath(path, n)
 					return nil, -fuse.ENOENT
 				}
@@ -564,7 +564,7 @@ func (fs *QryptFS) lookupExtended(path string, refresh bool) (*node, int) {
 
 			decSize, _ := fs.cipher.DecryptedSize(f.Int64Size())
 			modTime := f.ModTime()
-			driver.Log.Printf("[FUSE] lookup: creating node for '%s' (FID='%s') with parentFid='%s'\n", decName, f.Fid, currentFid)
+			driver.Log.Infof("[FUSE] lookup: creating node for '%s' (FID='%s') with parentFid='%s'\n", decName, f.Fid, currentFid)
 			lastCheck := time.Time{}
 			if !f.IsDir() {
 				lastCheck = time.Now()
@@ -618,12 +618,12 @@ func (fs *QryptFS) recoverPendingOps() {
 	}
 	logs, err := db.GetPendingOpsLogs()
 	if err != nil {
-		driver.Log.Printf("recoverPendingOps: failed to get logs: %v\n", err)
+		driver.Log.Errorf("recoverPendingOps: failed to get logs: %v\n", err)
 		return
 	}
 
 	for _, l := range logs {
-		driver.Log.Printf("recoverPendingOps: retrying %s (id=%d) %s -> %s\n", l.OpType, l.ID, l.SourcePath, l.TargetPath)
+		driver.Log.Infof("recoverPendingOps: retrying %s (id=%d) %s -> %s\n", l.OpType, l.ID, l.SourcePath, l.TargetPath)
 		var p opsPayload
 		_ = json.Unmarshal([]byte(l.Payload), &p)
 
@@ -647,15 +647,15 @@ func (fs *QryptFS) recoverPendingOps() {
 		}
 
 		if err == nil {
-			driver.Log.Printf("recoverPendingOps: retry %d (%s) SUCCEEDED\n", l.ID, l.OpType)
+			driver.Log.Infof("recoverPendingOps: retry %d (%s) SUCCEEDED\n", l.ID, l.OpType)
 			_ = db.UpdateOpsLogStatus(l.ID, "DONE")
 		} else {
 			msg := err.Error()
 			if strings.Contains(msg, driver.QuarkErrAlreadyDeleted) || strings.Contains(msg, "404") || strings.Contains(msg, "not found") {
-				driver.Log.Printf("recoverPendingOps: retry %d (%s) SUCCEEDED (already deleted)\n", l.ID, l.OpType)
+				driver.Log.Infof("recoverPendingOps: retry %d (%s) SUCCEEDED (already deleted)\n", l.ID, l.OpType)
 				_ = db.UpdateOpsLogStatus(l.ID, "DONE")
 			} else {
-				driver.Log.Printf("recoverPendingOps: retry %d failed: %v\n", l.ID, err)
+				driver.Log.Errorf("recoverPendingOps: retry %d failed: %v\n", l.ID, err)
 			}
 		}
 	}
@@ -680,13 +680,13 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 	// Skip if this directory (or an ancestor) is being deleted — prevents re-adding children
 	// 同时如果在 Rmdir 保护期内，也直接跳过更新，防止删了又加
 	if fs.isUnderDeletingDir(parentPath) {
-		driver.Log.Printf("MergeRemoteChanges: skipping %s (directory or ancestor being deleted)\n", parentPath)
+		driver.Log.Infof("MergeRemoteChanges: skipping %s (directory or ancestor being deleted)\n", parentPath)
 		return
 	}
 
 	// --- 核心修复：检查父目录本身是否已在删除队列中 ---
 	if _, inDeletion := fs.activeDeletions.Load(parentFid); inDeletion {
-		driver.Log.Printf("MergeRemoteChanges: skipping %s (parent FID %s is tombstoned)\n", parentPath, parentFid)
+		driver.Log.Infof("MergeRemoteChanges: skipping %s (parent FID %s is tombstoned)\n", parentPath, parentFid)
 		return
 	}
 	// ---------------------------------------------
@@ -735,7 +735,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 
 		// 跳过同名文件（夸克网盘允许 xxx 和 xxx(1) 共存，解密后可能重名）
 		if _, exists := remoteMap[decName]; exists {
-			driver.Log.Printf("MergeRemoteChanges: skipping duplicate remote file '%s' (fid=%s) in %s\n", decName, f.Fid, parentPath)
+			driver.Log.Infof("MergeRemoteChanges: skipping duplicate remote file '%s' (fid=%s) in %s\n", decName, f.Fid, parentPath)
 			continue
 		}
 		remoteMap[decName] = f
@@ -792,7 +792,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		if exists && rf.Fid == expectedFid {
 			n.mu.Lock()
 			if n.fid != expectedFid {
-				driver.Log.Printf("MergeRemoteChanges: %s matched expectedFid %s, updating node FID and source\n", entry.path, expectedFid)
+				driver.Log.Infof("MergeRemoteChanges: %s matched expectedFid %s, updating node FID and source\n", entry.path, expectedFid)
 				n.fid = expectedFid
 			}
 			n.source = "remote"
@@ -805,7 +805,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		if !isDirty && (n.source == "local" || n.source == "merged" || (!lastUpload.IsZero() && time.Since(lastUpload) < 30*time.Second)) {
 			// 如果还没在远程列表中确认过，即便列表里没有，也继续保留
 			if !exists {
-				driver.Log.Printf("MergeRemoteChanges: %s (source=%s, lastUpload=%v) not in remote list yet, keeping local node\n", entry.path, n.source, lastUpload)
+				driver.Log.Infof("MergeRemoteChanges: %s (source=%s, lastUpload=%v) not in remote list yet, keeping local node\n", entry.path, n.source, lastUpload)
 				continue
 			}
 			// 如果在列表中看到了，且 FID 一致，说明已索引，转为 remote 状态
@@ -813,7 +813,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 				n.mu.Lock()
 				if n.source != "remote" {
 					n.source = "remote"
-					driver.Log.Printf("MergeRemoteChanges: %s confirmed on server, transitioned to remote source\n", entry.path)
+					driver.Log.Infof("MergeRemoteChanges: %s confirmed on server, transitioned to remote source\n", entry.path)
 				}
 				n.mu.Unlock()
 			}
@@ -822,19 +822,19 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		if !exists {
 			// 远端不存在该文件
 			if isDirty {
-				driver.Log.Printf("MergeRemoteChanges: %s is dirty but not on remote, keeping local\n", entry.path)
+				driver.Log.Infof("MergeRemoteChanges: %s is dirty but not on remote, keeping local\n", entry.path)
 				continue
 			}
 			if n.source == "local" || n.source == "merged" {
 				// 本地新建或冲突合并中的文件，且上面没被 rf.Fid == fid 匹配到（说明 FID 变了或确实没索引）
-				driver.Log.Printf("MergeRemoteChanges: skipping delete for local-owned file %s\n", entry.path)
+				driver.Log.Infof("MergeRemoteChanges: skipping delete for local-owned file %s\n", entry.path)
 				continue
 			}
 			// 未上传过的本地文件（fid 以 local_ 开头），跳过删除
 			// source 字段在部分创建路径（ensureParentDirExists, resolveConflict 等）未设置，
 			// 仅靠 source=="local" 不够可靠，fid 前缀是更直接的判断依据
 			if strings.HasPrefix(fid, "local_") {
-				driver.Log.Printf("MergeRemoteChanges: skipping delete for local_ fid file %s (fid=%s)\n", entry.path, fid)
+				driver.Log.Infof("MergeRemoteChanges: skipping delete for local_ fid file %s (fid=%s)\n", entry.path, fid)
 				continue
 			}
 
@@ -848,7 +848,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		if !strings.HasPrefix(fid, "local_") {
 			if rf.Fid != fid {
 				// FID 变了（可能是删了重建），按更新处理
-				driver.Log.Printf("MergeRemoteChanges: FID changed for %s (%s -> %s)\n", entry.path, fid, rf.Fid)
+				driver.Log.Infof("MergeRemoteChanges: FID changed for %s (%s -> %s)\n", entry.path, fid, rf.Fid)
 			}
 
 			remoteMtime := rf.ModTime().UnixMilli()
@@ -874,10 +874,10 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 					if fs.cache != nil {
 						_ = fs.cache.RemoveChunksByFid(fid)
 					}
-					driver.Log.Printf("MergeRemoteChanges: updated %s from server\n", entry.path)
+					driver.Log.Infof("MergeRemoteChanges: updated %s from server\n", entry.path)
 				} else {
 					// 冲突：双向改
-					driver.Log.Printf("MergeRemoteChanges: CONFLICT (both modified) for %s. Triggering side-by-side rename.\n", entry.path)
+					driver.Log.Infof("MergeRemoteChanges: CONFLICT (both modified) for %s. Triggering side-by-side rename.\n", entry.path)
 					fs.resolveConflict(entry.path, n, rf)
 				}
 			}
@@ -886,19 +886,19 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			// 但如果刚上传过（30s 内），远程文件很可能是我们自己的上传，
 			// 因为 syncFile 在 API 未索引时将 fid 转回了 local_。
 			if !lastUpload.IsZero() && time.Since(lastUpload) < 30*time.Second {
-				driver.Log.Printf("MergeRemoteChanges: skipping conflict for %s (just uploaded %dms ago, remote file likely ours)\n", entry.path, time.Since(lastUpload).Milliseconds())
+				driver.Log.Infof("MergeRemoteChanges: skipping conflict for %s (just uploaded %dms ago, remote file likely ours)\n", entry.path, time.Since(lastUpload).Milliseconds())
 				continue
 			}
-			driver.Log.Printf("MergeRemoteChanges: CONFLICT (local new, remote exists) for %s. Triggering side-by-side rename.\n", entry.path)
+			driver.Log.Infof("MergeRemoteChanges: CONFLICT (local new, remote exists) for %s. Triggering side-by-side rename.\n", entry.path)
 			fs.resolveConflict(entry.path, n, rf)
 		}
 	}
 
 	if syncInProgressCount > 0 {
-		driver.Log.Printf("MergeRemoteChanges: skipped %d files in %s (sync in progress)\n", syncInProgressCount, parentPath)
+		driver.Log.Infof("MergeRemoteChanges: skipped %d files in %s (sync in progress)\n", syncInProgressCount, parentPath)
 	}
 	if remoteDeletedCount > 0 {
-		driver.Log.Printf("MergeRemoteChanges: removed %d local nodes in %s (remote deleted)\n", remoteDeletedCount, parentPath)
+		driver.Log.Infof("MergeRemoteChanges: removed %d local nodes in %s (remote deleted)\n", remoteDeletedCount, parentPath)
 	}
 
 	// 2. 处理远端有但本地没有的新文件
@@ -911,7 +911,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		// 证据驱动的“墓碑”机制：
 		// 如果该 FID 在删除队列中，我们绝对不把它作为“新文件”加回来。
 		if _, inDeletion := fs.activeDeletions.Load(rf.Fid); inDeletion {
-			driver.Log.Printf("MergeRemoteChanges: blocking resurrected zombie file %s (fid=%s)\n", name, rf.Fid)
+			driver.Log.Infof("MergeRemoteChanges: blocking resurrected zombie file %s (fid=%s)\n", name, rf.Fid)
 			continue
 		}
 
@@ -935,7 +935,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		addedCount++
 	}
 	if addedCount > 0 {
-		driver.Log.Printf("MergeRemoteChanges: added %d new remote files to %s\n", addedCount, parentPath)
+		driver.Log.Infof("MergeRemoteChanges: added %d new remote files to %s\n", addedCount, parentPath)
 	}
 
 	// 3. 证据驱动的清理：
@@ -949,7 +949,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 				if state.apiDone {
 					if !remoteFids[fid] {
 						// 证据：API 已调成功 + 远端列表已不包含该 FID = 索引已同步
-						driver.Log.Printf("MergeRemoteChanges: evidence confirmed - FID %s is gone from server list, clearing tombstone and path protection\n", fid)
+						driver.Log.Infof("MergeRemoteChanges: evidence confirmed - FID %s is gone from server list, clearing tombstone and path protection\n", fid)
 						
 						// 同时清除路径保护
 						if state.path != "" {
@@ -1010,7 +1010,7 @@ func (fs *QryptFS) resolveConflict(path string, n *node, rf driver.File) {
 	base := strings.TrimSuffix(path, ext)
 	conflictPath := fmt.Sprintf("%s [Local Conflict %s]%s", base, time.Now().Format("20060102_150405"), ext)
 
-	driver.Log.Printf("resolveConflict: Renaming local %s -> %s\n", path, conflictPath)
+	driver.Log.Infof("resolveConflict: Renaming local %s -> %s\n", path, conflictPath)
 
 	n.mu.Lock()
 	newName := filepath.Base(conflictPath)
@@ -1113,7 +1113,7 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 		startFetch := time.Now()
 		files, err := fs.fetchFiles(parentFid)
 		if err != nil {
-			driver.Log.Printf("[FUSE] Readdir ListFiles failed for %s: %v\n", path, err)
+			driver.Log.Errorf("[FUSE] Readdir ListFiles failed for %s: %v\n", path, err)
 			// 如果获取失败，仍然尝试用本地缓存展示
 		} else {
 			fetchDuration := time.Since(startFetch)
@@ -1122,7 +1122,7 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 			mergeDuration := time.Since(startMerge)
 
 			if fetchDuration > 2*time.Second || mergeDuration > 2*time.Second {
-				driver.Log.Printf("[PERF] Readdir slow path %s: fetch=%v, merge=%v, files=%d\n", path, fetchDuration, mergeDuration, len(files))
+				driver.Log.Infof("[PERF] Readdir slow path %s: fetch=%v, merge=%v, files=%d\n", path, fetchDuration, mergeDuration, len(files))
 			}
 
 			n.mu.Lock()
@@ -1220,7 +1220,7 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 
 // Mkdir 创建文件夹
 func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
-	driver.Log.Printf("[FUSE] Mkdir: path=%s, mode=%o\n", path, mode)
+	driver.Log.Infof("[FUSE] Mkdir: path=%s, mode=%o\n", path, mode)
 	if isFinderTrashPath(path) {
 		return 0
 	}
@@ -1246,13 +1246,13 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 	if err != nil {
 		// --- 核心修复：处理“目录已存在”冲突 ---
 		if strings.Contains(err.Error(), driver.QuarkErrDirAlreadyExists) {
-			driver.Log.Printf("Mkdir: %s already exists on server, attempting to adopt FID\n", path)
+			driver.Log.Infof("Mkdir: %s already exists on server, attempting to adopt FID\n", path)
 			// 尝试找回已存在的 FID
 			if foundFid, findErr := fs.driver.FindChildByName(parentNode.fid, encName); findErr == nil {
 				fid = foundFid
 				// 重要：如果该 FID 正在删除队列中（墓碑），必须立即撤销它
 				if _, inDeletion := fs.activeDeletions.Load(fid); inDeletion {
-					driver.Log.Printf("Mkdir: revoking tombstone for adopted FID %s\n", fid)
+					driver.Log.Infof("Mkdir: revoking tombstone for adopted FID %s\n", fid)
 					fs.activeDeletions.Delete(fid)
 					// 同时清理父目录索引中的记录
 					if val, ok := fs.deletionsByParent.Load(parentNode.fid); ok {
@@ -1326,7 +1326,7 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 
 // Unlink 删除文件
 func (fs *QryptFS) Unlink(path string) (errc int) {
-	driver.Log.Printf("[FUSE] Unlink: path=%s\n", path)
+	driver.Log.Infof("[FUSE] Unlink: path=%s\n", path)
 	if isFinderTrashPath(path) {
 		return 0
 	}
@@ -1395,7 +1395,7 @@ func (fs *QryptFS) isUnderDeletingDir(path string) bool {
 
 // Rmdir 删除文件夹
 func (fs *QryptFS) Rmdir(path string) (errc int) {
-	driver.Log.Printf("[FUSE] Rmdir: path=%s\n", path)
+	driver.Log.Infof("[FUSE] Rmdir: path=%s\n", path)
 	if isFinderTrashPath(path) {
 		return 0
 	}
@@ -1444,7 +1444,7 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 	}
 
 	if !isEmpty {
-		driver.Log.Printf("Rmdir: %s is not empty in memory, returning ENOTEMPTY\n", path)
+		driver.Log.Infof("Rmdir: %s is not empty in memory, returning ENOTEMPTY\n", path)
 		return -fuse.ENOTEMPTY
 	}
 	// ---------------------------------------------
@@ -1497,7 +1497,7 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 
 // Rename 重命名或移动文件
 func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
-	driver.Log.Printf("[FUSE] Rename: oldPath=%s, newPath=%s\n", oldPath, newPath)
+	driver.Log.Infof("[FUSE] Rename: oldPath=%s, newPath=%s\n", oldPath, newPath)
 	oldNode, errc := fs.lookup(oldPath)
 	if errc != 0 {
 		return errc
@@ -1545,7 +1545,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 					break
 				}
 				if strings.Contains(moveErr.Error(), driver.QuarkErrDirAlreadyExists) || strings.Contains(moveErr.Error(), "conflict") {
-					driver.Log.Printf("Rename Move: transient error on attempt %d for %s: %v\n", attempt+1, oldPath, moveErr)
+					driver.Log.Errorf("Rename Move: transient error on attempt %d for %s: %v\n", attempt+1, oldPath, moveErr)
 					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 					fs.driver.RemoveDirCache(newParentNode.fid)
 					continue
@@ -1553,10 +1553,10 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 				break // non-retryable error
 			}
 			if moveErr != nil {
-				driver.Log.Printf("Rename Move failed for %s -> %s: %v\n", oldPath, newPath, moveErr)
+				driver.Log.Errorf("Rename Move failed for %s -> %s: %v\n", oldPath, newPath, moveErr)
 				// 夸克网盘 API 限制：不能移动到子目录
 				if strings.Contains(moveErr.Error(), "23017") || strings.Contains(moveErr.Error(), "subdirs") {
-					driver.Log.Printf("Rename: Quark API does not allow moving files into subdirectories\n")
+					driver.Log.Info("Rename: Quark API does not allow moving files into subdirectories\n")
 				}
 				return -fuse.EIO
 			}
@@ -1589,18 +1589,18 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 					break
 				}
 				if strings.Contains(renameErr.Error(), driver.QuarkErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
-					driver.Log.Printf("Rename: transient error on attempt %d for %s: %v\n", attempt+1, oldPath, renameErr)
+					driver.Log.Errorf("Rename: transient error on attempt %d for %s: %v\n", attempt+1, oldPath, renameErr)
 					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 					continue
 				}
 				break
 			}
 			if renameErr != nil {
-				driver.Log.Printf("Rename failed for %s -> %s: %v\n", oldPath, newPath, renameErr)
+				driver.Log.Errorf("Rename failed for %s -> %s: %v\n", oldPath, newPath, renameErr)
 				return -fuse.EIO
 			}
 		} else {
-			driver.Log.Printf("Rename: skipping Rename API call, name unchanged (%s)\n", newName)
+			driver.Log.Infof("Rename: skipping Rename API call, name unchanged (%s)\n", newName)
 		}
 	}
 

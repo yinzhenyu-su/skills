@@ -59,7 +59,7 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		if parentFid == "" || parentFid == "0" || parentFid == "root" {
 			return nil
 		}
-		driver.Log.Printf("ensureParentDirExists: file at mount root, checking parentFid=%s\n", parentFid)
+		driver.Log.Infof("ensureParentDirExists: file at mount root, checking parentFid=%s\n", parentFid)
 		if fs.dirExistsOnServer(parentFid) {
 			return nil
 		}
@@ -75,7 +75,7 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		mountName := mountRootNode.name
 		mountRootNode.mu.RUnlock()
 
-		driver.Log.Printf("ensureParentDirExists: mount root dir missing on server, name=%q, oldFid=%s\n", mountName, parentFid)
+		driver.Log.Infof("ensureParentDirExists: mount root dir missing on server, name=%q, oldFid=%s\n", mountName, parentFid)
 
 		if mountName == "" {
 			return fmt.Errorf("mount root node has empty name, cannot recreate directory")
@@ -111,7 +111,7 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		fid, err := fs.driver.FindChildByName(currentRemoteParentFid, encName)
 		if err != nil {
 			// Directory missing, create it
-			driver.Log.Printf("ensureParentDirExists: creating missing directory %s under %s\n", level.segName, currentRemoteParentFid)
+			driver.Log.Infof("ensureParentDirExists: creating missing directory %s under %s\n", level.segName, currentRemoteParentFid)
 			newFid, createErr := fs.driver.CreateDir(currentRemoteParentFid, encName)
 			if createErr != nil {
 				if strings.Contains(createErr.Error(), driver.QuarkErrDirAlreadyExists) {
@@ -193,14 +193,14 @@ func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*driver.Fi
 }
 
 func (fs *QryptFS) uploadWorker() {
-	driver.Log.Printf("Upload worker started\n")
-	defer driver.Log.Printf("Upload worker stopped\n")
+	driver.Log.Info("Upload worker started\n")
+	driver.Log.Info("Upload worker stopped\n")
 	for task := range fs.uploadChan {
 		// 保存上传前的路径，用于上传后检测节点是否已被 Unlink 删除
 		savedPath := task.node.currentPath
 		err := fs.syncFile(task.node.currentPath, task.node)
 		if err != nil {
-			driver.Log.Printf("Sync: failed to sync %s: %v\n", task.node.currentPath, err)
+			driver.Log.Errorf("Sync: failed to sync %s: %v\n", task.node.currentPath, err)
 			if task.opsLogID > 0 && fs.cache != nil {
 				if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
 					_ = db.UpdateOpsLogStatus(task.opsLogID, "FAILED")
@@ -221,8 +221,7 @@ func (fs *QryptFS) uploadWorker() {
 				}
 
 				if !stillInTree {
-					driver.Log.Printf("uploadWorker: ghost file detected — node at %s was removed during upload (fid=%s), sending DELETE to clean up server\n",
-						savedPath, newFid)
+					driver.Log.Infof("uploadWorker: ghost file detected — node at %s was removed during upload (fid=%s), sending DELETE to clean up server\n", savedPath, newFid)
 					// 发送 DELETE 任务清理服务器上的幽灵文件
 					// 不需要墓碑（节点已不存在），直接发 metadataOpChan
 					fs.metadataOpChan <- metadataTask{
@@ -248,7 +247,7 @@ func (fs *QryptFS) recoverDirtyFiles() {
 	}
 	nodes, err := fs.cache.GetPendingNodes()
 	if err != nil {
-		driver.Log.Printf("recoverDirtyFiles: failed to get pending nodes: %v\n", err)
+		driver.Log.Errorf("recoverDirtyFiles: failed to get pending nodes: %v\n", err)
 		return
 	}
 
@@ -260,7 +259,7 @@ func (fs *QryptFS) recoverDirtyFiles() {
 			n.syncQueued = true
 			n.mu.Unlock()
 			fs.uploadChan <- syncTask{node: n}
-			driver.Log.Printf("recoverDirtyFiles: queued %s for sync\n", f.Path)
+			driver.Log.Infof("recoverDirtyFiles: queued %s for sync\n", f.Path)
 		}
 	}
 }
@@ -306,7 +305,7 @@ func (fs *QryptFS) opsLogWorker() {
 				}
 				err := db.BatchAddOpsLog(logData)
 				if err != nil {
-					driver.Log.Printf("opsLogWorker: failed to batch add logs: %v\n", err)
+					driver.Log.Errorf("opsLogWorker: failed to batch add logs: %v\n", err)
 				}
 			}
 		}
@@ -314,7 +313,7 @@ func (fs *QryptFS) opsLogWorker() {
 }
 
 func (fs *QryptFS) metadataWorker() {
-	driver.Log.Printf("Metadata worker started\n")
+	driver.Log.Info("Metadata worker started\n")
 	const batchSize = 100
 	const idleTimeout = 200 * time.Millisecond
 
@@ -370,7 +369,7 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 				}
 			}
 			if !stillValid {
-				driver.Log.Printf("Metadata worker: skipping %s for %s (tombstone revoked/recreated)\n", t.opType, t.path)
+				driver.Log.Infof("Metadata worker: skipping %s for %s (tombstone revoked/recreated)\n", t.opType, t.path)
 				continue
 			}
 			// 记录批次中的目录，以便合并子项
@@ -455,7 +454,7 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 				err = nil
 				break
 			}
-			driver.Log.Printf("Metadata worker: batch delete failed (attempt %d/3): %v\n", attempt+1, err)
+			driver.Log.Errorf("Metadata worker: batch delete failed (attempt %d/3): %v\n", attempt+1, err)
 			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 		} else {
 			break
@@ -495,15 +494,15 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 			}
 		}
 
-		driver.Log.Printf("Metadata worker: processed batch of %d %s tasks\n", len(validTasks), tasks[0].opType)
+		driver.Log.Infof("Metadata worker: processed batch of %d %s tasks\n", len(validTasks), tasks[0].opType)
 	} else {
-		driver.Log.Printf("Metadata worker: batch FAILED after retries\n")
+		driver.Log.Error("Metadata worker: batch FAILED after retries\n")
 	}
 }
 
 func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	if fs.isUnderDeletingDir(path) {
-		driver.Log.Printf("syncFile: aborting sync for %s (being deleted)\n", path)
+		driver.Log.Infof("syncFile: aborting sync for %s (being deleted)\n", path)
 		n.mu.Lock()
 		n.syncQueued = false
 		n.mu.Unlock()
@@ -518,7 +517,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	currentPath := n.currentPath
 	n.mu.RUnlock()
 	if currentPath == "" || currentPath != path {
-		driver.Log.Printf("syncFile: aborting sync for %s (node detached or path changed)\n", path)
+		driver.Log.Infof("syncFile: aborting sync for %s (node detached or path changed)\n", path)
 		n.mu.Lock()
 		n.syncQueued = false
 		n.mu.Unlock()
@@ -535,7 +534,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		n.mu.Unlock()
 
 		if isStillDirty && err == nil {
-			driver.Log.Printf("syncFile: %s still dirty after sync, re-enqueuing...\n", path)
+			driver.Log.Infof("syncFile: %s still dirty after sync, re-enqueuing...\n", path)
 			fs.enqueueSync(n)
 		}
 	}()
@@ -551,7 +550,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	if n.localPath != "" && fs.staging != nil {
 		if actualSize, err := fs.staging.FileSize(n.localPath); err == nil {
 			if actualSize > 0 && n.size != actualSize {
-				driver.Log.Printf("syncFile: refreshing size for %s from staging (%d -> %d)\n", path, n.size, actualSize)
+				driver.Log.Infof("syncFile: refreshing size for %s from staging (%d -> %d)\n", path, n.size, actualSize)
 				n.size = actualSize
 			}
 		}
@@ -575,8 +574,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 			stagingFileSize = sz
 		}
 	}
-	driver.Log.Printf("syncFile [DEBUG] path=%s snapshotSize=%d stagingFileSize=%d fid=%s parentFid=%s localPath=%s\n",
-		path, snapshotSize, stagingFileSize, fid, parentFid, localPath)
+	driver.Log.Debugf("syncFile path=%s snapshotSize=%d stagingFileSize=%d fid=%s parentFid=%s localPath=%s\n", path, snapshotSize, stagingFileSize, fid, parentFid, localPath)
 
 	// Guard: skip re-sync if this file was just uploaded (< 10s ago) and has a real server FID.
 	if !strings.HasPrefix(fid, "local_") && !lastUpload.IsZero() && time.Since(lastUpload) < 10*time.Second {
@@ -594,7 +592,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 				}
 				decName, _ := fs.cipher.DecryptSegment(f.FileName)
 				if decName == snapshotName {
-					driver.Log.Printf("Sync: CONFLICT (same name, different FID) for %s (current=%s, remote=%s). Resolving...\n", path, fid, f.Fid)
+					driver.Log.Infof("Sync: CONFLICT (same name, different FID) for %s (current=%s, remote=%s). Resolving...\n", path, fid, f.Fid)
 					fs.resolveConflict(path, n, f)
 					return nil
 				}
@@ -620,16 +618,16 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 					}
 				}
 				if foundRf != nil {
-					driver.Log.Printf("Sync: CONFLICT (FID gone but name exists) for %s. Resolving...\n", path)
+					driver.Log.Infof("Sync: CONFLICT (FID gone but name exists) for %s. Resolving...\n", path)
 					fs.resolveConflict(path, n, *foundRf)
 					return nil
 				}
 			}
-			driver.Log.Printf("Sync: FID %s gone from server, restarting as new file\n", fid)
+			driver.Log.Infof("Sync: FID %s gone from server, restarting as new file\n", fid)
 			fid = "local_" + n.name
 		} else {
 			if rf.ModTime().UnixMilli() > baseMtime {
-				driver.Log.Printf("Sync: CONFLICT (server mtime %d > base %d) for %s. Resolving...\n", rf.ModTime().UnixMilli(), baseMtime, path)
+				driver.Log.Infof("Sync: CONFLICT (server mtime %d > base %d) for %s. Resolving...\n", rf.ModTime().UnixMilli(), baseMtime, path)
 				fs.resolveConflict(path, n, *rf)
 				return nil
 			}
@@ -658,14 +656,14 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 
 	// [DEBUG] Sync 结果，用于排查 (1) 重名问题
 	if err != nil {
-		driver.Log.Printf("syncFile [DEBUG] Sync FAILED for %s: %v\n", path, err)
+		driver.Log.Debugf("syncFile Sync FAILED for %s: %v\n", path, err)
 	} else {
-		driver.Log.Printf("syncFile [DEBUG] Sync OK for %s: resultFid=%s encSize=%d\n", path, result.Fid, result.EncryptedSize)
+		driver.Log.Debugf("syncFile Sync OK for %s: resultFid=%s encSize=%d\n", path, result.Fid, result.EncryptedSize)
 	}
 
 	if err != nil {
 		if errors.Is(err, errDirGone) {
-			driver.Log.Printf("Sync: parent directory %s gone, will retry recreation\n", parentFid)
+			driver.Log.Infof("Sync: parent directory %s gone, will retry recreation\n", parentFid)
 			if v, ok := fs.nodes.Load(filepath.Dir(path)); ok {
 				pn := v.(*node)
 				pn.mu.RLock()

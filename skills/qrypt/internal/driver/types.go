@@ -8,6 +8,14 @@ import (
 
 type Logger interface {
 	Printf(format string, v ...interface{})
+	Debug(args ...interface{})
+	Debugf(format string, v ...interface{})
+	Info(args ...interface{})
+	Infof(format string, v ...interface{})
+	Warn(args ...interface{})
+	Warnf(format string, v ...interface{})
+	Error(args ...interface{})
+	Errorf(format string, v ...interface{})
 }
 
 type StdLogger struct{}
@@ -15,6 +23,14 @@ type StdLogger struct{}
 func (l *StdLogger) Printf(format string, v ...interface{}) {
 	fmt.Printf(format, v...)
 }
+func (l *StdLogger) Debug(args ...interface{})                 { fmt.Print(args...) }
+func (l *StdLogger) Debugf(format string, v ...interface{})   { fmt.Printf(format, v...) }
+func (l *StdLogger) Info(args ...interface{})                  { fmt.Print(args...) }
+func (l *StdLogger) Infof(format string, v ...interface{})    { fmt.Printf(format, v...) }
+func (l *StdLogger) Warn(args ...interface{})                  { fmt.Print(args...) }
+func (l *StdLogger) Warnf(format string, v ...interface{})    { fmt.Printf(format, v...) }
+func (l *StdLogger) Error(args ...interface{})                 { fmt.Print(args...) }
+func (l *StdLogger) Errorf(format string, v ...interface{})   { fmt.Printf(format, v...) }
 
 var Log Logger = &StdLogger{}
 

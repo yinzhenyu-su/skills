@@ -108,16 +108,32 @@ func (l *LevelLogger) Printf(format string, v ...interface{}) {
 	l.logf(level, format, v...)
 }
 
+func (l *LevelLogger) Debug(args ...interface{}) {
+	l.logf(LogLevelDebug, "%s", fmt.Sprint(args...))
+}
+
 func (l *LevelLogger) Debugf(format string, v ...interface{}) {
 	l.logf(LogLevelDebug, format, v...)
+}
+
+func (l *LevelLogger) Info(args ...interface{}) {
+	l.logf(LogLevelInfo, "%s", fmt.Sprint(args...))
 }
 
 func (l *LevelLogger) Infof(format string, v ...interface{}) {
 	l.logf(LogLevelInfo, format, v...)
 }
 
+func (l *LevelLogger) Warn(args ...interface{}) {
+	l.logf(LogLevelWarn, "%s", fmt.Sprint(args...))
+}
+
 func (l *LevelLogger) Warnf(format string, v ...interface{}) {
 	l.logf(LogLevelWarn, format, v...)
+}
+
+func (l *LevelLogger) Error(args ...interface{}) {
+	l.logf(LogLevelError, "%s", fmt.Sprint(args...))
 }
 
 func (l *LevelLogger) Errorf(format string, v ...interface{}) {

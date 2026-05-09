@@ -13,7 +13,7 @@ import (
 
 // Create 创建新文件
 func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uint64) {
-	driver.Log.Printf("[FUSE] Create: path=%s, flags=%d, mode=%o\n", path, flags, mode)
+	driver.Log.Infof("[FUSE] Create: path=%s, flags=%d, mode=%o\n", path, flags, mode)
 	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
 		return -fuse.ENOENT, 0
 	}
@@ -56,7 +56,7 @@ func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uin
 	fs.driver.ClearNegativeCache(parentNode.fid, name)
 	n.mu.Lock()
 	if err := fs.maybeSavePendingNodeLocked(path, n, true); err != nil {
-		driver.Log.Printf("Warning: failed to save pending node after Create for %s: %v\n", path, err)
+		driver.Log.Warnf("Warning: failed to save pending node after Create for %s: %v\n", path, err)
 	}
 	n.mu.Unlock()
 	return 0, uint64(uintptr(unsafe.Pointer(n)))
@@ -70,7 +70,7 @@ func (fs *QryptFS) Mknod(path string, mode uint32, dev uint64) (errc int) {
 
 // Write 写入文件内容
 func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int) {
-	driver.Log.Printf("[FUSE] Write: path=%s, len=%d, offset=%d, fh=%d\n", path, len(buff), ofst, fh)
+	driver.Log.Infof("[FUSE] Write: path=%s, len=%d, offset=%d, fh=%d\n", path, len(buff), ofst, fh)
 	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
 		return 0
 	}
@@ -94,7 +94,7 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 		newFid := "local_" + node.name + "_" + fmt.Sprint(time.Now().UnixNano())
 		localPath, err := fs.staging.Create(newFid)
 		if err != nil {
-			driver.Log.Printf("Warning: failed to create staging file for Write on %s: %v\n", path, err)
+			driver.Log.Warnf("Warning: failed to create staging file for Write on %s: %v\n", path, err)
 			node.mu.Unlock()
 			return 0
 		}
@@ -113,7 +113,7 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 	}
 
 	if err := fs.maybeSavePendingNodeLocked(path, node, false); err != nil {
-		driver.Log.Printf("Warning: failed to save pending node after Write for %s: %v\n", path, err)
+		driver.Log.Warnf("Warning: failed to save pending node after Write for %s: %v\n", path, err)
 	}
 
 	// 不在此处触发 sync —— 等 Release（文件关闭）时再一次性上传。
@@ -156,7 +156,7 @@ func (fs *QryptFS) Truncate(path string, size int64, fh uint64) (errc int) {
 		return -fuse.EIO
 	}
 	if err := fs.maybeSavePendingNodeLocked(path, n, true); err != nil {
-		driver.Log.Printf("Warning: failed to save pending node after Truncate for %s: %v\n", path, err)
+		driver.Log.Warnf("Warning: failed to save pending node after Truncate for %s: %v\n", path, err)
 	}
 	return 0
 }

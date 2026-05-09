@@ -81,23 +81,21 @@ func (m *Manager) deleteExistingFileByName(parentFid, plainName string) error {
 	// Recover from panics (e.g., mock drivers in tests may not implement ListFiles fully)
 	defer func() {
 		if r := recover(); r != nil {
-			driver.Log.Printf("deleteExistingFileByName: recovered from panic: %v\n", r)
+			driver.Log.Infof("deleteExistingFileByName: recovered from panic: %v\n", r)
 		}
 	}()
 
 	files, err := m.driver.ListFiles(parentFid)
 	if err != nil {
-		driver.Log.Printf("deleteExistingFileByName: warning: failed to list files in parent %s: %v\n", parentFid, err)
+		driver.Log.Warnf("deleteExistingFileByName: warning: failed to list files in parent %s: %v\n", parentFid, err)
 		return nil
 	}
 
 	// [DEBUG] 打印所有文件，用于排查 (1) 重名问题
-	driver.Log.Printf("deleteExistingFileByName: ListFiles returned %d files in parent %s, looking for plainName=%s\n",
-		len(files), parentFid, plainName)
+	driver.Log.Infof("deleteExistingFileByName: ListFiles returned %d files in parent %s, looking for plainName=%s\n", len(files), parentFid, plainName)
 	for _, f := range files {
 		decName, decErr := m.cipher.DecryptSegment(f.FileName)
-		driver.Log.Printf("deleteExistingFileByName:   fid=%s enc=%s dec=%s size=%d decErr=%v\n",
-			f.Fid, f.FileName, decName, f.Int64Size(), decErr)
+		driver.Log.Infof("deleteExistingFileByName:   fid=%s enc=%s dec=%s size=%d decErr=%v\n", f.Fid, f.FileName, decName, f.Int64Size(), decErr)
 	}
 
 	for _, f := range files {
@@ -106,9 +104,9 @@ func (m *Manager) deleteExistingFileByName(parentFid, plainName string) error {
 			continue
 		}
 		if decName == plainName {
-			driver.Log.Printf("deleteExistingFileByName: found existing file %s (fid=%s), deleting before re-upload\n", decName, f.Fid)
+			driver.Log.Infof("deleteExistingFileByName: found existing file %s (fid=%s), deleting before re-upload\n", decName, f.Fid)
 			if err := m.driver.Delete([]string{f.Fid}); err != nil {
-				driver.Log.Printf("deleteExistingFileByName: warning: failed to delete existing file: %v\n", err)
+				driver.Log.Warnf("deleteExistingFileByName: warning: failed to delete existing file: %v\n", err)
 				return nil
 			}
 			// Invalidate cache ONLY after a successful deletion
@@ -139,19 +137,19 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	// 如果有 OldFid（上次上传的 FID），直接用 FID 删除，绕过 ListFiles 索引延迟。
 	// 如果没有 OldFid（首次上传），退化为按名删除。
 	if req.OldFid != "" {
-		driver.Log.Printf("Sync [DEBUG] deleting old file by FID %s (replacing %s in parent %s)\n", req.OldFid, req.Name, req.ParentFid)
+		driver.Log.Debugf("Sync deleting old file by FID %s (replacing %s in parent %s)\n", req.OldFid, req.Name, req.ParentFid)
 		if err := m.driver.Delete([]string{req.OldFid}); err != nil {
-			driver.Log.Printf("Sync: warning: FID delete failed for %s, falling back to name-based delete: %v\n", req.OldFid, err)
+			driver.Log.Warnf("Sync: warning: FID delete failed for %s, falling back to name-based delete: %v\n", req.OldFid, err)
 			if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
-				driver.Log.Printf("Sync: warning: name-based delete also failed for %s in parent %s: %v\n", req.Name, req.ParentFid, err)
+				driver.Log.Warnf("Sync: warning: name-based delete also failed for %s in parent %s: %v\n", req.Name, req.ParentFid, err)
 			}
 		} else {
 			m.driver.RemoveDirCache(req.ParentFid)
 		}
 	} else {
-		driver.Log.Printf("Sync [DEBUG] no OldFid, falling back to deleteExistingFileByName for %s in parent %s\n", req.Name, req.ParentFid)
+		driver.Log.Debugf("Sync no OldFid, falling back to deleteExistingFileByName for %s in parent %s\n", req.Name, req.ParentFid)
 		if err := m.deleteExistingFileByName(req.ParentFid, req.Name); err != nil {
-			driver.Log.Printf("Sync: warning: pre-delete failed for %s in parent %s: %v\n", req.Name, req.ParentFid, err)
+			driver.Log.Warnf("Sync: warning: pre-delete failed for %s in parent %s: %v\n", req.Name, req.ParentFid, err)
 		}
 	}
 
@@ -163,8 +161,7 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	}
 
 	// [DEBUG] UploadPre 结果，用于排查 (1) 重名问题
-	driver.Log.Printf("Sync [DEBUG] UploadPre result for %s: finish=%v fid=%s encName=%s plainSize=%d encSize=%d\n",
-		req.Name, pre.Data.Finish, pre.Data.Fid, encName, req.PlainSize, encSize)
+	driver.Log.Debugf("Sync UploadPre result for %s: finish=%v fid=%s encName=%s plainSize=%d encSize=%d\n", req.Name, pre.Data.Finish, pre.Data.Fid, encName, req.PlainSize, encSize)
 
 	// If UploadPre returned finish=true (dedup), verify the dedup file has the
 	// correct name. If not, it's a hash collision or stale dedup — delete the
@@ -173,7 +170,7 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 		if m.verifyFileName(pre.Data.Fid, req.ParentFid, req.Name) {
 			break // Dedup file has correct name — accept it
 		}
-		driver.Log.Printf("Sync: dedup fid=%s has wrong name, deleting old file and re-creating upload for %s (attempt %d)\n", pre.Data.Fid, req.Name, i+1)
+		driver.Log.Infof("Sync: dedup fid=%s has wrong name, deleting old file and re-creating upload for %s (attempt %d)\n", pre.Data.Fid, req.Name, i+1)
 		// Clean up the placeholder created by UploadPre
 		m.driver.UploadFinish(pre)
 		// Delete the old file with same plaintext name
@@ -191,9 +188,9 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 			return result, fmt.Errorf("dedup returned wrong file after retries: fid=%s for %s", pre.Data.Fid, req.Name)
 		}
 		// Dedup verified: file with correct hash and name already exists
-		driver.Log.Printf("Sync: dedup OK for %s (fid=%s)\n", req.Name, pre.Data.Fid)
+		driver.Log.Infof("Sync: dedup OK for %s (fid=%s)\n", req.Name, pre.Data.Fid)
 		if err := m.driver.UploadFinish(pre); err != nil {
-			driver.Log.Printf("Sync: UploadFinish after dedup failed for %s: %v\n", req.Path, err)
+			driver.Log.Errorf("Sync: UploadFinish after dedup failed for %s: %v\n", req.Path, err)
 		}
 		result.Fid = pre.Data.Fid
 		return result, nil

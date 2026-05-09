@@ -23,7 +23,15 @@ const mockUploadBlocksPerPart = 128
 
 type silentLogger struct{}
 
-func (silentLogger) Printf(string, ...interface{}) {}
+func (silentLogger) Printf(string, ...interface{})                      {}
+func (silentLogger) Debug(args ...interface{})                          {}
+func (silentLogger) Debugf(format string, v ...interface{})             {}
+func (silentLogger) Info(args ...interface{})                           {}
+func (silentLogger) Infof(format string, v ...interface{})              {}
+func (silentLogger) Warn(args ...interface{})                           {}
+func (silentLogger) Warnf(format string, v ...interface{})              {}
+func (silentLogger) Error(args ...interface{})                          {}
+func (silentLogger) Errorf(format string, v ...interface{})             {}
 
 type mockUploadTransport struct {
 	bandwidthBytesPerSec int64
