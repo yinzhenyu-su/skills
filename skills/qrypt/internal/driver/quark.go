@@ -71,6 +71,7 @@ func newHTTPClient() *http.Client {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
 	return &http.Client{
@@ -171,7 +172,10 @@ func (d *QuarkDriver) requestWithBase(method, baseURL, path string, query map[st
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	// 自动更新 Cookie (__puus)
 	for _, c := range resp.Cookies() {
@@ -369,7 +373,10 @@ func (d *QuarkDriver) UploadPart(pre *UpPreResp, partNumber int, data []byte) (s
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -469,7 +476,10 @@ func (d *QuarkDriver) UploadCommit(pre *UpPreResp, etags []string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
