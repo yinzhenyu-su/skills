@@ -557,30 +557,6 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		}
 	}
 
-	// macOS FUSE 防护：Release 可能在 Write 之前到达
-	// 释放锁 → sleep 100ms → 重新获取锁，让 Write 有机会写入 staging
-	// 如果 100ms 后 staging 有数据 → Write 发生了（macOS FUSE），跳过本次上传
-	// 如果 100ms 后 staging 仍为空 → 真正的空文件，正常上传 0 字节
-	// 注意：必须释放锁再 sleep，否则 Write 被 node.mu 阻塞无法写 staging
-	if n.size == 0 && n.localPath != "" && fs.staging != nil {
-		n.mu.Unlock()
-		time.Sleep(100 * time.Millisecond)
-		n.mu.Lock()
-
-		// 重新验证节点状态（锁释放期间可能被修改）
-		if !n.isDirty {
-			n.mu.Unlock()
-			return nil
-		}
-		if actualSize, err := fs.staging.FileSize(n.localPath); err == nil && actualSize > 0 {
-			driver.Log.Printf("syncFile: skipping %s (size=0, staging grew to %d during wait — Write arrived)\n", path, actualSize)
-			n.size = actualSize
-			n.mu.Unlock()
-			return nil // defer 检测 isStillDirty=true → re-enqueue → 第二次 sync 上传真实数据
-		}
-		// staging 仍空 → 真正的空文件，继续上传 0 字节
-	}
-
 	snapshotSize := n.size
 	snapshotName := n.name
 	snapshotMtime := n.mtime
@@ -800,6 +776,13 @@ func (fs *QryptFS) cleanupLocalUploadState(path string, n *node, recursive bool)
 }
 
 func (fs *QryptFS) enqueueSync(n *node) {
+	fs.enqueueSyncDelay(n, 0)
+}
+
+// enqueueSyncDelay 带延迟的入队。delay>0 时通过 goroutine 延迟投递，
+// 给 macOS FUSE Release-before-Write 场景留出 Write 写入 staging 的时间。
+// defer re-enqueue 调用时 delay=0（立即投递）。
+func (fs *QryptFS) enqueueSyncDelay(n *node, delay time.Duration) {
 	n.mu.RLock()
 	// 核心修复：即使 isDirty 为 false，如果 FID 还是 local_（代表新创建且从未同步），也允许排队
 	isNewLocal := strings.HasPrefix(n.fid, "local_")
@@ -816,5 +799,13 @@ func (fs *QryptFS) enqueueSync(n *node) {
 	}
 	n.syncQueued = true
 	n.mu.Unlock()
-	fs.uploadChan <- syncTask{node: n}
+
+	if delay > 0 {
+		go func() {
+			time.Sleep(delay)
+			fs.uploadChan <- syncTask{node: n}
+		}()
+	} else {
+		fs.uploadChan <- syncTask{node: n}
+	}
 }

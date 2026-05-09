@@ -252,7 +252,7 @@ func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 	node.mu.RUnlock()
 
 	if dirty {
-		fs.enqueueSync(node)
+		fs.enqueueSyncDelay(node, 200*time.Millisecond)
 	}
 	return 0
 }
