@@ -32,8 +32,8 @@ const (
 )
 
 var (
-	// MetadataTTL 定义了元数据缓存的有效期 (60s)
-	MetadataTTL = 60 * time.Second
+	// MetadataTTL 定义了元数据缓存的有效期 (15s)
+	MetadataTTL = 15 * time.Second
 )
 
 var (

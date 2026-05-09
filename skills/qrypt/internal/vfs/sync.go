@@ -260,6 +260,54 @@ func (fs *QryptFS) recoverDirtyFiles() {
 	for _, f := range nodes {
 		n, errc := fs.lookupExtended(f.Path, true)
 		if errc != 0 {
+			// lookupExtended 失败时的兜底处理：
+
+			// Case 1: 已有真实 FID 且 staging 不存在 → 已上传成功，清理残留 DB 记录
+			if !strings.HasPrefix(f.Fid, "local_") && f.LocalPath == "" {
+				_ = fs.cache.RemovePendingNode(f.Path)
+				driver.Log.Infof("recoverDirtyFiles: cleaned up stale record %s (already uploaded, fid=%s)\n", f.Path, f.Fid)
+				continue
+			}
+
+			// Case 2: local_ FID → 从未上传，尝试从 DB 重建节点树并重新入队
+			if strings.HasPrefix(f.Fid, "local_") {
+				parentPath := filepath.Dir(f.Path)
+				_, parentErr := fs.lookupExtended(parentPath, true)
+				if parentErr != 0 {
+					driver.Log.Warnf("recoverDirtyFiles: cannot rebuild %s, parent %s not found on server\n", f.Path, parentPath)
+					continue
+				}
+
+				// 从 DB 记录重建节点
+				newNode := &node{
+					fid:               f.Fid,
+					parentFid:         f.ParentFid,
+					name:              f.Name,
+					currentPath:       f.Path,
+					size:              f.Size,
+					isFolder:          f.IsFolder,
+					isDirty:           true,
+					localPath:         f.LocalPath,
+					source:            "local",
+					lastMetadataCheck: time.Now(),
+					baseServerMtime:   f.BaseServerMtime,
+					baseServerSize:    f.BaseServerSize,
+				}
+				if len(f.Nonce) == 24 {
+					copy(newNode.fileNonce[:], f.Nonce)
+					newNode.hasNonce = true
+				}
+				fs.storeNode(f.Path, newNode)
+				newNode.mu.Lock()
+				newNode.syncQueued = true
+				newNode.mu.Unlock()
+				fs.uploadChan <- syncTask{node: newNode}
+				driver.Log.Infof("recoverDirtyFiles: rebuilt node and queued %s for sync (from DB, fid=%s)\n", f.Path, f.Fid)
+				continue
+			}
+
+			// Case 3: 未匹配以上规则的记录 → 日志警告，跳过
+			driver.Log.Warnf("recoverDirtyFiles: ambiguous state for %s (fid=%s, localPath=%s), skipping\n", f.Path, f.Fid, f.LocalPath)
 			continue
 		}
 
@@ -733,11 +781,18 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	n.baseServerSize = n.size
 	n.lastMetadataCheck = time.Now()
 	n.lastUploadTime = time.Now()
-	currentPath = n.currentPath
 	localPath = n.localPath
-	clearPending := !n.isDirty
-	if clearPending {
-		n.localPath = ""
+	// 锁内清理 DB + staging，缩小崩溃窗口
+	// isDirty=false 与 DB 清理在同一锁内完成——要么同时生效，要么都不生效
+	if fs.cache != nil {
+		_ = fs.cache.RemovePendingNode(path)
+		if n.currentPath != "" && n.currentPath != path {
+			_ = fs.cache.RemovePendingNode(n.currentPath)
+		}
+	}
+	n.localPath = ""
+	if fs.staging != nil && localPath != "" {
+		_ = fs.staging.Remove(localPath)
 	}
 	newFid := n.fid
 	n.mu.Unlock()
@@ -748,16 +803,6 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	}
 	if newFid != "" && !strings.HasPrefix(newFid, "local_") {
 		fs.fidNodes.Store(newFid, n)
-	}
-
-	if fs.cache != nil && clearPending {
-		_ = fs.cache.RemovePendingNode(path)
-		if currentPath != "" && currentPath != path {
-			_ = fs.cache.RemovePendingNode(currentPath)
-		}
-	}
-	if clearPending && fs.staging != nil {
-		_ = fs.staging.Remove(localPath)
 	}
 
 	return nil
