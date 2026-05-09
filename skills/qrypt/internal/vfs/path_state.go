@@ -874,6 +874,10 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 					driver.Log.Infof("MergeRemoteChanges: CONFLICT (both modified) for %s. Triggering side-by-side rename.\n", entry.path)
 					fs.resolveConflict(entry.path, n, rf)
 				}
+			} else if isDirty {
+				// source 不是 "remote"（如 "local"/"merged"），但本地有未上传修改且远端同名 → 冲突
+				driver.Log.Infof("MergeRemoteChanges: CONFLICT (local dirty, remote exists) for %s. Triggering side-by-side rename.\n", entry.path)
+				fs.resolveConflict(entry.path, n, rf)
 			}
 		} else {
 			// 本地是 local_，但远端出现了同名文件（可能是别人上传了同名文件）
