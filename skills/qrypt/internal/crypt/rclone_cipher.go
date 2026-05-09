@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/rfjakob/eme"
@@ -25,6 +26,9 @@ const (
 
 var defaultSalt = []byte{0xA8, 0x0D, 0xF4, 0x3A, 0x8F, 0xBD, 0x03, 0x08, 0xA7, 0xCA, 0xB8, 0x3E, 0x58, 0x1F, 0x86, 0xB1}
 var rcloneBase32 = base32.HexEncoding.WithPadding(base32.NoPadding)
+
+// conflictSuffixRe 匹配 Quark Drive 等网盘追加的 (N) 冲突后缀
+var conflictSuffixRe = regexp.MustCompile(`^(.*?)\s*\(\d+\)$`)
 
 type RcloneCipher struct {
 	dataKey   [32]byte
@@ -122,8 +126,24 @@ func (c *RcloneCipher) EncryptSegment(plaintext string) string {
 	return strings.ToLower(encoded)
 }
 
-// DecryptSegment 解密单个路径段
+// DecryptSegment 解密单个路径段，自动处理 (N) 冲突后缀
 func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
+	plain, err := c.decryptSegment(encrypted)
+	if err == nil {
+		return plain, nil
+	}
+
+	// 解密失败 → 尝试剥离 (N) / (N) 冲突后缀后重试
+	cleaned := stripConflictSuffix(encrypted)
+	if cleaned != encrypted {
+		return c.decryptSegment(cleaned)
+	}
+
+	return "", err
+}
+
+// decryptSegment 实际解密逻辑
+func (c *RcloneCipher) decryptSegment(encrypted string) (string, error) {
 	if encrypted == "" {
 		return "", nil
 	}
@@ -180,4 +200,18 @@ func (c *RcloneCipher) DecryptedSize(size int64) (int64, error) {
 		decSize += residue
 	}
 	return decSize, nil
+}
+
+// stripConflictSuffix 剥离 (N) /  (N) 等网盘冲突后缀，返回清理后的文件名
+func stripConflictSuffix(name string) string {
+	matches := conflictSuffixRe.FindStringSubmatch(name)
+	if len(matches) == 2 {
+		return matches[1]
+	}
+	return name
+}
+
+// HasConflictSuffix 检查文件名是否带有 (N) 冲突后缀
+func HasConflictSuffix(name string) bool {
+	return conflictSuffixRe.MatchString(name)
 }

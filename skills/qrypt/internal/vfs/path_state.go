@@ -736,6 +736,9 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		// 跳过同名文件（夸克网盘允许 xxx 和 xxx(1) 共存，解密后可能重名）
 		if _, exists := remoteMap[decName]; exists {
 			driver.Log.Infof("MergeRemoteChanges: skipping duplicate remote file '%s' (fid=%s) in %s\n", decName, f.Fid, parentPath)
+			if strings.Contains(f.FileName, "(") && strings.HasSuffix(f.FileName, ")") {
+				driver.Log.Warnf("MergeRemoteChanges: conflict copy detected — '%s' (fid=%s) is a duplicate of same-name file (decrypted=%s)\n", f.FileName, f.Fid, decName)
+			}
 			continue
 		}
 		remoteMap[decName] = f

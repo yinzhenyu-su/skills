@@ -98,21 +98,33 @@ func (m *Manager) deleteExistingFileByName(parentFid, plainName string) error {
 		driver.Log.Infof("deleteExistingFileByName:   fid=%s enc=%s dec=%s size=%d decErr=%v\n", f.Fid, f.FileName, decName, f.Int64Size(), decErr)
 	}
 
+	var deletedCount int
 	for _, f := range files {
 		decName, decErr := m.cipher.DecryptSegment(f.FileName)
 		if decErr != nil {
+			// 解密失败（不是有效加密文件名）→ 跳过
+			if crypt.HasConflictSuffix(f.FileName) {
+				driver.Log.Warnf("deleteExistingFileByName: skipping unencrypted file %s (fid=%s) — not an encrypted name\n", f.FileName, f.Fid)
+			}
 			continue
 		}
 		if decName == plainName {
+			if crypt.HasConflictSuffix(f.FileName) {
+				driver.Log.Warnf("deleteExistingFileByName: cleaning up conflict file %s (fid=%s, dec=%s)\n", f.FileName, f.Fid, decName)
+			}
 			driver.Log.Infof("deleteExistingFileByName: found existing file %s (fid=%s), deleting before re-upload\n", decName, f.Fid)
 			if err := m.driver.Delete([]string{f.Fid}); err != nil {
 				driver.Log.Warnf("deleteExistingFileByName: warning: failed to delete existing file: %v\n", err)
-				return nil
+				continue
 			}
-			// Invalidate cache ONLY after a successful deletion
-			m.driver.RemoveDirCache(parentFid)
-			return nil
+			deletedCount++
 		}
+	}
+	if deletedCount > 0 {
+		m.driver.RemoveDirCache(parentFid)
+	}
+	if deletedCount > 1 {
+		driver.Log.Warnf("deleteExistingFileByName: deleted %d files with plainName=%s (included conflict copies)\n", deletedCount, plainName)
 	}
 	return nil
 }
