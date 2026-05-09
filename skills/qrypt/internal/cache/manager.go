@@ -331,17 +331,28 @@ func (m *CacheManager) CleanupStagingMetas(abandonedMaxAge time.Duration) error 
 	return m.DB.CleanupStagingMetas(abandonedMaxAge, orphanFids)
 }
 
+// maintenanceInterval 后台维护循环间隔
+const maintenanceInterval = 10 * time.Minute
+
 func (m *CacheManager) Maintenance() error {
-	if err := m.CleanupStagingMetas(24 * time.Hour); err != nil {
-		fmt.Printf("CleanupStagingMetas failed: %v\n", err)
-	}
+	// 1. 如果缓存超过上限，驱逐最久未访问的分块
+	_ = m.EvictIfNeeded(m.maxSize * 7 / 10)
+
+	// 2. 清理过期 staging 元数据
+	_ = m.CleanupStagingMetas(24 * time.Hour)
+
+	// 3. 清理 30 天未访问的分块 + VACUUM
 	return m.DB.Maintenance()
 }
 
 func (m *CacheManager) MaintenanceStart() {
 	go func() {
-		if err := m.Maintenance(); err != nil {
-			fmt.Printf("Background maintenance failed: %v\n", err)
+		// 启动后先跑一次
+		m.Maintenance()
+		ticker := time.NewTicker(maintenanceInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			m.Maintenance()
 		}
 	}()
 }
