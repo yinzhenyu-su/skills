@@ -558,17 +558,27 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	}
 
 	// macOS FUSE 防护：Release 可能在 Write 之前到达
-	// 当 size=0 且 staging 为空时，等待 100ms 让 Write 完成
+	// 释放锁 → sleep 100ms → 重新获取锁，让 Write 有机会写入 staging
 	// 如果 100ms 后 staging 有数据 → Write 发生了（macOS FUSE），跳过本次上传
 	// 如果 100ms 后 staging 仍为空 → 真正的空文件，正常上传 0 字节
+	// 注意：必须释放锁再 sleep，否则 Write 被 node.mu 阻塞无法写 staging
 	if n.size == 0 && n.localPath != "" && fs.staging != nil {
+		n.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
-		if actualSize, err := fs.staging.FileSize(n.localPath); err == nil && actualSize > 0 {
-			driver.Log.Printf("syncFile: skipping %s (size=0, but staging grew to %d in 100ms — Write arrived)\n", path, actualSize)
-			n.size = actualSize
+		n.mu.Lock()
+
+		// 重新验证节点状态（锁释放期间可能被修改）
+		if !n.isDirty {
 			n.mu.Unlock()
 			return nil
 		}
+		if actualSize, err := fs.staging.FileSize(n.localPath); err == nil && actualSize > 0 {
+			driver.Log.Printf("syncFile: skipping %s (size=0, staging grew to %d during wait — Write arrived)\n", path, actualSize)
+			n.size = actualSize
+			n.mu.Unlock()
+			return nil // defer 检测 isStillDirty=true → re-enqueue → 第二次 sync 上传真实数据
+		}
+		// staging 仍空 → 真正的空文件，继续上传 0 字节
 	}
 
 	snapshotSize := n.size
