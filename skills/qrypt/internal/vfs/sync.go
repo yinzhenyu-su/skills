@@ -281,11 +281,7 @@ func (fs *QryptFS) opsLogWorker() {
 	const batchSize = 100
 	const idleTimeout = 500 * time.Millisecond
 
-	for {
-		task, ok := <-fs.opsLogChan
-		if !ok {
-			return
-		}
+	for task := range fs.opsLogChan {
 
 		batch := []metadataTask{task}
 	collect:
@@ -330,34 +326,28 @@ func (fs *QryptFS) metadataWorker() {
 	const batchSize = 100
 	const idleTimeout = 200 * time.Millisecond
 
-	for {
-		select {
-		case task, ok := <-fs.metadataOpChan:
-			if !ok {
-				return
-			}
-			// 尝试收集一批任务进行批量删除
-			tasks := []metadataTask{task}
-			if task.opType == "DELETE" {
-			collect:
-				for len(tasks) < batchSize {
-					select {
-					case next := <-fs.metadataOpChan:
-						if next.opType == "DELETE" {
-							tasks = append(tasks, next)
-						} else {
-							// 类型不同，处理当前已收集的，然后单独处理这个新任务
-							fs.processBatchMetadataTasks(tasks)
-							tasks = []metadataTask{next}
-							break collect
-						}
-					case <-time.After(idleTimeout):
+	for task := range fs.metadataOpChan {
+		// 尝试收集一批任务进行批量删除
+		tasks := []metadataTask{task}
+		if task.opType == "DELETE" {
+		collect:
+			for len(tasks) < batchSize {
+				select {
+				case next := <-fs.metadataOpChan:
+					if next.opType == "DELETE" {
+						tasks = append(tasks, next)
+					} else {
+						// 类型不同，处理当前已收集的，然后单独处理这个新任务
+						fs.processBatchMetadataTasks(tasks)
+						tasks = []metadataTask{next}
 						break collect
 					}
+				case <-time.After(idleTimeout):
+					break collect
 				}
 			}
-			fs.processBatchMetadataTasks(tasks)
 		}
+		fs.processBatchMetadataTasks(tasks)
 	}
 }
 
