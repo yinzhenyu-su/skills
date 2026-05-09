@@ -575,6 +575,9 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		}
 	}
 	driver.Log.Debugf("syncFile path=%s snapshotSize=%d stagingFileSize=%d fid=%s parentFid=%s localPath=%s\n", path, snapshotSize, stagingFileSize, fid, parentFid, localPath)
+	if stagingFileSize == 0 && snapshotSize > 0 {
+		driver.Log.Warnf("[BUG] syncFile: staging is empty but size=%d for %s (200ms delay insufficient?)\n", snapshotSize, path)
+	}
 
 	// Guard: skip re-sync if this file was just uploaded (< 10s ago) and has a real server FID.
 	if !strings.HasPrefix(fid, "local_") && !lastUpload.IsZero() && time.Since(lastUpload) < 10*time.Second {

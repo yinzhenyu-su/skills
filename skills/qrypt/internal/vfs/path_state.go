@@ -199,16 +199,6 @@ func (fs *QryptFS) deleteNodePath(path string, n *node) {
 	path = filepath.Clean(path)
 	fs.nodes.Delete(path)
 
-	// 如果是目录，递归清理所有子孙节点的缓存，防止重建后出现 FID 过时的“幽灵节点”
-	if n != nil {
-		n.mu.RLock()
-		isFolder := n.isFolder
-		n.mu.RUnlock()
-		if isFolder {
-			go fs.deleteSubtreePaths(path, n)
-		}
-	}
-
 	// 从父节点移除引用
 	if path != "/" {
 		parentPath := filepath.Dir(path)
@@ -1056,7 +1046,7 @@ func (fs *QryptFS) Getattr(path string, stat *fuse.Stat_t, fh uint64) (errc int)
 		return 0
 	}
 
-	n, errc := fs.lookup(path)
+	n, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
 		return errc
 	}
