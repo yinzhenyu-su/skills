@@ -253,14 +253,27 @@ func (fs *QryptFS) recoverDirtyFiles() {
 
 	for _, f := range nodes {
 		n, errc := fs.lookupExtended(f.Path, true)
-		if errc == 0 {
-			n.mu.Lock()
-			n.isDirty = true
-			n.syncQueued = true
-			n.mu.Unlock()
-			fs.uploadChan <- syncTask{node: n}
-			driver.Log.Infof("recoverDirtyFiles: queued %s for sync\n", f.Path)
+		if errc != 0 {
+			continue
 		}
+
+		n.mu.Lock()
+
+		// 如果文件已有真实 FID 且 staging 不存在，说明已上传成功，跳过
+		if !strings.HasPrefix(n.fid, "local_") && n.localPath == "" {
+			n.isDirty = false
+			n.syncQueued = false
+			n.mu.Unlock()
+			_ = fs.cache.RemovePendingNode(f.Path)
+			driver.Log.Infof("recoverDirtyFiles: skipped %s (already uploaded, fid=%s)\n", f.Path, n.fid)
+			continue
+		}
+
+		n.isDirty = true
+		n.syncQueued = true
+		n.mu.Unlock()
+		fs.uploadChan <- syncTask{node: n}
+		driver.Log.Infof("recoverDirtyFiles: queued %s for sync\n", f.Path)
 	}
 }
 
