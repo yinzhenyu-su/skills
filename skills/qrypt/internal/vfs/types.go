@@ -68,6 +68,7 @@ type node struct {
 	expectedFid       string            // 预期服务端返回的 FID（用于抵御索引延迟导致的冲突）
 	uploadedFid       string            // 上次成功上传后的远程 FID（用于 FID 直接替换，绕过 ListFiles 索引延迟）
 	writeInFlight     int32             // 正在进行的 Write 操作计数（atomic）
+	cancelled         int32             // 1 = 已取消（被删除），原子操作
 	children          map[string]*node // 子节点缓存 (name -> *node), 避免 O(N) 扫描
 	mu                sync.RWMutex
 }
@@ -80,6 +81,12 @@ func (n *node) doneWriteInFlight() { atomic.AddInt32(&n.writeInFlight, -1) }
 
 // hasWriteInFlight 检查是否有进行中的写入
 func (n *node) hasWriteInFlight() bool { return atomic.LoadInt32(&n.writeInFlight) > 0 }
+
+// cancel 标记节点已取消（被删除），用于拦截待上传的任务
+func (n *node) cancel() { atomic.StoreInt32(&n.cancelled, 1) }
+
+// isCancelled 检查节点是否已被取消
+func (n *node) isCancelled() bool { return atomic.LoadInt32(&n.cancelled) == 1 }
 
 type syncTask struct {
 	node     *node

@@ -509,6 +509,15 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		return nil
 	}
 
+	// 原子标记检查：节点已被 Unlink 删除，跳过上传
+	if n.isCancelled() {
+		driver.Log.Infof("syncFile: aborting sync for %s (node cancelled / deleted)\n", path)
+		n.mu.Lock()
+		n.syncQueued = false
+		n.mu.Unlock()
+		return nil
+	}
+
 	startedAt := time.Now()
 	stats := syncPerformanceSnapshot{Path: path}
 
