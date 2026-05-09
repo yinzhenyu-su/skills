@@ -6,10 +6,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"syscall"
 	"time"
-
 	"github.com/spf13/cobra"
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
@@ -219,10 +220,19 @@ func runMount(cmd *cobra.Command, args []string) {
 
 	// 处理信号，优雅退出
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
 	go func() {
-		<-sigChan
-		fmt.Println("\n正在卸载...")
+		sig := <-sigChan
+		switch sig {
+		case syscall.SIGUSR1:
+			// Dump all goroutine stacks to log for debugging hangs
+			buf := make([]byte, 1<<20)
+			n := runtime.Stack(buf, true)
+			driver.Log.Errorf("=== SIGUSR1: goroutine dump ===\n%s\n=== END dump ===\n", buf[:n])
+			return
+		default:
+			fmt.Println("\n正在卸载...")
+		}
 
 		// 先尝试 fusermount -u（更可靠）
 		unmountCmd := exec.Command("fusermount", "-u", cfg.Mount.Point)
