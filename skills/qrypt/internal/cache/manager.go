@@ -10,11 +10,14 @@ import (
 )
 
 // CacheManager 协调磁盘存储和元数据数据库
+const CacheBatchBlocks = 16
+
 type CacheManager struct {
 	DB          *CacheDB
 	cacheDir    string
 	maxSize     int64
 	staging     *staging.Store
+	evictCount  int64
 }
 
 // CacheDBPendingNode 定义待同步的节点（兼容 db.go 的 PendingNode）
@@ -126,16 +129,31 @@ func (m *CacheManager) RemoveStagingMeta(fid string) error {
 	return m.DB.RemoveStagingMeta(fid)
 }
 
-// GetChunk 读取分块内容
+// GetChunk 读取分块内容（支持合并存储）
 func (m *CacheManager) GetChunk(fid string, chunkIndex int64) ([]byte, error) {
-	path, found, err := m.DB.GetChunk(fid, chunkIndex)
+	path, offset, chunkSize, found, err := m.DB.GetChunk(fid, chunkIndex)
 	if err != nil || !found {
 		return nil, err
 	}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+	var data []byte
+	if offset > 0 || chunkSize > 0 {
+		// 合并存储格式：只读取分块所在的部分
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		data = make([]byte, chunkSize)
+		if _, err := f.ReadAt(data, offset); err != nil {
+			return nil, err
+		}
+	} else {
+		// 旧格式：每个文件一个分块
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 异步更新访问时间 (LRU)
@@ -145,24 +163,43 @@ func (m *CacheManager) GetChunk(fid string, chunkIndex int64) ([]byte, error) {
 
 // HasChunk 检查本地缓存是否存在指定分块
 func (m *CacheManager) HasChunk(fid string, chunkIndex int64) (bool, error) {
-	_, found, err := m.DB.GetChunk(fid, chunkIndex)
+	_, _, _, found, err := m.DB.GetChunk(fid, chunkIndex)
 	return found, err
 }
 
-// PutChunk 存储分块内容
+// PutChunk 存储分块内容（合并到批处理文件）
 func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDirty bool) error {
-	suffix := ".dec.chunk"
+	suffix := ".dec.batch"
 	if isDirty {
-		suffix = ".dirty.chunk"
+		suffix = ".dirty.batch"
 	}
-	fileName := fmt.Sprintf("%s_%d%s", fid, chunkIndex, suffix)
+	batchIdx := chunkIndex / CacheBatchBlocks
+	offset := int64(chunkIndex%CacheBatchBlocks) * int64(len(data))
+	fileName := fmt.Sprintf("%s_batch_%d%s", fid, batchIdx, suffix)
 	path := filepath.Join(m.cacheDir, fileName)
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// 写入到合并文件中的偏移位置
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteAt(data, offset); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+
+	if err := m.DB.InsertChunk(fid, chunkIndex, path, int64(len(data)), offset, isDirty); err != nil {
 		return err
 	}
 
-	return m.DB.InsertChunk(fid, chunkIndex, path, int64(len(data)), isDirty)
+	// 采样检查缓存驱逐（每 100 次写入检查一次）
+	m.evictCount++
+	if m.evictCount%100 == 0 {
+		go m.EvictIfNeeded(m.maxSize * 7 / 10)
+	}
+
+	return nil
 }
 
 // SavePendingNode 持久化未完成的文件节点
@@ -253,8 +290,13 @@ func (m *CacheManager) EvictIfNeeded(lowWatermark int64) error {
 		return err
 	}
 
+	// 记录已删除的文件路径，合并文件只需删一次
+	deletedPaths := make(map[string]bool)
 	for _, c := range chunks {
-		os.Remove(c.Path)
+		if !deletedPaths[c.Path] {
+			os.Remove(c.Path)
+			deletedPaths[c.Path] = true
+		}
 		m.DB.DeleteChunk(c.Fid, c.Index)
 	}
 

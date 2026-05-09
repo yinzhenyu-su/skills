@@ -86,7 +86,9 @@ func NewCacheDB(dbPath string) (*CacheDB, error) {
 		return nil, err
 	}
 
-	// 简单的数据库迁移：如果 pending_nodes 表已经存在但没有对应列，则添加它。
+	// 简单的数据库迁移：如果 chunks 表已经存在但没有对应列，则添加它。
+	_, _ = db.Exec("ALTER TABLE chunks ADD COLUMN offset_in_file INTEGER DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE chunks ADD COLUMN chunk_size INTEGER DEFAULT 0")
 	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN parent_fid TEXT")
 	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN local_path TEXT")
 	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN base_server_mtime INTEGER DEFAULT 0")
@@ -102,25 +104,26 @@ func (c *CacheDB) UpdateAccessTime(fid string, chunkIndex int64) error {
 	return err
 }
 
-// GetChunk 获取分块信息
-func (c *CacheDB) GetChunk(fid string, chunkIndex int64) (string, bool, error) {
-	query := `SELECT file_path FROM chunks WHERE fid = ? AND chunk_index = ?`
-	var filePath string
-	err := c.db.QueryRow(query, fid, chunkIndex).Scan(&filePath)
+// GetChunk 获取分块信息（含偏移量）
+func (c *CacheDB) GetChunk(fid string, chunkIndex int64) (filePath string, offset, chunkSize int64, found bool, err error) {
+	query := `SELECT file_path, offset_in_file, chunk_size FROM chunks WHERE fid = ? AND chunk_index = ?`
+	var fp string
+	var off, sz int64
+	err = c.db.QueryRow(query, fid, chunkIndex).Scan(&fp, &off, &sz)
 	if err == sql.ErrNoRows {
-		return "", false, nil
+		return "", 0, 0, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", 0, 0, false, err
 	}
-	return filePath, true, nil
+	return fp, off, sz, true, nil
 }
 
-// InsertChunk 插入新分块
-func (c *CacheDB) InsertChunk(fid string, chunkIndex int64, filePath string, size int64, isDirty bool) error {
-	query := `INSERT OR REPLACE INTO chunks (fid, chunk_index, file_path, size, is_dirty, access_time)
-			  VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
-	_, err := c.db.Exec(query, fid, chunkIndex, filePath, size, isDirty)
+// InsertChunk 插入新分块（含偏移量）
+func (c *CacheDB) InsertChunk(fid string, chunkIndex int64, filePath string, size int64, offsetInFile int64, isDirty bool) error {
+	query := `INSERT OR REPLACE INTO chunks (fid, chunk_index, file_path, size, offset_in_file, chunk_size, is_dirty, access_time)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+	_, err := c.db.Exec(query, fid, chunkIndex, filePath, size, offsetInFile, size, isDirty)
 	return err
 }
 
@@ -266,21 +269,25 @@ func (c *CacheDB) GetPendingNodes() ([]PendingNode, error) {
 	return nodes, nil
 }
 
-// GetChunkPathsByFid 获取某个文件 fid 关联的本地 chunk 文件路径
+// GetChunkPathsByFid 获取某个文件 fid 关联的本地 chunk 文件路径（去重）
 func (c *CacheDB) GetChunkPathsByFid(fid string) ([]string, error) {
-	rows, err := c.db.Query("SELECT file_path FROM chunks WHERE fid = ?", fid)
+	rows, err := c.db.Query("SELECT DISTINCT file_path FROM chunks WHERE fid = ?", fid)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	var paths []string
+	seen := make(map[string]bool)
 	for rows.Next() {
 		var p string
 		if err := rows.Scan(&p); err != nil {
 			return nil, err
 		}
-		paths = append(paths, p)
+		if !seen[p] {
+			paths = append(paths, p)
+			seen[p] = true
+		}
 	}
 	return paths, nil
 }
