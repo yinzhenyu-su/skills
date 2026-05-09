@@ -63,15 +63,16 @@ func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	return &Config{
 		Quark: QuarkConfig{
-			RootPath: "/",
+			RootPath: "/Test",
 		},
 		Encryption: EncryptionConfig{},
 		Cache: CacheConfig{
 			Dir:     filepath.Join(homeDir, ".qrypt", "cache"),
-			DBName:  "qrypt_cache.db",
+			DBName:  filepath.Join(homeDir, ".qrypt", "qrypt_cache.db"),
 			MaxSize: "10GB",
 		},
 		Mount: MountConfig{
+			Point:     filepath.Join(homeDir, "Qrypt"),
 			AllowOther: false,
 		},
 		Sync: SyncConfig{
@@ -80,7 +81,8 @@ func DefaultConfig() *Config {
 			DirCacheTTL:       "5m",
 		},
 		Log: LogConfig{
-			Level: "info",
+			Level: "debug",
+			File:  filepath.Join(homeDir, ".qrypt", "qrypt.log"),
 		},
 	}
 }

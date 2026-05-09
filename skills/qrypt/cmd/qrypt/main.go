@@ -256,13 +256,13 @@ func runInit(cmd *cobra.Command, args []string) {
 
 [quark]
 # 夸克网盘 Cookie（必填）
-cookie = "你的Cookie"
+cookie = ""
 # 挂载的网盘路径（默认根目录）
-root_path = "/"
+root_path = "/Test"
 
 [encryption]
 # 加密密码（必填，与 rclone crypt 兼容）
-password = "你的密码"
+password = ""
 # 加密盐（可选）
 salt = ""
 
@@ -270,13 +270,13 @@ salt = ""
 # 缓存目录
 dir = "~/.qrypt/cache"
 # 数据库文件名
-db_name = "qrypt_cache.db"
+db_name = "~/.qrypt/qrypt_cache.db"
 # 最大缓存大小 (支持 KB, MB, GB, TB)
 max_size = "10GB"
 
 [mount]
 # 本地挂载点
-point = "~/QryptMount"
+point = "~/Qrypt"
 # 允许其他用户访问（需要 /etc/fuse.conf 配置）
 allow_other = false
 
@@ -290,9 +290,9 @@ dir_cache_ttl = "5m"
 
 [log]
 # 日志级别: debug, info, warn, error
-level = "info"
+level = "debug"
 # 日志文件路径（空则输出到终端）
-file = ""
+file = "~/.qrypt/qrypt.log"
 `
 
 	if err := os.WriteFile(outputPath, []byte(exampleConfig), 0644); err != nil {
