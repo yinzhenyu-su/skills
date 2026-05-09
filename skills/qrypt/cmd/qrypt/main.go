@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -49,6 +50,45 @@ func main() {
 	initCmd.Flags().StringP("output", "o", "qrypt.toml", "输出文件路径")
 
 	rootCmd.AddCommand(mountCmd, initCmd)
+
+	// ---- tool 子命令组 ----
+	var toolCmd = &cobra.Command{
+		Use:   "tool",
+		Short: "工具命令：加密/解密文件名、大小计算",
+	}
+	toolCmd.PersistentFlags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
+	toolCmd.PersistentFlags().String("password", "", "加密密码 (覆盖配置文件)")
+	toolCmd.PersistentFlags().String("salt", "", "加密盐 (覆盖配置文件)")
+
+	var encryptCmd = &cobra.Command{
+		Use:   "encrypt <name>",
+		Short: "计算文件名的加密形式",
+		Args:  cobra.ExactArgs(1),
+		Run:   runEncrypt,
+	}
+
+	var decryptCmd = &cobra.Command{
+		Use:   "decrypt <name>",
+		Short: "解密文件名",
+		Args:  cobra.ExactArgs(1),
+		Run:   runDecrypt,
+	}
+
+	var encSizeCmd = &cobra.Command{
+		Use:   "enc-size <bytes>",
+		Short: "计算加密后的文件大小",
+		Args:  cobra.ExactArgs(1),
+		Run:   runEncSize,
+	}
+
+	var configCmd = &cobra.Command{
+		Use:   "config",
+		Short: "显示当前配置摘要",
+		Run:   runToolConfig,
+	}
+
+	toolCmd.AddCommand(encryptCmd, decryptCmd, encSizeCmd, configCmd)
+	rootCmd.AddCommand(toolCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -264,4 +304,107 @@ file = ""
 	fmt.Println("\n下一步:")
 	fmt.Println("  1. 编辑配置文件，填入你的 Cookie 和密码")
 	fmt.Println("  2. 运行: qrypt mount -f qrypt.toml")
+}
+
+// -- 工具命令辅助 --
+
+// loadToolCfg 从配置文件加载加密引擎（tool 命令专用，无 FUSE/驱动/缓存开销）
+// 策略：先尝试加载配置文件，失败则回退到默认配置 + CLI 覆盖。
+// 用户可通过 --password （或配置文件）提供密码。
+func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
+	configPath, _ := cmd.Flags().GetString("config")
+	explicitConfig := configPath != ""
+	if configPath == "" {
+		configPath = config.FindConfigFile()
+	}
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		if explicitConfig {
+			fmt.Printf("加载配置文件失败: %v\n", err)
+			os.Exit(1)
+		}
+		// 自动发现的配置文件解析失败，使用默认配置
+		cfg = config.DefaultConfig()
+	}
+
+	if pwd, _ := cmd.Flags().GetString("password"); pwd != "" {
+		cfg.Encryption.Password = pwd
+	}
+	if salt, _ := cmd.Flags().GetString("salt"); salt != "" {
+		cfg.Encryption.Salt = salt
+	}
+	if cfg.Encryption.Password == "" {
+		fmt.Println("错误: 缺少加密密码 (配置文件或 --password 参数)")
+		os.Exit(1)
+	}
+
+	cipher, err := crypt.NewRcloneCipher(cfg.Encryption.Password, cfg.Encryption.Salt)
+	if err != nil {
+		fmt.Printf("加密引擎初始化失败: %v\n", err)
+		os.Exit(1)
+	}
+	return cfg, cipher
+}
+
+func maskStr(s string) string {
+	if s == "" {
+		return "(未设置)"
+	}
+	if len(s) <= 4 {
+		return "****"
+	}
+	return s[:1] + "****" + s[len(s)-1:]
+}
+
+// -- encrypt --
+
+func runEncrypt(cmd *cobra.Command, args []string) {
+	_, cipher := loadToolCfg(cmd)
+	name := args[0]
+	encName := cipher.EncryptSegment(name)
+	fmt.Printf("明文:  %s\n加密:  %s\n", name, encName)
+}
+
+// -- decrypt --
+
+func runDecrypt(cmd *cobra.Command, args []string) {
+	_, cipher := loadToolCfg(cmd)
+	encName := args[0]
+	plain, err := cipher.DecryptSegment(encName)
+	if err != nil {
+		fmt.Printf("解密失败: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("加密:  %s\n明文:  %s\n", encName, plain)
+}
+
+// -- enc-size --
+
+func runEncSize(cmd *cobra.Command, args []string) {
+	_, cipher := loadToolCfg(cmd)
+	size, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		fmt.Printf("无效大小: %s\n", args[0])
+		os.Exit(1)
+	}
+	encSize := cipher.EncryptedSize(size)
+	fmt.Printf("明文大小:  %d\n加密大小:  %d\n", size, encSize)
+}
+
+// -- config --
+
+func runToolConfig(cmd *cobra.Command, args []string) {
+	cfg, _ := loadToolCfg(cmd)
+	fmt.Println("=== Qrypt 配置 ===")
+	fmt.Printf("Quark 根路径: %s\n", cfg.Quark.RootPath)
+	fmt.Printf("缓存目录:     %s\n", cfg.Cache.Dir)
+	fmt.Printf("挂载点:       %s\n", cfg.Mount.Point)
+	fmt.Printf("加密密码:     %s\n", maskStr(cfg.Encryption.Password))
+	if cfg.Encryption.Salt != "" {
+		fmt.Printf("加密盐:       %s\n", cfg.Encryption.Salt)
+	}
+	fmt.Printf("日志级别:     %s\n", cfg.Log.Level)
+	fmt.Printf("并发上传:     %d\n", cfg.Sync.ConcurrentUploads)
+	fmt.Printf("缓存上限:     %s\n", cfg.Cache.MaxSize)
 }
