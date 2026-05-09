@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -193,6 +194,11 @@ func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*driver.Fi
 }
 
 func (fs *QryptFS) uploadWorker() {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in uploadWorker: %v\n%s\n", r, debug.Stack())
+		}
+	}()
 	driver.Log.Info("Upload worker started\n")
 	driver.Log.Info("Upload worker stopped\n")
 	for task := range fs.uploadChan {
@@ -278,6 +284,11 @@ func (fs *QryptFS) recoverDirtyFiles() {
 }
 
 func (fs *QryptFS) opsLogWorker() {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in opsLogWorker: %v\n%s\n", r, debug.Stack())
+		}
+	}()
 	const batchSize = 100
 	const idleTimeout = 500 * time.Millisecond
 
@@ -322,6 +333,11 @@ func (fs *QryptFS) opsLogWorker() {
 }
 
 func (fs *QryptFS) metadataWorker() {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in metadataWorker: %v\n%s\n", r, debug.Stack())
+		}
+	}()
 	driver.Log.Info("Metadata worker started\n")
 	const batchSize = 100
 	const idleTimeout = 200 * time.Millisecond
