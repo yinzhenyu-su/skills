@@ -146,8 +146,16 @@ func runMount(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// 3.5 初始化日志系统
-	levelLogger, err := driver.NewLevelLogger(cfg.Log.Level, cfg.Log.File)
+	// 3.5 初始化日志系统（带轮转配置）
+	rotate := &driver.LogRotateConfig{
+		MaxSize:    cfg.Log.MaxSize,
+		MaxBackups: cfg.Log.MaxBackups,
+		MaxAge:     cfg.Log.MaxAge,
+	}
+	if cfg.Log.Compress != nil {
+		rotate.Compress = *cfg.Log.Compress
+	}
+	levelLogger, err := driver.NewLevelLogger(cfg.Log.Level, cfg.Log.File, rotate)
 	if err != nil {
 		fmt.Printf("日志初始化失败: %v\n", err)
 		os.Exit(1)

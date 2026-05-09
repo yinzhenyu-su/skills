@@ -54,8 +54,12 @@ type SyncConfig struct {
 
 // LogConfig 日志相关配置
 type LogConfig struct {
-	Level string `toml:"level"` // debug, info, warn, error
-	File  string `toml:"file"`  // 日志文件路径，空则输出到 stdout
+	Level      string `toml:"level"`        // debug, info, warn, error
+	File       string `toml:"file"`         // 日志文件路径，空则输出到 stdout
+	MaxSize    int    `toml:"max_size"`     // 单个日志文件最大大小（MB，0=默认100）
+	MaxBackups int    `toml:"max_backups"`  // 保留的旧日志文件数（0=默认7）
+	MaxAge     int    `toml:"max_age"`      // 保留的旧日志天数（0=默认28）
+	Compress   *bool  `toml:"compress"`     // 是否压缩旧日志（nil=默认true）
 }
 
 // DefaultConfig 返回默认配置

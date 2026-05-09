@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // LogLevel defines log severity
@@ -54,26 +56,62 @@ func (l LogLevel) String() string {
 	}
 }
 
+// LogRotateConfig 日志轮转配置
+type LogRotateConfig struct {
+	MaxSize    int // 单个日志文件最大大小（MB）
+	MaxBackups int // 保留的旧日志文件数
+	MaxAge     int // 保留的旧日志天数
+	Compress   bool // 是否压缩旧日志
+}
+
+// DefaultLogRotateConfig 默认轮转配置
+var DefaultLogRotateConfig = LogRotateConfig{
+	MaxSize:    100,  // 100 MB
+	MaxBackups: 7,    // 保留 7 个备份
+	MaxAge:     28,   // 保留 28 天
+	Compress:   true, // gzip 压缩
+}
+
 // LevelLogger implements Logger with level filtering and optional file output
 type LevelLogger struct {
-	level  LogLevel
-	writer io.Writer
-	mu     sync.Mutex
+	level   LogLevel
+	writer  io.Writer
+	lj      *lumberjack.Logger // 保留引用以便 Close
+	mu      sync.Mutex
 }
 
 // NewLevelLogger creates a logger with the given level and optional log file path.
 // If logFile is empty, logs to stdout.
-func NewLevelLogger(level string, logFile string) (*LevelLogger, error) {
+// rotate config controls log rotation; nil uses DefaultLogRotateConfig.
+func NewLevelLogger(level string, logFile string, rotate *LogRotateConfig) (*LevelLogger, error) {
 	l := &LevelLogger{
 		level: parseLogLevel(level),
 	}
 
 	if logFile != "" {
-		f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open log file %s: %w", logFile, err)
+		rc := DefaultLogRotateConfig
+		if rotate != nil {
+			if rotate.MaxSize > 0 {
+				rc.MaxSize = rotate.MaxSize
+			}
+			if rotate.MaxBackups > 0 {
+				rc.MaxBackups = rotate.MaxBackups
+			}
+			if rotate.MaxAge > 0 {
+				rc.MaxAge = rotate.MaxAge
+			}
+			rc.Compress = rotate.Compress
 		}
-		l.writer = f
+
+		lj := &lumberjack.Logger{
+			Filename:   logFile,
+			MaxSize:    rc.MaxSize,
+			MaxBackups: rc.MaxBackups,
+			MaxAge:     rc.MaxAge,
+			Compress:   rc.Compress,
+		}
+		l.writer = lj
+		l.lj = lj
 	} else {
 		l.writer = os.Stdout
 	}
@@ -140,10 +178,23 @@ func (l *LevelLogger) Errorf(format string, v ...interface{}) {
 	l.logf(LogLevelError, format, v...)
 }
 
+// Rotate triggers an immediate log rotation
+func (l *LevelLogger) Rotate() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lj != nil {
+		return l.lj.Rotate()
+	}
+	return nil
+}
+
 // Close closes the log file if one was opened
 func (l *LevelLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.lj != nil {
+		return l.lj.Close()
+	}
 	if c, ok := l.writer.(io.Closer); ok {
 		return c.Close()
 	}
