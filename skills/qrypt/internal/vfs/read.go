@@ -3,6 +3,7 @@ package vfs
 import (
 	"fmt"
 	"io"
+	"runtime/debug"
 	"strings"
 
 	"github.com/winfsp/cgofuse/fuse"
@@ -85,6 +86,11 @@ func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int)
 }
 
 func (fs *QryptFS) prefetch(n *node, startChunk uint64) {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in prefetch: %v\n%s\n", r, debug.Stack())
+		}
+	}()
 	for i := uint64(0); i < FetchBatchBlocks/4; i++ {
 		target := startChunk + i
 		if int64(target)*crypt.BlockDataSize >= n.size {
@@ -101,6 +107,11 @@ func (fs *QryptFS) prefetch(n *node, startChunk uint64) {
 		}
 
 		go func(idx uint64) {
+			defer func() {
+				if r := recover(); r != nil {
+					driver.Log.Errorf("PANIC in prefetch goroutine: %v\n%s\n", r, debug.Stack())
+				}
+			}()
 			_, _ = fs.getDecryptedChunk(n, idx)
 		}(target)
 	}

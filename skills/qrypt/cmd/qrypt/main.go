@@ -219,6 +219,7 @@ func runMount(cmd *cobra.Command, args []string) {
 	fs := vfs.NewQryptFS(d, cm, rootFid, rootDirName, cipher, vfs.QryptFSConfig{
 		MaxRetries:        cfg.Sync.MaxRetries,
 		ConcurrentUploads: cfg.Sync.ConcurrentUploads,
+		MemCacheSizeMB:    cfg.Cache.MemCacheSizeMB,
 	})
 	host := fuse.NewFileSystemHost(fs)
 
@@ -238,10 +239,14 @@ func runMount(cmd *cobra.Command, args []string) {
 			driver.Log.Errorf("=== SIGUSR1: goroutine dump ===\n%s\n=== END dump ===\n", buf[:n])
 			return
 		default:
-			fmt.Println("\n正在卸载...")
+			fmt.Println("\n正在关闭...等待上传完成...")
 		}
 
-		// 先尝试 fusermount -u（更可靠）
+		// 停止接收新任务，等待正在处理的上传完成
+		fs.Shutdown()
+
+		fmt.Println("\n正在卸载...")
+		// 先尝试 fusermount -u（更可靠，仅 Linux）
 		unmountCmd := exec.Command("fusermount", "-u", cfg.Mount.Point)
 		if err := unmountCmd.Run(); err != nil {
 			// fusermount 失败，尝试 cgofuse 的 Unmount

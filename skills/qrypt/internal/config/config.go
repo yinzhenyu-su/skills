@@ -34,9 +34,10 @@ type EncryptionConfig struct {
 
 // CacheConfig 缓存相关配置
 type CacheConfig struct {
-	Dir     string `toml:"dir"`
-	DBName  string `toml:"db_name"`
-	MaxSize string `toml:"max_size"` // 如 "10GB", "500MB"
+	Dir           string `toml:"dir"`
+	DBName        string `toml:"db_name"`
+	MaxSize       string `toml:"max_size"`         // 如 "10GB", "500MB"
+	MemCacheSizeMB int    `toml:"mem_cache_size_mb"` // 内存缓存上限 (MB, 0=默认512)
 }
 
 // MountConfig 挂载相关配置

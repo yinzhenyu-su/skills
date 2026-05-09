@@ -15,6 +15,7 @@ import (
 type QryptFSConfig struct {
 	MaxRetries        int // max retry attempts for failed uploads (0 = use default 5)
 	ConcurrentUploads int // number of concurrent upload workers (0 = use default 3)
+	MemCacheSizeMB    int // memory cache size in MB (0 = use default 512)
 }
 
 // NewQryptFS 创建新的文件系统实例
@@ -31,11 +32,10 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ro
 		}
 	}
 
-	memCache, _ := lru.New[string, []byte](MemCacheMaxEntries)
-
 	// Apply config defaults
 	maxRetries := maxAutoRetryAttempts
 	concurrentUploads := 3
+	memCacheSizeMB := MemCacheSizeMB
 	if len(vfsCfg) > 0 {
 		if vfsCfg[0].MaxRetries > 0 {
 			maxRetries = vfsCfg[0].MaxRetries
@@ -43,7 +43,14 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ro
 		if vfsCfg[0].ConcurrentUploads > 0 {
 			concurrentUploads = vfsCfg[0].ConcurrentUploads
 		}
+		if vfsCfg[0].MemCacheSizeMB > 0 {
+			memCacheSizeMB = vfsCfg[0].MemCacheSizeMB
+		}
 	}
+
+	// Recalculate memCache entries based on configured size
+	memCacheMaxEntries := (memCacheSizeMB * 1024) / 64
+	memCache, _ := lru.New[string, []byte](memCacheMaxEntries)
 
 	fs := &QryptFS{
 		driver:         d,
@@ -78,4 +85,20 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ro
 	fs.recoverPendingOps()
 
 	return fs
+}
+
+// Shutdown 优雅关闭：停止接收新任务，等待正在处理的上传完成
+func (fs *QryptFS) Shutdown() {
+	driver.Log.Info("Shutdown: closing upload channel, waiting for inflight tasks...\n")
+
+	// 关闭上传通道，worker 会在处理完当前任务后退出
+	close(fs.uploadChan)
+
+	// 关闭元数据操作通道
+	close(fs.metadataOpChan)
+
+	// 关闭 ops_log 通道
+	close(fs.opsLogChan)
+
+	driver.Log.Info("Shutdown complete\n")
 }

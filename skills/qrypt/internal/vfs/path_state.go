@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -1153,6 +1154,11 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 					}
 
 					go func(fid, cpath string) {
+						defer func() {
+							if r := recover(); r != nil {
+								driver.Log.Errorf("PANIC in background subdir lookup: %v\n%s\n", r, debug.Stack())
+							}
+						}()
 						// 使用信号量限制并发预取
 						select {
 						case fs.prefetchSem <- struct{}{}:
@@ -1161,7 +1167,7 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 							// 队列已满，放弃本次预取，优先保证主线程
 							return
 						}
-
+						// 在后台为子目录触发远程刷新，填充 cache
 						prefetchFiles, err := fs.fetchFiles(fid)
 						if err != nil {
 							return

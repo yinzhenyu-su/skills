@@ -157,7 +157,14 @@ func (m *CacheManager) GetChunk(fid string, chunkIndex int64) ([]byte, error) {
 	}
 
 	// 异步更新访问时间 (LRU)
-	go m.DB.UpdateAccessTime(fid, chunkIndex)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("PANIC in UpdateAccessTime: %v\n", r)
+			}
+		}()
+		_ = m.DB.UpdateAccessTime(fid, chunkIndex)
+	}()
 	return data, nil
 }
 
@@ -196,7 +203,14 @@ func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDir
 	// 采样检查缓存驱逐（每 100 次写入检查一次）
 	m.evictCount++
 	if m.evictCount%100 == 0 {
-		go m.EvictIfNeeded(m.maxSize * 7 / 10)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("PANIC in EvictIfNeeded: %v\n", r)
+				}
+			}()
+			_ = m.EvictIfNeeded(m.maxSize * 7 / 10)
+		}()
 	}
 
 	return nil
@@ -347,12 +361,17 @@ func (m *CacheManager) Maintenance() error {
 
 func (m *CacheManager) MaintenanceStart() {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("PANIC in MaintenanceStart: %v\n", r)
+			}
+		}()
 		// 启动后先跑一次
-		m.Maintenance()
+		_ = m.Maintenance()
 		ticker := time.NewTicker(maintenanceInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			m.Maintenance()
+			_ = m.Maintenance()
 		}
 	}()
 }

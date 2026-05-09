@@ -1,3 +1,7 @@
+*.db
+*.db-shm
+*.db-wal
 qrypt
 vfs.test
 test-config.toml
+*.log

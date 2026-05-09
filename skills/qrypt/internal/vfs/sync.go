@@ -876,6 +876,11 @@ func (fs *QryptFS) enqueueSyncDelay(n *node, delay time.Duration) {
 
 	if delay > 0 {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					driver.Log.Errorf("PANIC in enqueueSyncDelay: %v\n%s\n", r, debug.Stack())
+				}
+			}()
 			time.Sleep(delay)
 			fs.uploadChan <- syncTask{node: n}
 		}()
