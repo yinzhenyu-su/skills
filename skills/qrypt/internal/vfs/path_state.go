@@ -327,10 +327,10 @@ func (fs *QryptFS) deleteSubtreePaths(parentPath string, n *node) {
 }
 
 // safeRemoveChild 尝试安全地从父节点移除子节点引用。
-// 如果无法立即获得锁，它会启动一个短时间的重试，或者在后台完成。
+// 先以 10μs 间隔自旋 100 次（共 1ms），仍失败则走阻塞锁。
 func (fs *QryptFS) safeRemoveChild(p *node, baseName string) {
 	go func() {
-		for i := 0; i < 10; i++ {
+		for i := 0; i < 100; i++ {
 			if p.mu.TryLock() {
 				if p.children != nil {
 					delete(p.children, baseName)
@@ -339,7 +339,7 @@ func (fs *QryptFS) safeRemoveChild(p *node, baseName string) {
 				p.mu.Unlock()
 				return
 			}
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(10 * time.Microsecond)
 		}
 		// 最终手段：强制锁定（此时风险已降级）
 		p.mu.Lock()
@@ -1421,6 +1421,10 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 	}
 	n.mu.RUnlock()
 
+	// Mark directory as being deleted to prevent MergeRemoteChanges from re-adding children
+	// 必须在 isEmpty 检查之前设置，这样 isUnderDeletingDir 才能检测到嵌套子目录正在被删除
+	fs.deletingPaths.Store(path, struct{}{})
+
 	isEmpty := true
 	for _, c := range children {
 		if c.fid != "" && !strings.HasPrefix(c.fid, "local_") {
@@ -1437,13 +1441,10 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 	}
 
 	if !isEmpty {
+		fs.deletingPaths.Delete(path) // 清理保护标记，目录实际上没删除
 		driver.Log.Infof("Rmdir: %s is not empty in memory, returning ENOTEMPTY\n", path)
 		return -fuse.ENOTEMPTY
 	}
-	// ---------------------------------------------
-
-	// Mark directory as being deleted to prevent MergeRemoteChanges from re-adding children
-	fs.deletingPaths.Store(path, struct{}{})
 
 
 	if !strings.HasPrefix(n.fid, "local_") {
