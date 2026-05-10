@@ -906,6 +906,46 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	newFid := n.fid
 	n.mu.Unlock()
 
+	// === POST-UPLOAD RECONCILIATION ===
+	// 如果在上传期间（snapshot → UploadFinish 之间）文件被改名或移动到不同目录，
+	// 在 Quark 上执行同样的操作，使服务端与本地节点状态保持一致。
+	if newFid != "" && !strings.HasPrefix(newFid, "local_") {
+		n.mu.RLock()
+		curParentFid := n.parentFid
+		curName := n.name
+		n.mu.RUnlock()
+
+		// 1. 父目录改变 → Move 文件到新父目录
+		if curParentFid != "" && curParentFid != "0" &&
+			parentFid != "" && parentFid != "0" &&
+			curParentFid != parentFid &&
+			!strings.HasPrefix(parentFid, "local_") &&
+			!strings.HasPrefix(curParentFid, "local_") {
+
+			if err := fs.driver.Move([]string{newFid}, curParentFid, parentFid); err != nil {
+				driver.Log.Errorf("syncFile: post-upload move failed for %s (fid=%s to parent=%s): %v\n",
+					path, newFid, curParentFid, err)
+			} else {
+				driver.Log.Infof("syncFile: post-upload reconciled parent for %s (fid=%s moved from %s to %s)\n",
+					path, newFid, parentFid, curParentFid)
+				fs.driver.RemoveDirCache(parentFid)
+				fs.driver.RemoveDirCache(curParentFid)
+			}
+		}
+
+		// 2. 文件名改变 → Rename 改文件名
+		if curName != snapshotName {
+			encName := fs.cipher.EncryptSegment(curName)
+			if err := fs.driver.Rename(newFid, encName); err != nil {
+				driver.Log.Errorf("syncFile: post-upload rename failed for %s (fid=%s to name=%s): %v\n",
+					path, newFid, curName, err)
+			} else {
+				driver.Log.Infof("syncFile: post-upload reconciled name for %s (fid=%s renamed from %s to %s)\n",
+					path, newFid, snapshotName, curName)
+			}
+		}
+	}
+
 	// Update global FID index
 	if oldFid != "" && oldFid != newFid {
 		fs.fidNodes.Delete(oldFid)
