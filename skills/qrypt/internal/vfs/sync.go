@@ -906,6 +906,14 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	newFid := n.fid
 	n.mu.Unlock()
 
+	fs.syncFilePostUpload(path, n, newFid, oldFid, snapshotName, parentFid)
+	return nil
+}
+
+// syncFilePostUpload handles post-upload reconciliation and FID index update.
+// Called after a successful upload to ensure server-side state matches any
+// rename/move that occurred during the upload.
+func (fs *QryptFS) syncFilePostUpload(path string, n *node, newFid, oldFid, snapshotName, parentFid string) {
 	// === POST-UPLOAD RECONCILIATION ===
 	// 如果在上传期间（snapshot → UploadFinish 之间）文件被改名或移动到不同目录，
 	// 在 Quark 上执行同样的操作，使服务端与本地节点状态保持一致。
@@ -953,8 +961,6 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	if newFid != "" && !strings.HasPrefix(newFid, "local_") {
 		fs.fidNodes.Store(newFid, n)
 	}
-
-	return nil
 }
 
 func (fs *QryptFS) notifySyncStart(path string, n *node) {

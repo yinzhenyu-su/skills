@@ -79,10 +79,6 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 		return 0
 	}
 
-	// 标记有写入正在进行，防止 syncFile 在数据落盘前上传
-	node.addWriteInFlight()
-	defer node.doneWriteInFlight()
-
 	node.mu.Lock()
 
 	if fs.staging == nil {

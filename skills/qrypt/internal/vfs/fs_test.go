@@ -325,25 +325,6 @@ func TestRenameDuringPendingSync_Regression(t *testing.T) {
 	}
 }
 
-func TestConcurrentSyncRequestsSameNodeDifferentPaths_Regression(t *testing.T) {
-	fs := &QryptFS{}
-
-	n := &node{
-		fid:     "test_fid",
-		name:    "file.txt",
-		isDirty: true,
-	}
-
-	// 现在逻辑：节点作为锁
-	if _, loaded := fs.syncing.LoadOrStore(n, struct{}{}); loaded {
-		t.Error("Should have been able to lock first time")
-	}
-
-	if _, loaded := fs.syncing.LoadOrStore(n, struct{}{}); !loaded {
-		t.Error("BUG: Should have detected sync for same node")
-	}
-}
-
 func TestReaddir_ProtectsDirtyNodes_Regression(t *testing.T) {
 	fs := &QryptFS{
 		driver: driver.NewQuarkDriver("mock"),

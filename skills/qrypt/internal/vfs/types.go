@@ -59,7 +59,6 @@ type node struct {
 	baseServerSize  int64     // 上次同步成功的服务端明文大小
 	lastMetadataCheck time.Time // 上次从服务器拉取元数据的时间
 	lastUploadTime  time.Time // 上次上传完成的时间（用于防止 API 索引延迟导致误删）
-	lastRemoteCheck time.Time // 上次远程列表检查的时间（用于 readdir 同步）
 	lastReadBlock   int64     // 上次读取的块索引
 	readSeqCount    int       // 连续顺序读取的块数
 	lastPendingSave time.Time
@@ -67,21 +66,11 @@ type node struct {
 	source            string            // "remote" | "local" | "merged" — 文件来源
 	expectedFid       string            // 预期服务端返回的 FID（用于抵御索引延迟导致的冲突）
 	uploadedFid       string            // 上次成功上传后的远程 FID（用于 FID 直接替换，绕过 ListFiles 索引延迟）
-	writeInFlight     int32             // 正在进行的 Write 操作计数（atomic）
 	cancelled         int32             // 1 = 已取消（被删除），原子操作
 	uploadID          string            // 当前上传会话的 upload_id（用于断点续传）
 	children          map[string]*node // 子节点缓存 (name -> *node), 避免 O(N) 扫描
 	mu                sync.RWMutex
 }
-
-// addWriteInFlight 原子递增写入计数
-func (n *node) addWriteInFlight() { atomic.AddInt32(&n.writeInFlight, 1) }
-
-// doneWriteInFlight 原子递减写入计数
-func (n *node) doneWriteInFlight() { atomic.AddInt32(&n.writeInFlight, -1) }
-
-// hasWriteInFlight 检查是否有进行中的写入
-func (n *node) hasWriteInFlight() bool { return atomic.LoadInt32(&n.writeInFlight) > 0 }
 
 // cancel 标记节点已取消（被删除），用于拦截待上传的任务
 func (n *node) cancel() { atomic.StoreInt32(&n.cancelled, 1) }
@@ -145,9 +134,7 @@ type QryptFS struct {
 	metadataOpChan  chan metadataTask // Background metadata task queue
 	opsLogChan      chan metadataTask // New: Buffered channel for ops log entries
 	prefetchSem     chan struct{}     // Limit directory prefetch concurrency
-	syncing         sync.Map          // *node -> struct{} (防止并发同步同一节点)
 	retryState      sync.Map          // *node -> int (基于节点的自动重试次数)
-	dirGoneRetry    sync.Map          // *node -> int (目录被删除重试次数)
 	syncObserver    syncObserver
 	staging         *staging.Store
 	uploader        *uploadpkg.Manager

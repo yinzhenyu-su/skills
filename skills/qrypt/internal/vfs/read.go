@@ -90,6 +90,16 @@ func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int)
 }
 
 func (fs *QryptFS) prefetch(n *node, startChunk uint64) {
+	// Limit concurrent prefetch operations across all files.
+	// prefetch is already called via `go fs.prefetch(...)` from Read,
+	// so we block on the semaphore inline (no extra goroutine).
+	select {
+	case fs.prefetchSem <- struct{}{}:
+	default:
+		return // semaphore full, skip this prefetch
+	}
+	defer func() { <-fs.prefetchSem }()
+
 	defer func() {
 		if r := recover(); r != nil {
 			driver.Log.Errorf("PANIC in prefetch: %v\n%s\n", r, debug.Stack())
