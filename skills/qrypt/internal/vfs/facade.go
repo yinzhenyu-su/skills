@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/golang-lru/v2"
@@ -89,7 +90,10 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ro
 
 // Shutdown 优雅关闭：停止接收新任务，等待正在处理的上传完成
 func (fs *QryptFS) Shutdown() {
-	driver.Log.Info("Shutdown: closing upload channel, waiting for inflight tasks...\n")
+	driver.Log.Info("Shutdown: setting shutdown flag, closing upload channel...\n")
+
+	// 先设标志，阻止重试 goroutine 向已关闭的 channel 写入
+	atomic.StoreInt32(&fs.shuttingDown, 1)
 
 	// 关闭上传通道，worker 会在处理完当前任务后退出
 	close(fs.uploadChan)

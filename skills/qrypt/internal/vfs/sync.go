@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
@@ -200,22 +201,75 @@ func (fs *QryptFS) uploadWorker() {
 		}
 	}()
 	driver.Log.Info("Upload worker started\n")
-	driver.Log.Info("Upload worker stopped\n")
 	for task := range fs.uploadChan {
 		// 保存上传前的路径，用于上传后检测节点是否已被 Unlink 删除
 		savedPath := task.node.currentPath
 		err := fs.syncFile(task.node.currentPath, task.node)
+
 		if err != nil {
 			driver.Log.Errorf("Sync: failed to sync %s: %v\n", task.node.currentPath, err)
+
+			// VFS 级重试（Layer 3）：当 HTTP 层和分片级重试都耗尽后，在此重新入队
+			retryCount := fs.incrementRetryCount(task.node)
+			if retryCount < fs.maxRetries {
+				backoff := time.Duration(2<<uint(retryCount-1)) * time.Second // 2s, 4s, 8s, 16s, 32s
+				driver.Log.Warnf("uploadWorker: retry %d/%d for %s after %v\n",
+					retryCount+1, fs.maxRetries, task.node.currentPath, backoff)
+
+				go func(n *node, d time.Duration) {
+					defer func() {
+						if r := recover(); r != nil {
+							driver.Log.Errorf("PANIC in uploadWorker retry goroutine: %v\n%s\n", r, debug.Stack())
+							n.mu.Lock()
+							n.syncQueued = false
+							n.mu.Unlock()
+						}
+					}()
+					time.Sleep(d)
+					// Shutdown 保护：shuttingDown 在 Shutdown() 中先于 close(channel) 设置
+					if atomic.LoadInt32(&fs.shuttingDown) == 1 {
+						n.mu.Lock()
+						n.syncQueued = false
+						n.mu.Unlock()
+						return
+					}
+					// 检查节点是否仍有效
+					n.mu.RLock()
+					cp := n.currentPath
+					cancelled := n.isCancelled()
+					n.mu.RUnlock()
+					if cp == "" || cancelled {
+						return // 节点已被删除，不重试
+					}
+					n.mu.Lock()
+					n.syncQueued = true
+					n.mu.Unlock()
+					fs.uploadChan <- syncTask{node: n}
+				}(task.node, backoff)
+			} else {
+				driver.Log.Errorf("uploadWorker: max retries (%d) exhausted for %s, giving up\n", fs.maxRetries, task.node.currentPath)
+				// 放弃：清理本地状态
+				task.node.mu.Lock()
+				task.node.isDirty = false
+				task.node.syncQueued = false
+				task.node.mu.Unlock()
+				if fs.cache != nil {
+					_ = fs.cache.RemovePendingNode(task.node.currentPath)
+				}
+				fs.retryState.Delete(task.node)
+			}
+
+			// 更新 opsLog 状态
 			if task.opsLogID > 0 && fs.cache != nil {
 				if db, ok := fs.cache.GetDB().(*cache.CacheDB); ok {
 					_ = db.UpdateOpsLogStatus(task.opsLogID, "FAILED")
 				}
 			}
 		} else {
+			// 成功路径：清除重试计数
+			fs.resetRetryCount(task.node)
+
 			// 幽灵文件检测：上传成功后，检查节点是否已被 Unlink 删除
-			// 如果节点已从内存树移除（currentPath 被清除或路径对应不同节点），
-			// 且上传得到了真实 FID，需要清理服务器上的幽灵文件
 			task.node.mu.RLock()
 			newFid := task.node.fid
 			task.node.mu.RUnlock()
@@ -228,8 +282,6 @@ func (fs *QryptFS) uploadWorker() {
 
 				if !stillInTree {
 					driver.Log.Infof("uploadWorker: ghost file detected — node at %s was removed during upload (fid=%s), sending DELETE to clean up server\n", savedPath, newFid)
-					// 发送 DELETE 任务清理服务器上的幽灵文件
-					// 不需要墓碑（节点已不存在），直接发 metadataOpChan
 					fs.metadataOpChan <- metadataTask{
 						opType: "DELETE",
 						path:   savedPath,
@@ -245,6 +297,27 @@ func (fs *QryptFS) uploadWorker() {
 			}
 		}
 	}
+	driver.Log.Info("Upload worker stopped\n")
+}
+
+// getRetryCount 返回给定节点的当前重试次数
+func (fs *QryptFS) getRetryCount(n *node) int {
+	if v, ok := fs.retryState.Load(n); ok {
+		return v.(int)
+	}
+	return 0
+}
+
+// incrementRetryCount 原子递增重试计数，返回增加后的值
+func (fs *QryptFS) incrementRetryCount(n *node) int {
+	count := fs.getRetryCount(n) + 1
+	fs.retryState.Store(n, count)
+	return count
+}
+
+// resetRetryCount 上传成功后清除重试计数
+func (fs *QryptFS) resetRetryCount(n *node) {
+	fs.retryState.Delete(n)
 }
 
 func (fs *QryptFS) recoverDirtyFiles() {

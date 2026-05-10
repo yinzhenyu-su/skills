@@ -25,6 +25,48 @@ var (
 	QuarkUA       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
 )
 
+// HTTP retry configuration
+const (
+	httpMaxRetries = 3 // max retry attempts for transient HTTP errors
+	ossMaxRetries  = 3 // max retry attempts for OSS PUT/POST operations
+)
+
+// isRetryableHTTPError checks if a network-level error is transient and should be retried.
+func isRetryableHTTPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true // timeout, connection refused, reset by peer, etc.
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "tls handshake") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "connection refused")
+}
+
+// isRetryableHTTPStatus checks if an HTTP response status code indicates
+// a transient server error that should be retried.
+func isRetryableHTTPStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
+}
+
+// retryBackoff computes exponential backoff with deterministic jitter.
+// Base: 500ms, 1s, 2s, 4s... Jitter shifts by ~5% per attempt for thundering herd avoidance.
+func retryBackoff(attempt int) time.Duration {
+	base := time.Duration(500<<uint(attempt)) * time.Millisecond
+	// Deterministic jitter: [0.75, 1.25) based on attempt number
+	jitter := float64(75+(attempt*7)%50) / 100.0
+	return time.Duration(float64(base) * jitter)
+}
+
 // QuarkDriver 封装了与夸克网盘 API 的交互
 type QuarkDriver struct {
 	client      *http.Client
@@ -168,32 +210,49 @@ func (d *QuarkDriver) requestWithBase(method, baseURL, path string, query map[st
 	defer func() { <-sem }()
 	// ---------------------------------
 
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-	}()
-
-	// 自动更新 Cookie (__puus)
-	for _, c := range resp.Cookies() {
-		if c.Name == "__puus" {
-			d.cookie = d.updateCookie(d.cookie, "__puus", c.Value)
+	for attempt := 0; attempt <= httpMaxRetries; attempt++ {
+		resp, err := d.client.Do(req)
+		if err != nil {
+			if attempt < httpMaxRetries && isRetryableHTTPError(err) {
+				Log.Debugf("HTTP retry %d/%d: %s %s error: %v\n", attempt+1, httpMaxRetries, method, path, err)
+				time.Sleep(retryBackoff(attempt))
+				continue
+			}
+			return err
 		}
-	}
 
-	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API Error (Status %d): %s", resp.StatusCode, string(bodyBytes))
-	}
+		// 自动更新 Cookie (__puus)
+		for _, c := range resp.Cookies() {
+			if c.Name == "__puus" {
+				d.cookie = d.updateCookie(d.cookie, "__puus", c.Value)
+			}
+		}
 
-	if result != nil {
-		return json.NewDecoder(resp.Body).Decode(result)
-	}
+		if resp.StatusCode >= 400 {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if attempt < httpMaxRetries && isRetryableHTTPStatus(resp.StatusCode) {
+				Log.Debugf("HTTP retry %d/%d: %s %s status=%d\n", attempt+1, httpMaxRetries, method, path, resp.StatusCode)
+				time.Sleep(retryBackoff(attempt))
+				continue
+			}
+			return fmt.Errorf("API Error (Status %d): %s", resp.StatusCode, string(bodyBytes))
+		}
 
-	return nil
+		if result != nil {
+			err = json.NewDecoder(resp.Body).Decode(result)
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				return err
+			}
+		} else {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+		return nil
+	}
+	return nil // unreachable
 }
 
 // request 发起 HTTP 请求并解析响应
@@ -329,61 +388,78 @@ func (d *QuarkDriver) UploadPre(fileName, parentFid string, size int64) (*UpPreR
 	return &resp, nil
 }
 
-// UploadPart 封装了授权和上传
+// UploadPart 封装了授权和上传，支持 OSS 级重试（幂等：同一 part_number + 同一数据 = 覆盖）
 func (d *QuarkDriver) UploadPart(pre *UpPreResp, partNumber int, data []byte) (string, error) {
-	dateStr := time.Now().UTC().Format(http.TimeFormat)
+	for attempt := 0; attempt <= ossMaxRetries; attempt++ {
+		dateStr := time.Now().UTC().Format(http.TimeFormat)
 
-	// 与 Quark Web/AList 行为对齐：part 签名包含 x-oss-user-agent
-	authMeta := fmt.Sprintf("PUT\n\napplication/octet-stream\n%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s/%s?partNumber=%d&uploadId=%s",
-		dateStr, dateStr, pre.Data.Bucket, pre.Data.ObjKey, partNumber, pre.Data.UploadId)
+		// 与 Quark Web/AList 行为对齐：part 签名包含 x-oss-user-agent
+		authMeta := fmt.Sprintf("PUT\n\napplication/octet-stream\n%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s/%s?partNumber=%d&uploadId=%s",
+			dateStr, dateStr, pre.Data.Bucket, pre.Data.ObjKey, partNumber, pre.Data.UploadId)
 
-	// 2. 获取 AuthKey
-	authData := map[string]interface{}{
-		"auth_info":   pre.Data.AuthInfo,
-		"auth_meta":   authMeta,
-		"task_id":     pre.Data.TaskId,
-		"part_number": partNumber,
-	}
-	var authResp UpAuthResp
-	err := d.request(http.MethodPost, "/file/upload/auth", nil, authData, &authResp)
-	if err != nil {
-		return "", err
-	}
+		// 2. 获取 AuthKey
+		authData := map[string]interface{}{
+			"auth_info":   pre.Data.AuthInfo,
+			"auth_meta":   authMeta,
+			"task_id":     pre.Data.TaskId,
+			"part_number": partNumber,
+		}
+		var authResp UpAuthResp
+		err := d.request(http.MethodPost, "/file/upload/auth", nil, authData, &authResp)
+		if err != nil {
+			if attempt < ossMaxRetries {
+				Log.Debugf("UploadPart auth retry %d/%d: part=%d error=%v\n", attempt+1, ossMaxRetries, partNumber, err)
+				time.Sleep(retryBackoff(attempt))
+				continue
+			}
+			return "", err
+		}
 
-	// 3. 上传到 OSS
-	u, _ := d.getOSSURL(pre)
-	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(data))
-	if err != nil {
-		return "", err
-	}
+		// 3. 上传到 OSS
+		u, _ := d.getOSSURL(pre)
+		req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(data))
+		if err != nil {
+			return "", err
+		}
 
-	req.Header.Set("Authorization", authResp.Data.AuthKey)
-	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("x-oss-date", dateStr)
-	req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
-	req.Header.Set("Referer", QuarkReferer)
-	req.Header.Set("User-Agent", QuarkUA)
+		req.Header.Set("Authorization", authResp.Data.AuthKey)
+		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("x-oss-date", dateStr)
+		req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
+		req.Header.Set("Referer", QuarkReferer)
+		req.Header.Set("User-Agent", QuarkUA)
 
-	q := req.URL.Query()
-	q.Set("partNumber", strconv.Itoa(partNumber))
-	q.Set("uploadId", pre.Data.UploadId)
-	req.URL.RawQuery = q.Encode()
+		q := req.URL.Query()
+		q.Set("partNumber", strconv.Itoa(partNumber))
+		q.Set("uploadId", pre.Data.UploadId)
+		req.URL.RawQuery = q.Encode()
 
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
+		resp, err := d.client.Do(req)
+		if err != nil {
+			if attempt < ossMaxRetries && isRetryableHTTPError(err) {
+				Log.Debugf("OSS UploadPart retry %d/%d: part=%d error=%v\n", attempt+1, ossMaxRetries, partNumber, err)
+				time.Sleep(retryBackoff(attempt))
+				continue
+			}
+			return "", err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if attempt < ossMaxRetries && isRetryableHTTPStatus(resp.StatusCode) {
+				Log.Debugf("OSS UploadPart retry %d/%d: part=%d status=%d\n", attempt+1, ossMaxRetries, partNumber, resp.StatusCode)
+				time.Sleep(retryBackoff(attempt))
+				continue
+			}
+			return "", fmt.Errorf("oss put status: %d, host: %s, error: %s", resp.StatusCode, req.URL.Host, string(bodyBytes))
+		}
+
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("oss put status: %d, host: %s, error: %s", resp.StatusCode, req.URL.Host, string(bodyBytes))
+		return resp.Header.Get("Etag"), nil
 	}
-
-	return resp.Header.Get("Etag"), nil
+	return "", fmt.Errorf("oss upload part %d failed after %d retries", partNumber, ossMaxRetries+1)
 }
 
 // UpdateHash 向夸克上报对象哈希，用于完成上传链路校验
@@ -410,7 +486,7 @@ func encodeOSSCallback(callbackRaw json.RawMessage) (string, error) {
 
 // UploadCommit 提交 multipart upload 结果到 OSS
 func (d *QuarkDriver) UploadCommit(pre *UpPreResp, etags []string) error {
-	// 1. 构建 XML body
+	// 1. 构建 XML body（一次构建，后续 retry 复用）
 	bodyBuilder := strings.Builder{}
 	bodyBuilder.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <CompleteMultipartUpload>
@@ -425,67 +501,83 @@ func (d *QuarkDriver) UploadCommit(pre *UpPreResp, etags []string) error {
 	bodyBuilder.WriteString("</CompleteMultipartUpload>")
 	body := bodyBuilder.String()
 
-	// 2. 计算 Content-MD5
+	// 2. 计算 Content-MD5（一次计算，后续 retry 复用）
 	m := md5.New()
 	m.Write([]byte(body))
 	contentMd5 := base64.StdEncoding.EncodeToString(m.Sum(nil))
 
-	// 3. 构建 auth_meta
-	timeStr := time.Now().UTC().Format(http.TimeFormat)
-	callbackBase64, err := encodeOSSCallback(pre.Data.Callback)
-	if err != nil {
-		return err
-	}
+	for attempt := 0; attempt <= ossMaxRetries; attempt++ {
+		// 3. 构建 auth_meta（每次重新生成因为含时间戳）
+		timeStr := time.Now().UTC().Format(http.TimeFormat)
+		callbackBase64, err := encodeOSSCallback(pre.Data.Callback)
+		if err != nil {
+			return err
+		}
 
-	// 与 Quark Web/AList 行为对齐：commit 签名包含 x-oss-user-agent
-	authMeta := fmt.Sprintf("POST\n%s\napplication/xml\n%s\nx-oss-callback:%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s/%s?uploadId=%s",
-		contentMd5, timeStr, callbackBase64, timeStr, pre.Data.Bucket, pre.Data.ObjKey, pre.Data.UploadId)
+		// 与 Quark Web/AList 行为对齐：commit 签名包含 x-oss-user-agent
+		authMeta := fmt.Sprintf("POST\n%s\napplication/xml\n%s\nx-oss-callback:%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s/%s?uploadId=%s",
+			contentMd5, timeStr, callbackBase64, timeStr, pre.Data.Bucket, pre.Data.ObjKey, pre.Data.UploadId)
 
-	// 4. 获取 auth_key
-	authData := map[string]interface{}{
-		"auth_info": pre.Data.AuthInfo,
-		"auth_meta": authMeta,
-		"task_id":   pre.Data.TaskId,
-	}
-	var authResp UpAuthResp
-	err = d.request(http.MethodPost, "/file/upload/auth", nil, authData, &authResp)
-	if err != nil {
-		return err
-	}
+		// 4. 获取 auth_key
+		authData := map[string]interface{}{
+			"auth_info": pre.Data.AuthInfo,
+			"auth_meta": authMeta,
+			"task_id":   pre.Data.TaskId,
+		}
+		var authResp UpAuthResp
+		err = d.request(http.MethodPost, "/file/upload/auth", nil, authData, &authResp)
+		if err != nil {
+			if attempt < ossMaxRetries {
+				Log.Debugf("UploadCommit auth retry %d/%d: error=%v\n", attempt+1, ossMaxRetries, err)
+				time.Sleep(retryBackoff(attempt))
+				continue
+			}
+			return err
+		}
 
-	// 5. 发送 POST 到 OSS
-	u, _ := d.getOSSURL(pre)
-	req, err := http.NewRequest(http.MethodPost, u, strings.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", authResp.Data.AuthKey)
-	req.Header.Set("Content-MD5", contentMd5)
-	req.Header.Set("Content-Type", "application/xml")
-	req.Header.Set("x-oss-callback", callbackBase64)
-	req.Header.Set("x-oss-date", timeStr)
-	req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
-	req.Header.Set("Referer", QuarkReferer)
-	req.Header.Set("User-Agent", QuarkUA)
+		// 5. 发送 POST 到 OSS
+		u, _ := d.getOSSURL(pre)
+		req, err := http.NewRequest(http.MethodPost, u, strings.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", authResp.Data.AuthKey)
+		req.Header.Set("Content-MD5", contentMd5)
+		req.Header.Set("Content-Type", "application/xml")
+		req.Header.Set("x-oss-callback", callbackBase64)
+		req.Header.Set("x-oss-date", timeStr)
+		req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
+		req.Header.Set("Referer", QuarkReferer)
+		req.Header.Set("User-Agent", QuarkUA)
 
-	q := req.URL.Query()
-	q.Set("uploadId", pre.Data.UploadId)
-	req.URL.RawQuery = q.Encode()
+		q := req.URL.Query()
+		q.Set("uploadId", pre.Data.UploadId)
+		req.URL.RawQuery = q.Encode()
 
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-	}()
+		resp, err := d.client.Do(req)
+		if err != nil {
+			if attempt < ossMaxRetries && isRetryableHTTPError(err) {
+				Log.Debugf("OSS UploadCommit retry %d/%d: error=%v\n", attempt+1, ossMaxRetries, err)
+				time.Sleep(retryBackoff(attempt))
+				continue
+			}
+			return err
+		}
 
-	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("oss commit status: %d, error: %s", resp.StatusCode, string(bodyBytes))
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			if attempt < ossMaxRetries && isRetryableHTTPStatus(resp.StatusCode) {
+				Log.Debugf("OSS UploadCommit retry %d/%d: status=%d\n", attempt+1, ossMaxRetries, resp.StatusCode)
+				time.Sleep(retryBackoff(attempt))
+				continue
+			}
+			return fmt.Errorf("oss commit status: %d, error: %s", resp.StatusCode, string(bodyBytes))
+		}
+		return nil
 	}
-	return nil
+	return fmt.Errorf("oss commit failed after %d retries", ossMaxRetries+1)
 }
 
 // UploadFinish 最终通知夸克

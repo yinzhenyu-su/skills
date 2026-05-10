@@ -46,6 +46,21 @@ func NewManager(d *driver.QuarkDriver, c *crypt.RcloneCipher, s *staging.Store) 
 	return &Manager{driver: d, cipher: c, staging: s}
 }
 
+const (
+	// partRetryMax is the number of per-part upload retry attempts.
+	// OSS PUT with the same upload_id + part_number + data is idempotent,
+	// so retrying a failed part is safe and efficient.
+	partRetryMax = 3
+)
+
+// partRetryBackoff returns backoff duration for per-part retry attempts.
+// Base: 200ms, 400ms, 800ms with deterministic jitter.
+func partRetryBackoff(attempt int) time.Duration {
+	base := time.Duration(200<<uint(attempt)) * time.Millisecond
+	jitter := float64(75+(attempt*11)%50) / 100.0
+	return time.Duration(float64(base) * jitter)
+}
+
 // verifyFileName checks if a file with the given fid has the expected plaintext name
 // in the parent directory. Used to verify dedup results before accepting them.
 func (m *Manager) verifyFileName(fid, parentFid, expectedPlainName string) bool {
@@ -241,10 +256,23 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 		}
 
 		partStart := time.Now()
-		etag, err := m.driver.UploadPart(pre, partNumber, buf[:n])
+		// Per-part retry: OSS PUT with same upload_id + part_number + data is idempotent.
+		// The underlying UploadPart also does OSS-level retry, but this adds another layer
+		// at the Sync level for resilience against transient auth or connection issues.
+		var etag string
+		for attempt := 0; attempt < partRetryMax; attempt++ {
+			etag, err = m.driver.UploadPart(pre, partNumber, buf[:n])
+			if err == nil {
+				break
+			}
+			if attempt < partRetryMax-1 {
+				driver.Log.Warnf("Sync: UploadPart %d retry %d/%d for %s: %v\n", partNumber, attempt+1, partRetryMax, req.Path, err)
+				time.Sleep(partRetryBackoff(attempt))
+			}
+		}
 		result.UploadPartDuration += time.Since(partStart)
 		if err != nil {
-			return result, err
+			return result, fmt.Errorf("UploadPart %d failed after %d retries: %v", partNumber, partRetryMax, err)
 		}
 		etags = append(etags, etag)
 		result.PartCount++

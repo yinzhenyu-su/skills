@@ -235,6 +235,7 @@ func (fs *QryptFS) deleteNodePath(path string, n *node) {
 		if n.currentPath == path {
 			n.currentPath = ""
 			n.cancel() // 原子标记取消，拦截待上传任务
+			fs.retryState.Delete(n) // 清理重试计数，避免重试 goroutine 继续尝试已删除的节点
 		}
 
 		// 如果是普通文件且有本地 staging，立即物理清理（不依赖 API）

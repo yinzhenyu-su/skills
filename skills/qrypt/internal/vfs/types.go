@@ -151,4 +151,5 @@ type QryptFS struct {
 	staging         *staging.Store
 	uploader        *uploadpkg.Manager
 	maxRetries      int
+	shuttingDown    int32 // 1 = shutdown in progress, guards retry goroutines from writing to closed channel
 }
