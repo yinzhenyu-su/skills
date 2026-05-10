@@ -19,9 +19,13 @@ func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int)
 		return 0
 	}
 
-	if ofst >= node.size {
+	node.mu.RLock()
+	nodeSize := node.size
+	node.mu.RUnlock()
+	if ofst >= nodeSize {
 		return 0
 	}
+
 	node.mu.RLock()
 	localPath := node.localPath
 	node.mu.RUnlock()
@@ -91,21 +95,41 @@ func (fs *QryptFS) prefetch(n *node, startChunk uint64) {
 			driver.Log.Errorf("PANIC in prefetch: %v\n%s\n", r, debug.Stack())
 		}
 	}()
+
+	// Snapshot file size under lock to avoid data race with concurrent Write/Truncate
+	n.mu.RLock()
+	fileSize := n.size
+	n.mu.RUnlock()
+
+	// Prefetch by batch (not per-chunk) — getDecryptedChunk fetches the full batch,
+	// so one goroutine per missing batch is sufficient. Max goroutines = batches needed
+	// (typically 8 for a 128-chunk range), not 128 per-chunk goroutines.
+	seenBatches := make(map[uint64]bool)
 	for i := uint64(0); i < FetchBatchBlocks/4; i++ {
 		target := startChunk + i
-		if int64(target)*crypt.BlockDataSize >= n.size {
+		if int64(target)*crypt.BlockDataSize >= fileSize {
 			break
 		}
+		batchIdx := target / FetchBatchBlocks
+		if seenBatches[batchIdx] {
+			continue // already queued this batch
+		}
+
+		// Check if any chunk in this batch is already cached
+		firstInBatch := batchIdx * FetchBatchBlocks
 		if fs.cache != nil {
-			if ok, _ := fs.cache.HasChunk(n.fid, int64(target)); ok {
+			if ok, _ := fs.cache.HasChunk(n.fid, int64(firstInBatch)); ok {
+				seenBatches[batchIdx] = true
 				continue
 			}
 		}
-		mKey := fmt.Sprintf("%s_%d", n.fid, target)
+		mKey := fmt.Sprintf("%s_%d", n.fid, firstInBatch)
 		if fs.memCache.Contains(mKey) {
+			seenBatches[batchIdx] = true
 			continue
 		}
 
+		seenBatches[batchIdx] = true
 		go func(idx uint64) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -113,7 +137,7 @@ func (fs *QryptFS) prefetch(n *node, startChunk uint64) {
 				}
 			}()
 			_, _ = fs.getDecryptedChunk(n, idx)
-		}(target)
+		}(firstInBatch)
 	}
 }
 
@@ -175,19 +199,23 @@ func (fs *QryptFS) fetchBatch(n *node, batchIdx uint64) error {
 		return err
 	}
 
+	n.mu.RLock()
+	encSize := n.encSize
+	n.mu.RUnlock()
+
 	startBlock := batchIdx * FetchBatchBlocks
 	endBlock := startBlock + FetchBatchBlocks - 1
 
 	pStart := int64(crypt.FileHeaderSize) + int64(startBlock)*int64(crypt.BlockSize)
-	if pStart >= n.encSize {
+	if pStart >= encSize {
 		pStart = 0
 	}
 	pEnd := pStart + int64(FetchBatchBlocks)*int64(crypt.BlockSize) - 1
 	if pStart == 0 {
 		pEnd += int64(crypt.FileHeaderSize)
 	}
-	if pEnd >= n.encSize {
-		pEnd = n.encSize - 1
+	if pEnd >= encSize {
+		pEnd = encSize - 1
 	}
 
 	driver.Log.Infof("Batch Fetch: '%s' Blocks %d-%d\n", n.name, startBlock, endBlock)
@@ -201,7 +229,7 @@ func (fs *QryptFS) fetchBatch(n *node, batchIdx uint64) error {
 	}
 	defer rc.Close()
 
-	if !n.hasNonce {
+	if !n.hasNonce && batchIdx > 0 {
 		hrc, err := fs.driver.DownloadChunk(url, 0, int64(crypt.FileHeaderSize)-1)
 		if err == nil {
 			header := make([]byte, crypt.FileHeaderSize)

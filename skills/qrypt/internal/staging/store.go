@@ -217,27 +217,7 @@ func (s *Store) Remove(path string) error {
 	return nil
 }
 
-func (s *Store) Snapshot(path string) (string, error) {
-	src, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer src.Close()
-
-	dst, err := os.CreateTemp(s.dir, filepath.Base(path)+".upload-*")
-	if err != nil {
-		return "", err
-	}
-	defer dst.Close()
-
-	if _, err := io.Copy(dst, src); err != nil {
-		_ = os.Remove(dst.Name())
-		return "", err
-	}
-	return dst.Name(), nil
-}
-
-// ListStagingFiles 列出 staging 目录中的所有文件（不包括 .upload-* 临时文件）
+// ListStagingFiles 列出 staging 目录中的所有文件
 func (s *Store) ListStagingFiles() ([]string, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
