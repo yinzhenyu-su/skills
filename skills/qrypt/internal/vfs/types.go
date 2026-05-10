@@ -69,6 +69,7 @@ type node struct {
 	uploadedFid       string            // 上次成功上传后的远程 FID（用于 FID 直接替换，绕过 ListFiles 索引延迟）
 	writeInFlight     int32             // 正在进行的 Write 操作计数（atomic）
 	cancelled         int32             // 1 = 已取消（被删除），原子操作
+	uploadID          string            // 当前上传会话的 upload_id（用于断点续传）
 	children          map[string]*node // 子节点缓存 (name -> *node), 避免 O(N) 扫描
 	mu                sync.RWMutex
 }

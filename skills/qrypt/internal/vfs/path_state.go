@@ -373,7 +373,7 @@ func (fs *QryptFS) persistPendingPath(oldPath, newPath string, n *node) {
 		return
 	}
 
-	_ = fs.cache.SavePendingNode(newPath, fid, parentFid, name, localPath, size, false, nonce, baseMtime, baseSize)
+	_ = fs.cache.SavePendingNode(newPath, fid, parentFid, name, localPath, size, false, nonce, baseMtime, baseSize, "", 0)
 	if oldPath != "" && oldPath != newPath {
 		_ = fs.cache.RemovePendingNode(oldPath)
 	}
@@ -1707,7 +1707,7 @@ func (fs *QryptFS) maybeSavePendingNodeLocked(path string, n *node, force bool) 
 		return nil
 	}
 
-	err := fs.cache.SavePendingNode(path, n.fid, n.parentFid, n.name, n.localPath, n.size, n.isFolder, n.fileNonce[:], n.baseServerMtime, n.baseServerSize)
+	err := fs.cache.SavePendingNode(path, n.fid, n.parentFid, n.name, n.localPath, n.size, n.isFolder, n.fileNonce[:], n.baseServerMtime, n.baseServerSize, "", 0)
 	if err == nil {
 		n.lastPendingSave = now
 		n.lastPendingSize = n.size

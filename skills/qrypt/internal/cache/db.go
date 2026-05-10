@@ -93,6 +93,8 @@ func NewCacheDB(dbPath string) (*CacheDB, error) {
 	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN local_path TEXT")
 	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN base_server_mtime INTEGER DEFAULT 0")
 	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN base_server_size INTEGER DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN upload_id TEXT")
+	_, _ = db.Exec("ALTER TABLE pending_nodes ADD COLUMN last_part INTEGER DEFAULT 0")
 
 	return &CacheDB{db: db}, nil
 }
@@ -181,8 +183,9 @@ func (c *CacheDB) DeleteChunk(fid string, chunkIndex int64) error {
 }
 
 // SavePendingNode 持久化未完成的文件节点（含 SQLITE_BUSY 重试）
-func (c *CacheDB) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64) error {
-	query := `INSERT OR REPLACE INTO pending_nodes (path, fid, parent_fid, name, local_path, size, is_folder, file_nonce, base_server_mtime, base_server_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+func (c *CacheDB) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64, uploadID string, lastPart int) error {
+	query := `INSERT OR REPLACE INTO pending_nodes (path, fid, parent_fid, name, local_path, size, is_folder, file_nonce, base_server_mtime, base_server_size, upload_id, last_part)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	var lastErr error
 	for attempt := 0; attempt < 10; attempt++ {
 		if attempt > 0 {
@@ -190,7 +193,7 @@ func (c *CacheDB) SavePendingNode(path, fid, parentFid, name, localPath string, 
 			delay := time.Duration(10<<uint(attempt-1)) * time.Millisecond
 			time.Sleep(delay)
 		}
-		_, err := c.db.Exec(query, path, fid, parentFid, name, localPath, size, isFolder, nonce, baseMtime, baseSize)
+		_, err := c.db.Exec(query, path, fid, parentFid, name, localPath, size, isFolder, nonce, baseMtime, baseSize, uploadID, lastPart)
 		if err == nil {
 			return nil
 		}
@@ -236,6 +239,19 @@ func (c *CacheDB) RemovePendingNodesByFid(fid string) error {
 	return err
 }
 
+// UpdatePendingNodeUpload 更新 pending node 的 upload_id（UploadPre 成功后调用）
+func (c *CacheDB) UpdatePendingNodeUpload(path, uploadID string) error {
+	_, err := c.db.Exec("UPDATE pending_nodes SET upload_id = ? WHERE path = ?", uploadID, path)
+	return err
+}
+
+// UpdatePendingNodeLastPart 更新 pending node 的 last_part（上传进度标记）
+// lastPart 是已成功上传的最后一个 part 编号。间隔更新以减少 SQLite 写入频率。
+func (c *CacheDB) UpdatePendingNodeLastPart(path string, lastPart int) error {
+	_, err := c.db.Exec("UPDATE pending_nodes SET last_part = ? WHERE path = ?", lastPart, path)
+	return err
+}
+
 // PendingNode 定义待同步的节点
 type PendingNode struct {
 	Path            string
@@ -248,11 +264,13 @@ type PendingNode struct {
 	Nonce           []byte
 	BaseServerMtime int64
 	BaseServerSize  int64
+	UploadID        string // UploadPre 返回的会话 ID，用于断点续传
+	LastPart        int    // 上次成功上传的 part 编号（0=未上传任何 part）
 }
 
 // GetPendingNodes 获取所有待同步的节点
 func (c *CacheDB) GetPendingNodes() ([]PendingNode, error) {
-	rows, err := c.db.Query("SELECT path, fid, parent_fid, name, local_path, size, is_folder, file_nonce, base_server_mtime, base_server_size FROM pending_nodes")
+	rows, err := c.db.Query("SELECT path, fid, parent_fid, name, local_path, size, is_folder, file_nonce, base_server_mtime, base_server_size, COALESCE(upload_id,''), COALESCE(last_part,0) FROM pending_nodes")
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +279,7 @@ func (c *CacheDB) GetPendingNodes() ([]PendingNode, error) {
 	var nodes []PendingNode
 	for rows.Next() {
 		var n PendingNode
-		if err := rows.Scan(&n.Path, &n.Fid, &n.ParentFid, &n.Name, &n.LocalPath, &n.Size, &n.IsFolder, &n.Nonce, &n.BaseServerMtime, &n.BaseServerSize); err != nil {
+		if err := rows.Scan(&n.Path, &n.Fid, &n.ParentFid, &n.Name, &n.LocalPath, &n.Size, &n.IsFolder, &n.Nonce, &n.BaseServerMtime, &n.BaseServerSize, &n.UploadID, &n.LastPart); err != nil {
 			return nil, err
 		}
 		nodes = append(nodes, n)
@@ -392,6 +410,57 @@ func (c *CacheDB) SaveCachedName(fid, encryptedName, decryptedName string) error
 			updated_at = CURRENT_TIMESTAMP`
 	_, err := c.db.Exec(query, fid, encryptedName, decryptedName)
 	return err
+}
+
+// CleanupOldChunks 清理 N 天未访问的缓存 chunks 及其对应的物理文件
+// 返回: 清理的 chunk 数, 释放的磁盘字节数, 错误
+// 与 EvictIfNeeded 不同，这是时间维度清理，不是 LRU 容量维度
+func (c *CacheDB) CleanupOldChunks(days int) (int, int64, error) {
+	if days <= 0 {
+		return 0, 0, nil
+	}
+
+	// 1. 收集需要清理的 batch 文件路径（去重）
+	rows, err := c.db.Query(`
+		SELECT DISTINCT file_path FROM chunks
+		WHERE access_time < datetime('now', ?) AND file_path != ''
+	`, fmt.Sprintf("-%d days", days))
+	if err != nil {
+		return 0, 0, err
+	}
+	var filePaths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		filePaths = append(filePaths, p)
+	}
+	rows.Close()
+
+	// 2. 删除物理文件
+	var freedBytes int64
+	for _, p := range filePaths {
+		if fi, statErr := os.Stat(p); statErr == nil {
+			freedBytes += fi.Size()
+		}
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			// 文件可能已在 EvictIfNeeded 中删除，忽略
+		}
+	}
+
+	// 3. 删除 DB 记录（包括有 file_path 和无 file_path 的旧 chunk）
+	result1, err := c.db.Exec(`
+		DELETE FROM chunks
+		WHERE access_time < datetime('now', ?)
+	`, fmt.Sprintf("-%d days", days))
+	if err != nil {
+		return 0, freedBytes, err
+	}
+	deleted, _ := result1.RowsAffected()
+
+	return int(deleted), freedBytes, nil
 }
 
 // Close 关闭数据库

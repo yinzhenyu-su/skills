@@ -368,8 +368,8 @@ func (d *QuarkDriver) getOSSURL(pre *UpPreResp) (string, error) {
 	return fmt.Sprintf("https://%s.%s/%s", pre.Data.Bucket, host, pre.Data.ObjKey), nil
 }
 
-// UploadPre 预上传请求
-func (d *QuarkDriver) UploadPre(fileName, parentFid string, size int64) (*UpPreResp, error) {
+// UploadPre 预上传请求。uploadID 为非空时表示断点续传。
+func (d *QuarkDriver) UploadPre(fileName, parentFid string, size int64, uploadID string) (*UpPreResp, error) {
 	now := time.Now().UnixMilli()
 	data := map[string]interface{}{
 		"ccp_hash_update": true,
@@ -379,6 +379,9 @@ func (d *QuarkDriver) UploadPre(fileName, parentFid string, size int64) (*UpPreR
 		"pdir_fid":        parentFid,
 		"size":            size,
 		"format_type":     0,
+	}
+	if uploadID != "" {
+		data["upload_id"] = uploadID
 	}
 	var resp UpPreResp
 	err := d.request(http.MethodPost, "/file/upload/pre", nil, data, &resp)

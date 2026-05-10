@@ -21,6 +21,12 @@ type SyncRequest struct {
 	LocalPath string
 	PlainSize int64
 	OldFid    string // 上次成功上传的 FID，用于 FID 直接替换（绕过 ListFiles 索引延迟）
+
+	// 断点续传字段
+	// Nonce: 非零值时使用此 nonce（复用崩溃前的加密数据），零值时生成新 nonce
+	// UploadID: UploadPre 时传入此 ID（复用崩溃前的上传 session），空字符串时创建新 session
+	Nonce    [24]byte
+	UploadID string
 }
 
 type SyncResult struct {
@@ -34,6 +40,7 @@ type SyncResult struct {
 	UploadPartDuration time.Duration
 	CommitDuration     time.Duration
 	FinishDuration     time.Duration
+	UploadID           string // 本次上传的 upload_id，用于断点续传
 }
 
 type Manager struct {
@@ -146,13 +153,22 @@ func (m *Manager) deleteExistingFileByName(parentFid, plainName string) error {
 
 func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	var result SyncResult
+	var err error
 	if req.LocalPath == "" {
 		return result, fmt.Errorf("missing staging file for %s", req.Path)
 	}
 
-	nonce, err := m.cipher.GenerateRandomNonce()
-	if err != nil {
-		return result, err
+	nonce := req.Nonce
+	isResume := req.UploadID != "" || !isZeroNonce(nonce)
+	if isResume {
+		driver.Log.Infof("Sync: RESUMING upload for %s (uploadID=%s, nonce present=%v)\n",
+			req.Path, req.UploadID, !isZeroNonce(nonce))
+	}
+	if isZeroNonce(nonce) {
+		nonce, err = m.cipher.GenerateRandomNonce()
+		if err != nil {
+			return result, err
+		}
 	}
 
 	encName := m.cipher.EncryptSegment(req.Name)
@@ -181,11 +197,12 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	}
 
 	preStart := time.Now()
-	pre, err := m.driver.UploadPre(encName, req.ParentFid, encSize)
+	pre, err := m.driver.UploadPre(encName, req.ParentFid, encSize, req.UploadID)
 	result.PreDuration = time.Since(preStart)
 	if err != nil {
 		return result, err
 	}
+	result.UploadID = pre.Data.UploadId
 
 	// [DEBUG] UploadPre 结果，用于排查 (1) 重名问题
 	driver.Log.Debugf("Sync UploadPre result for %s: finish=%v fid=%s encName=%s plainSize=%d encSize=%d\n", req.Name, pre.Data.Finish, pre.Data.Fid, encName, req.PlainSize, encSize)
@@ -203,7 +220,7 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 		// Delete the old file with same plaintext name
 		m.deleteExistingFileByName(req.ParentFid, req.Name)
 		// Re-create UploadPre for a fresh upload
-		pre, err = m.driver.UploadPre(encName, req.ParentFid, encSize)
+		pre, err = m.driver.UploadPre(encName, req.ParentFid, encSize, "")
 		if err != nil {
 			return result, err
 		}
@@ -320,4 +337,14 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// isZeroNonce checks if a [24]byte nonce is the zero value (indicates "generate new one").
+func isZeroNonce(n [24]byte) bool {
+	for _, b := range n {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }

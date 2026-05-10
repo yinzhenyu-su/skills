@@ -365,6 +365,7 @@ func (fs *QryptFS) recoverDirtyFiles() {
 					lastMetadataCheck: time.Now(),
 					baseServerMtime:   f.BaseServerMtime,
 					baseServerSize:    f.BaseServerSize,
+					uploadID:          f.UploadID, // 恢复断点续传 ID
 				}
 				if len(f.Nonce) == 24 {
 					copy(newNode.fileNonce[:], f.Nonce)
@@ -398,6 +399,9 @@ func (fs *QryptFS) recoverDirtyFiles() {
 
 		n.isDirty = true
 		n.syncQueued = true
+		if f.UploadID != "" {
+			n.uploadID = f.UploadID // 恢复断点续传 ID
+		}
 		n.mu.Unlock()
 		fs.uploadChan <- syncTask{node: n}
 		driver.Log.Infof("recoverDirtyFiles: queued %s for sync\n", f.Path)
@@ -714,6 +718,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	localPath := n.localPath
 	lastUpload := n.lastUploadTime
 	oldUploadedFid := n.uploadedFid // 记录上次上传的 FID，用于 FID 直接替换
+	uploadID := n.uploadID          // 断点续传的 upload_id
 	n.mu.Unlock()
 
 	// [DEBUG] 上传前状态快照，用于排查 (1) 重名问题
@@ -804,7 +809,17 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		LocalPath: localPath,
 		PlainSize: snapshotSize,
 		OldFid:    oldUploadedFid, // FID 直接替换，绕过 ListFiles 索引延迟
+		Nonce:     n.fileNonce,    // 断点续传：复用崩溃前的 nonce（同 nonce = 同加密数据）
+		UploadID:  uploadID,       // 断点续传：复用崩溃前的 upload session
 	})
+
+	// 保存 upload_id 用于断点续传（UploadPre 成功后已有值，无论 Sync 后续是否成功）
+	if result.UploadID != "" && fs.cache != nil {
+		n.mu.Lock()
+		n.uploadID = result.UploadID
+		n.mu.Unlock()
+		_ = fs.cache.UpdatePendingNodeUpload(path, result.UploadID)
+	}
 
 	// [DEBUG] Sync 结果，用于排查 (1) 重名问题
 	if err != nil {

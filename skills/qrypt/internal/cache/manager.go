@@ -32,6 +32,8 @@ type CacheDBPendingNode struct {
 	Nonce           []byte
 	BaseServerMtime int64
 	BaseServerSize  int64
+	UploadID        string
+	LastPart        int
 }
 
 func (m *CacheManager) CacheDir() string {
@@ -217,13 +219,18 @@ func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDir
 }
 
 // SavePendingNode 持久化未完成的文件节点
-func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64) error {
-	return m.DB.SavePendingNode(path, fid, parentFid, name, localPath, size, isFolder, nonce, baseMtime, baseSize)
+func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64, uploadID string, lastPart int) error {
+	return m.DB.SavePendingNode(path, fid, parentFid, name, localPath, size, isFolder, nonce, baseMtime, baseSize, uploadID, lastPart)
 }
 
 // RemovePendingNode 移除已完成的文件节点
 func (m *CacheManager) RemovePendingNode(path string) error {
 	return m.DB.RemovePendingNode(path)
+}
+
+// UpdatePendingNodeUpload 更新 pending node 的 upload_id
+func (m *CacheManager) UpdatePendingNodeUpload(path, uploadID string) error {
+	return m.DB.UpdatePendingNodeUpload(path, uploadID)
 }
 
 // RemovePendingNodesByPrefix 按路径前缀移除待同步节点
@@ -255,6 +262,8 @@ func (m *CacheManager) GetPendingNodes() ([]CacheDBPendingNode, error) {
 			Nonce:           n.Nonce,
 			BaseServerMtime: n.BaseServerMtime,
 			BaseServerSize:  n.BaseServerSize,
+			UploadID:        n.UploadID,
+			LastPart:        n.LastPart,
 		})
 	}
 	return result, nil
@@ -355,7 +364,15 @@ func (m *CacheManager) Maintenance() error {
 	// 2. 清理过期 staging 元数据
 	_ = m.CleanupStagingMetas(24 * time.Hour)
 
-	// 3. 清理 30 天未访问的分块 + VACUUM
+	// 3. 清理 7 天未访问的缓存 chunks（含物理文件）
+	deleted, freedBytes, cErr := m.DB.CleanupOldChunks(7)
+	if cErr != nil {
+		fmt.Printf("Maintenance: CleanupOldChunks error: %v\n", cErr)
+	} else if deleted > 0 {
+		fmt.Printf("Maintenance: cleaned %d old chunks (%.1f MB freed)\n", deleted, float64(freedBytes)/1048576.0)
+	}
+
+	// 4. 清理 30 天未访问的分块 + VACUUM
 	return m.DB.Maintenance()
 }
 
