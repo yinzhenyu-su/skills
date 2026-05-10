@@ -344,6 +344,15 @@ func (fs *QryptFS) recoverDirtyFiles() {
 
 			// Case 2: local_ FID → 从未上传，尝试从 DB 重建节点树并重新入队
 			if strings.HasPrefix(f.Fid, "local_") {
+				// 先检查 staging 文件是否存在
+				// 如果 staging 已被 crash 前的 Unlink/Rm 操作删除，直接清理 DB 记录
+				if f.LocalPath != "" && fs.staging != nil {
+					if _, sErr := fs.staging.FileSize(f.LocalPath); sErr != nil {
+						_ = fs.cache.RemovePendingNode(f.Path)
+						driver.Log.Infof("recoverDirtyFiles: staging missing for %s (deleted before crash), cleaned up\n", f.Path)
+						continue
+					}
+				}
 				parentPath := filepath.Dir(f.Path)
 				_, parentErr := fs.lookupExtended(parentPath, true)
 				if parentErr != 0 {
@@ -395,6 +404,18 @@ func (fs *QryptFS) recoverDirtyFiles() {
 			_ = fs.cache.RemovePendingNode(f.Path)
 			driver.Log.Infof("recoverDirtyFiles: skipped %s (already uploaded, fid=%s)\n", f.Path, n.fid)
 			continue
+		}
+
+		// staging 文件已被删除（crash 前的 Unlink/Rm 所致）→ 清理 DB 记录，跳过上传
+		if n.localPath != "" && fs.staging != nil {
+			if _, sErr := fs.staging.FileSize(n.localPath); sErr != nil {
+				n.isDirty = false
+				n.syncQueued = false
+				n.mu.Unlock()
+				_ = fs.cache.RemovePendingNode(f.Path)
+				driver.Log.Infof("recoverDirtyFiles: staging missing for %s (deleted before crash), cleaned up\n", f.Path)
+				continue
+			}
 		}
 
 		n.isDirty = true

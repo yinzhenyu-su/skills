@@ -82,8 +82,8 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ro
 	// 启动异步日志工作协程
 	go fs.opsLogWorker()
 
-	fs.recoverDirtyFiles()
 	fs.recoverPendingOps()
+	fs.recoverDirtyFiles()
 
 	return fs
 }
