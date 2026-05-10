@@ -463,6 +463,39 @@ func (c *CacheDB) CleanupOldChunks(days int) (int, int64, error) {
 	return int(deleted), freedBytes, nil
 }
 
+// CleanupOldOpsLog 清理已完成的操作日志（保留 N 天内的记录用于调试）
+func (c *CacheDB) CleanupOldOpsLog(days int) (int, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	result, err := c.db.Exec(`
+		DELETE FROM ops_log
+		WHERE status IN ('DONE', 'FAILED')
+		AND created_at < datetime('now', ?)
+	`, fmt.Sprintf("-%d days", days))
+	if err != nil {
+		return 0, err
+	}
+	deleted, _ := result.RowsAffected()
+	return int(deleted), nil
+}
+
+// CleanupOldNameCache 清理旧的文件名缓存
+func (c *CacheDB) CleanupOldNameCache(days int) (int, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	result, err := c.db.Exec(`
+		DELETE FROM name_cache
+		WHERE updated_at < datetime('now', ?)
+	`, fmt.Sprintf("-%d days", days))
+	if err != nil {
+		return 0, err
+	}
+	deleted, _ := result.RowsAffected()
+	return int(deleted), nil
+}
+
 // Close 关闭数据库
 func (c *CacheDB) Close() error {
 	return c.db.Close()

@@ -372,7 +372,21 @@ func (m *CacheManager) Maintenance() error {
 		fmt.Printf("Maintenance: cleaned %d old chunks (%.1f MB freed)\n", deleted, float64(freedBytes)/1048576.0)
 	}
 
-	// 4. 清理 30 天未访问的分块 + VACUUM
+	// 4. 清理 30 天前已完成的操作日志
+	if deletedLogs, logErr := m.DB.CleanupOldOpsLog(30); logErr != nil {
+		fmt.Printf("Maintenance: CleanupOldOpsLog error: %v\n", logErr)
+	} else if deletedLogs > 0 {
+		fmt.Printf("Maintenance: cleaned %d old ops_log entries\n", deletedLogs)
+	}
+
+	// 5. 清理 30 天未使用的文件名缓存
+	if deletedNC, ncErr := m.DB.CleanupOldNameCache(30); ncErr != nil {
+		fmt.Printf("Maintenance: CleanupOldNameCache error: %v\n", ncErr)
+	} else if deletedNC > 0 {
+		fmt.Printf("Maintenance: cleaned %d old name_cache entries\n", deletedNC)
+	}
+
+	// 6. 清理 30 天未访问的分块 + VACUUM
 	return m.DB.Maintenance()
 }
 
