@@ -233,6 +233,11 @@ func (m *CacheManager) UpdatePendingNodeUpload(path, uploadID string) error {
 	return m.DB.UpdatePendingNodeUpload(path, uploadID)
 }
 
+// UpdatePendingNodeLastPart 更新 pending node 的 last_part（上传进度标记）
+func (m *CacheManager) UpdatePendingNodeLastPart(path string, lastPart int) error {
+	return m.DB.UpdatePendingNodeLastPart(path, lastPart)
+}
+
 // RemovePendingNodesByPrefix 按路径前缀移除待同步节点
 func (m *CacheManager) RemovePendingNodesByPrefix(prefix string) error {
 	return m.DB.RemovePendingNodesByPrefix(prefix)

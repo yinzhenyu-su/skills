@@ -16,6 +16,30 @@ type EncryptingReader struct {
 	plaintextEOF bool
 }
 
+// SkipEncrypted reads and discards n bytes of encrypted output from the reader.
+// Used for upload resume: skip already-uploaded encrypted parts without
+// re-uploading them. The underlying plaintext is still encrypted (no way to
+// avoid it since the reader is streaming), but the CPU cost is negligible
+// (~1s per 400MB of NaCl Secretbox encryption at modern CPU speeds).
+func (r *EncryptingReader) SkipEncrypted(n int64) error {
+	buf := make([]byte, BlockSize)
+	for n > 0 {
+		toRead := int64(len(buf))
+		if toRead > n {
+			toRead = n
+		}
+		tmp := buf[:toRead]
+		if _, err := io.ReadFull(r, tmp); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		n -= toRead
+	}
+	return nil
+}
+
 func NewEncryptingReader(plain io.Reader, cipher *RcloneCipher, nonce [24]byte, plainSize int64) *EncryptingReader {
 	return &EncryptingReader{
 		plain:     plain,

@@ -393,6 +393,7 @@ func (fs *QryptFS) recoverDirtyFiles() {
 					baseServerMtime:   f.BaseServerMtime,
 					baseServerSize:    f.BaseServerSize,
 					uploadID:          f.UploadID, // 恢复断点续传 ID
+					lastPart:          f.LastPart, // 恢复断点续传进度
 				}
 				if len(f.Nonce) == 24 {
 					copy(newNode.fileNonce[:], f.Nonce)
@@ -440,6 +441,9 @@ func (fs *QryptFS) recoverDirtyFiles() {
 		n.syncQueued = true
 		if f.UploadID != "" {
 			n.uploadID = f.UploadID // 恢复断点续传 ID
+		}
+		if f.LastPart > 0 {
+			n.lastPart = f.LastPart // 恢复断点续传进度
 		}
 		n.mu.Unlock()
 		fs.uploadChan <- syncTask{node: n}
@@ -760,6 +764,7 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 	lastUpload := n.lastUploadTime
 	oldUploadedFid := n.uploadedFid // 记录上次上传的 FID，用于 FID 直接替换
 	uploadID := n.uploadID          // 断点续传的 upload_id
+	lastPart := n.lastPart          // 断点续传：已成功上传的最后一个 part
 	n.mu.Unlock()
 
 	// [DEBUG] 上传前状态快照，用于排查 (1) 重名问题
@@ -852,6 +857,19 @@ func (fs *QryptFS) syncFile(path string, n *node) (err error) {
 		OldFid:    oldUploadedFid, // FID 直接替换，绕过 ListFiles 索引延迟
 		Nonce:     n.fileNonce,    // 断点续传：复用崩溃前的 nonce（同 nonce = 同加密数据）
 		UploadID:  uploadID,       // 断点续传：复用崩溃前的 upload session
+		LastPart:  lastPart,       // 断点续传：已成功上传的最后一个 part
+		ProgressFn: func(partNumber int) {
+			// 在内存中更新 lastPart（断点续传进度）
+			n.mu.Lock()
+			if n.lastPart < partNumber {
+				n.lastPart = partNumber
+			}
+			n.mu.Unlock()
+			// 每 25 个分片持久化一次，减少 SQLite 写入频率
+			if partNumber%25 == 0 && fs.cache != nil {
+				_ = fs.cache.UpdatePendingNodeLastPart(path, partNumber)
+			}
+		},
 	})
 
 	// 保存 upload_id 用于断点续传（UploadPre 成功后已有值，无论 Sync 后续是否成功）

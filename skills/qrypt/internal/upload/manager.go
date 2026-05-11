@@ -27,6 +27,11 @@ type SyncRequest struct {
 	// UploadID: UploadPre 时传入此 ID（复用崩溃前的上传 session），空字符串时创建新 session
 	Nonce    [24]byte
 	UploadID string
+	LastPart int // 已成功上传的最后一个 part 编号（0=首次上传）
+
+	// ProgressFn 可选的上传进度回调，每完成一个分片后调用
+	// partNumber 是已成功上传的分片编号。调用方可在此持久化断点续传进度。
+	ProgressFn func(partNumber int)
 }
 
 type SyncResult struct {
@@ -257,7 +262,17 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 	md5h := md5.New()
 	sha1h := sha1.New()
 
-	for partNumber := 1; ; partNumber++ {
+	// 断点续传：跳过已上传的加密分片数据
+	skipBytes := int64(req.LastPart) * int64(partSize)
+	if skipBytes > 0 {
+		driver.Log.Infof("Sync: skipping %d already-uploaded encrypted bytes for %s (lastPart=%d)\n",
+			skipBytes, req.Path, req.LastPart)
+		if err := encReader.SkipEncrypted(skipBytes); err != nil {
+			return result, fmt.Errorf("skip encrypted failed: %w", err)
+		}
+	}
+
+	for partNumber := req.LastPart + 1; ; partNumber++ {
 		n, readErr := io.ReadFull(encReader, buf)
 		if readErr == io.EOF && n == 0 {
 			break
@@ -294,6 +309,11 @@ func (m *Manager) Sync(req SyncRequest) (SyncResult, error) {
 		etags = append(etags, etag)
 		result.PartCount++
 		result.UploadedBytes += int64(n)
+
+			// 断点续传进度回调
+			if req.ProgressFn != nil {
+				req.ProgressFn(partNumber)
+			}
 
 		if readErr == io.ErrUnexpectedEOF {
 			break
