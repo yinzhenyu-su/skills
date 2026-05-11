@@ -3,6 +3,7 @@ package vfs
 import (
 	"fmt"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 	"unsafe"
@@ -13,6 +14,16 @@ import (
 
 // Create 创建新文件
 func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uint64) {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in Create(%s): %v\n%s\n", path, r, debug.Stack())
+			errc = -fuse.EIO
+		}
+	}()
+	if fs.isShuttingDown() {
+		driver.Log.Warnf("[SHUTDOWN] Rejecting Create: %s\n", path)
+		return -fuse.EIO, 0
+	}
 	driver.Log.Infof("[FUSE] Create: path=%s, flags=%d, mode=%o\n", path, flags, mode)
 	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
 		return -fuse.ENOENT, 0
@@ -70,6 +81,16 @@ func (fs *QryptFS) Mknod(path string, mode uint32, dev uint64) (errc int) {
 
 // Write 写入文件内容
 func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int) {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in Write(%s): %v\n%s\n", path, r, debug.Stack())
+			n = 0
+		}
+	}()
+	if fs.isShuttingDown() {
+		driver.Log.Warnf("[SHUTDOWN] Rejecting Write: %s\n", path)
+		return 0
+	}
 	driver.Log.Infof("[FUSE] Write: path=%s, len=%d, offset=%d, fh=%d\n", path, len(buff), ofst, fh)
 	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
 		return 0
@@ -120,6 +141,16 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 
 // Truncate 调整文件大小（用于 cp/touch 等写入前截断流程）
 func (fs *QryptFS) Truncate(path string, size int64, fh uint64) (errc int) {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in Truncate(%s): %v\n%s\n", path, r, debug.Stack())
+			errc = -fuse.EIO
+		}
+	}()
+	if fs.isShuttingDown() {
+		driver.Log.Warnf("[SHUTDOWN] Rejecting Truncate: %s\n", path)
+		return -fuse.EIO
+	}
 	n, errc := fs.lookup(path)
 	if errc != 0 {
 		return errc
@@ -238,6 +269,18 @@ func (fs *QryptFS) Listxattr(path string, fill func(name string) bool) (errc int
 // 设计：Write 只写 staging 不触发 sync，Release 是唯一的 sync 触发点。
 // 一个文件只上传一次，避免 mtime 竞态导致的重复文件。
 func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in Release(%s): %v\n%s\n", path, r, debug.Stack())
+			errc = -fuse.EIO
+		}
+	}()
+	if fs.isShuttingDown() {
+		driver.Log.Warnf("[SHUTDOWN] Rejecting Release: %s\n", path)
+		// 不返回 error —— Release 的返回值在 FUSE 规范中无意义，且返回错误
+		// 可能导致 OS 层无限重试
+		return 0
+	}
 	node, errc := fs.lookup(path)
 	if errc != 0 {
 		return errc

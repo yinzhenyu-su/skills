@@ -115,6 +115,11 @@ type deletionState struct {
 	apiDone   bool
 }
 
+// isShuttingDown returns true if Shutdown has been initiated
+func (fs *QryptFS) isShuttingDown() bool {
+	return atomic.LoadInt32(&fs.shuttingDown) == 1
+}
+
 // QryptFS 实现了 fuse.FileSystem 接口
 type QryptFS struct {
 	fuse.FileSystemBase
@@ -140,4 +145,5 @@ type QryptFS struct {
 	uploader        *uploadpkg.Manager
 	maxRetries      int
 	shuttingDown    int32 // 1 = shutdown in progress, guards retry goroutines from writing to closed channel
+	workerWg        sync.WaitGroup   // 等待所有 worker 完成当前任务后退出
 }

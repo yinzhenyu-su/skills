@@ -195,6 +195,7 @@ func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*driver.Fi
 }
 
 func (fs *QryptFS) uploadWorker() {
+	defer fs.workerWg.Done()
 	defer func() {
 		if r := recover(); r != nil {
 			driver.Log.Errorf("PANIC in uploadWorker: %v\n%s\n", r, debug.Stack())
@@ -220,17 +221,15 @@ func (fs *QryptFS) uploadWorker() {
 					defer func() {
 						if r := recover(); r != nil {
 							driver.Log.Errorf("PANIC in uploadWorker retry goroutine: %v\n%s\n", r, debug.Stack())
-							n.mu.Lock()
-							n.syncQueued = false
-							n.mu.Unlock()
 						}
+						// 无论 panic 还是正常退出，清理 syncQueued
+						n.mu.Lock()
+						n.syncQueued = false
+						n.mu.Unlock()
 					}()
 					time.Sleep(d)
 					// Shutdown 保护：shuttingDown 在 Shutdown() 中先于 close(channel) 设置
 					if atomic.LoadInt32(&fs.shuttingDown) == 1 {
-						n.mu.Lock()
-						n.syncQueued = false
-						n.mu.Unlock()
 						return
 					}
 					// 检查节点是否仍有效
@@ -244,7 +243,22 @@ func (fs *QryptFS) uploadWorker() {
 					n.mu.Lock()
 					n.syncQueued = true
 					n.mu.Unlock()
-					fs.uploadChan <- syncTask{node: n}
+					// 安全发送：select 避免 TOCTOU（shuttingDown→close(channel) 之间的窗口）
+					select {
+					case fs.uploadChan <- syncTask{node: n}:
+					default:
+						// channel 已关闭或已满（关闭后 select default 触发）
+						if atomic.LoadInt32(&fs.shuttingDown) == 1 {
+							n.mu.Lock()
+							n.syncQueued = false
+							n.mu.Unlock()
+							return
+						}
+						driver.Log.Warnf("uploadWorker retry: uploadChan full, dropping retry for %s\n", n.currentPath)
+						n.mu.Lock()
+						n.syncQueued = false
+						n.mu.Unlock()
+					}
 				}(task.node, backoff)
 			} else {
 				driver.Log.Errorf("uploadWorker: max retries (%d) exhausted for %s, giving up\n", fs.maxRetries, task.node.currentPath)
@@ -282,10 +296,14 @@ func (fs *QryptFS) uploadWorker() {
 
 				if !stillInTree {
 					driver.Log.Infof("uploadWorker: ghost file detected — node at %s was removed during upload (fid=%s), sending DELETE to clean up server\n", savedPath, newFid)
-					fs.metadataOpChan <- metadataTask{
-						opType: "DELETE",
-						path:   savedPath,
-						fids:   []string{newFid},
+					if atomic.LoadInt32(&fs.shuttingDown) == 1 {
+						driver.Log.Infof("uploadWorker: skipping ghost file cleanup for %s (shutting down)\n", savedPath)
+					} else {
+						fs.metadataOpChan <- metadataTask{
+							opType: "DELETE",
+							path:   savedPath,
+							fids:   []string{newFid},
+						}
 					}
 				}
 			}
@@ -430,6 +448,7 @@ func (fs *QryptFS) recoverDirtyFiles() {
 }
 
 func (fs *QryptFS) opsLogWorker() {
+	defer fs.workerWg.Done()
 	defer func() {
 		if r := recover(); r != nil {
 			driver.Log.Errorf("PANIC in opsLogWorker: %v\n%s\n", r, debug.Stack())
@@ -479,6 +498,7 @@ func (fs *QryptFS) opsLogWorker() {
 }
 
 func (fs *QryptFS) metadataWorker() {
+	defer fs.workerWg.Done()
 	defer func() {
 		if r := recover(); r != nil {
 			driver.Log.Errorf("PANIC in metadataWorker: %v\n%s\n", r, debug.Stack())
@@ -1033,10 +1053,18 @@ func (fs *QryptFS) enqueueSyncDelay(n *node, delay time.Duration) {
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					driver.Log.Errorf("PANIC in enqueueSyncDelay: %v\n%s\n", r, debug.Stack())
+					driver.Log.Errorf("PANIC in enqueueSyncDelay(%s): %v\n%s\n", n.currentPath, r, debug.Stack())
 				}
+				// 清理 syncQueued，防止节点卡住
+				n.mu.Lock()
+				n.syncQueued = false
+				n.mu.Unlock()
 			}()
 			time.Sleep(delay)
+			if atomic.LoadInt32(&fs.shuttingDown) == 1 {
+				driver.Log.Debugf("enqueueSyncDelay: skip %s (shutting down)\n", n.currentPath)
+				return
+			}
 			fs.uploadChan <- syncTask{node: n}
 		}()
 	} else {

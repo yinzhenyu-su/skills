@@ -252,11 +252,13 @@ func runMount(cmd *cobra.Command, args []string) {
 			// fusermount 失败，尝试 cgofuse 的 Unmount
 			go func() {
 				time.Sleep(2 * time.Second)
+				levelLogger.Close()
 				fmt.Println("强制退出")
 				os.Exit(0)
 			}()
 			host.Unmount()
 		}
+		levelLogger.Close()
 		os.Exit(0)
 	}()
 

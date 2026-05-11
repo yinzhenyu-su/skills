@@ -1225,6 +1225,16 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 
 // Mkdir 创建文件夹
 func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in Mkdir(%s): %v\n%s\n", path, r, debug.Stack())
+			errc = -fuse.EIO
+		}
+	}()
+	if fs.isShuttingDown() {
+		driver.Log.Warnf("[SHUTDOWN] Rejecting Mkdir: %s\n", path)
+		return -fuse.EIO
+	}
 	driver.Log.Infof("[FUSE] Mkdir: path=%s, mode=%o\n", path, mode)
 	if isFinderTrashPath(path) {
 		return 0
@@ -1331,6 +1341,16 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 
 // Unlink 删除文件
 func (fs *QryptFS) Unlink(path string) (errc int) {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in Unlink(%s): %v\n%s\n", path, r, debug.Stack())
+			errc = -fuse.EIO
+		}
+	}()
+	if fs.isShuttingDown() {
+		driver.Log.Warnf("[SHUTDOWN] Rejecting Unlink: %s\n", path)
+		return -fuse.EIO
+	}
 	driver.Log.Infof("[FUSE] Unlink: path=%s\n", path)
 	if isFinderTrashPath(path) {
 		return 0
@@ -1400,6 +1420,16 @@ func (fs *QryptFS) isUnderDeletingDir(path string) bool {
 
 // Rmdir 删除文件夹
 func (fs *QryptFS) Rmdir(path string) (errc int) {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in Rmdir(%s): %v\n%s\n", path, r, debug.Stack())
+			errc = -fuse.EIO
+		}
+	}()
+	if fs.isShuttingDown() {
+		driver.Log.Warnf("[SHUTDOWN] Rejecting Rmdir: %s\n", path)
+		return -fuse.EIO
+	}
 	driver.Log.Infof("[FUSE] Rmdir: path=%s\n", path)
 	if isFinderTrashPath(path) {
 		return 0
@@ -1503,6 +1533,16 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 
 // Rename 重命名或移动文件
 func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
+	defer func() {
+		if r := recover(); r != nil {
+			driver.Log.Errorf("PANIC in Rename(%s->%s): %v\n%s\n", oldPath, newPath, r, debug.Stack())
+			errc = -fuse.EIO
+		}
+	}()
+	if fs.isShuttingDown() {
+		driver.Log.Warnf("[SHUTDOWN] Rejecting Rename: %s -> %s\n", oldPath, newPath)
+		return -fuse.EIO
+	}
 	driver.Log.Infof("[FUSE] Rename: oldPath=%s, newPath=%s\n", oldPath, newPath)
 	oldNode, errc := fs.lookup(oldPath)
 	if errc != 0 {

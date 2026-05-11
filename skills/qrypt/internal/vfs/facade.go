@@ -73,13 +73,16 @@ func NewQryptFS(d *driver.QuarkDriver, c *cache.CacheManager, rootFid string, ro
 
 	// 启动后台上传工作协程
 	for i := 0; i < concurrentUploads; i++ {
+		fs.workerWg.Add(1)
 		go fs.uploadWorker()
 	}
 
 	// 启动后台元数据工作协程 (改为 1 个以提升批量效率并减少 DB 锁竞争)
+	fs.workerWg.Add(1)
 	go fs.metadataWorker()
 
 	// 启动异步日志工作协程
+	fs.workerWg.Add(1)
 	go fs.opsLogWorker()
 
 	fs.recoverPendingOps()
@@ -103,6 +106,21 @@ func (fs *QryptFS) Shutdown() {
 
 	// 关闭 ops_log 通道
 	close(fs.opsLogChan)
+
+	driver.Log.Info("Shutdown: waiting for workers to finish...\n")
+
+	// 使用 WaitGroup 等待所有 worker 退出，带上超时防止无限挂起
+	done := make(chan struct{})
+	go func() {
+		fs.workerWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		driver.Log.Info("Shutdown: all workers finished\n")
+	case <-time.After(30 * time.Second):
+		driver.Log.Warnf("Shutdown: timed out waiting for workers (30s)\n")
+	}
 
 	driver.Log.Info("Shutdown complete\n")
 }
