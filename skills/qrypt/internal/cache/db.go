@@ -496,6 +496,82 @@ func (c *CacheDB) CleanupOldNameCache(days int) (int, error) {
 	return int(deleted), nil
 }
 
+// GetStatusInfo 返回缓存状态汇总
+type StatusInfo struct {
+	ChunkCount       int
+	ChunkTotalSize   int64
+	ChunkOldestDays  float64
+	PendingNodeCount int
+	OpsLogPending    int
+	OpsLogDone       int
+	OpsLogFailed     int
+	StagingFileCount int
+	StagingTotalSize int64
+}
+
+// GetChunkCount 返回 chunks 表的总行数和大小
+func (c *CacheDB) GetChunkCount() (int, int64, error) {
+	var count int
+	var totalSize int64
+	err := c.db.QueryRow("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM chunks").Scan(&count, &totalSize)
+	return count, totalSize, err
+}
+
+// GetOldestChunkDays 返回最旧 chunk 距今的天数
+func (c *CacheDB) GetOldestChunkDays() (float64, error) {
+	var days sql.NullFloat64
+	err := c.db.QueryRow("SELECT ROUND(julianday('now') - julianday(MIN(access_time)), 1) FROM chunks").Scan(&days)
+	if err != nil || !days.Valid {
+		return 0, err
+	}
+	return days.Float64, nil
+}
+
+// GetOpsLogCounts 返回操作日志各状态的数量
+func (c *CacheDB) GetOpsLogCounts() (pending, done, failed int, err error) {
+	rows, err := c.db.Query("SELECT status, COUNT(*) FROM ops_log GROUP BY status")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			continue
+		}
+		switch status {
+		case "PENDING":
+			pending = count
+		case "DONE":
+			done = count
+		case "FAILED":
+			failed = count
+		}
+	}
+	return
+}
+
+// GetStagingMetaStats 返回 staging 元数据统计
+func (c *CacheDB) GetStagingMetaStats() (count int, totalSize int64, err error) {
+	err = c.db.QueryRow("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM staging_meta WHERE status = 'active'").Scan(&count, &totalSize)
+	return
+}
+
+// GetStatusInfo 返回完整的状态汇总信息
+func (c *CacheDB) GetStatusInfo() *StatusInfo {
+	info := &StatusInfo{}
+	info.ChunkCount, info.ChunkTotalSize, _ = c.GetChunkCount()
+	info.ChunkOldestDays, _ = c.GetOldestChunkDays()
+
+	nodes, _ := c.GetPendingNodes()
+	info.PendingNodeCount = len(nodes)
+
+	info.OpsLogPending, info.OpsLogDone, info.OpsLogFailed, _ = c.GetOpsLogCounts()
+	info.StagingFileCount, info.StagingTotalSize, _ = c.GetStagingMetaStats()
+	return info
+}
+
 // Close 关闭数据库
 func (c *CacheDB) Close() error {
 	return c.db.Close()

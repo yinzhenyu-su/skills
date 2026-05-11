@@ -80,7 +80,15 @@ func main() {
 	}
 	configCmd.Flags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
 
-	rootCmd.AddCommand(mountCmd, initCmd, lsCmd, catCmd, configCmd)
+	// status 子命令 - 显示运行状态和缓存统计
+	var statusCmd = &cobra.Command{
+		Use:   "status",
+		Short: "显示缓存统计和运行状态",
+		Run:   runStatus,
+	}
+	statusCmd.Flags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
+
+	rootCmd.AddCommand(mountCmd, initCmd, lsCmd, catCmd, configCmd, statusCmd)
 
 	// ---- tool 子命令组 ----
 	var toolCmd = &cobra.Command{
@@ -198,7 +206,8 @@ func runMount(cmd *cobra.Command, args []string) {
 	// 5. 初始化驱动并验证
 	d := driver.NewQuarkDriver(cfg.Quark.Cookie)
 	d.SetCipher(cipher) // 设置加密引擎以便解析路径
-	if err := d.Auth(); err != nil {		fmt.Printf("认证失败: %v\n", err)
+	if err := d.Auth(); err != nil {
+		fmt.Printf("认证失败: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -703,6 +712,151 @@ func runConfig(cmd *cobra.Command, args []string) {
 	fmt.Printf("日志级别:     %s\n", cfg.Log.Level)
 	fmt.Printf("并发上传:     %d\n", cfg.Sync.ConcurrentUploads)
 	fmt.Printf("缓存上限:     %s\n", cfg.Cache.MaxSize)
+}
+
+// -- status --
+
+func runStatus(cmd *cobra.Command, args []string) {
+	configPath, _ := cmd.Flags().GetString("config")
+	if configPath == "" {
+		configPath = config.FindConfigFile()
+	}
+	cfg, _ := config.LoadConfig(configPath)
+
+	fmt.Println("=== Qrypt Status ===")
+
+	// 配置信息
+	fmt.Printf("配置文件:    %s\n", configPath)
+	if configPath != "" {
+		fmt.Printf("  缓存目录:  %s\n", cfg.Cache.Dir)
+		fmt.Printf("  缓存上限:  %s\n", cfg.Cache.MaxSize)
+		fmt.Printf("  挂载点:    %s\n", cfg.Mount.Point)
+	}
+
+	// 检查进程是否在运行
+	fmt.Println()
+	procRunning := checkQryptProcess()
+	if procRunning {
+		fmt.Println("运行状态:    运行中")
+	} else {
+		fmt.Print("运行状态:    ")
+		fmt.Println("未运行")
+	}
+
+	// 检查挂载点
+	fmt.Println()
+	if cfg.Mount.Point != "" {
+		mountPoint := config.ExpandHome(cfg.Mount.Point)
+		if isMounted(mountPoint) {
+			fmt.Printf("挂载状态:    已挂载到 %s\n", mountPoint)
+		} else {
+			fmt.Printf("挂载状态:    未挂载\n")
+		}
+	}
+
+	// 打开缓存数据库
+	dbPath := cfg.Cache.DBName
+	if dbPath != "" {
+		if _, err := os.Stat(dbPath); err == nil {
+			db, err := cache.NewCacheDB(dbPath)
+			if err == nil {
+				info := db.GetStatusInfo()
+				db.Close()
+
+				// 缓存统计
+				fmt.Println()
+				fmt.Println("--- 缓存 ---")
+				fmt.Printf("分块数:      %s\n", formatComma(info.ChunkCount))
+				cacheMax, _ := config.ParseSize(cfg.Cache.MaxSize)
+				fmt.Printf("已用空间:    %s / %s (%d%%)\n",
+					formatBytes(info.ChunkTotalSize),
+					cfg.Cache.MaxSize,
+					percentOrZero(info.ChunkTotalSize, cacheMax))
+
+				if info.ChunkOldestDays > 0 {
+					fmt.Printf("最旧分块:    %.1f 天前\n", info.ChunkOldestDays)
+				}
+
+				// 待同步
+				fmt.Println()
+				fmt.Println("--- 待同步 ---")
+				fmt.Printf("未完成上传:  %d 个\n", info.PendingNodeCount)
+				if info.PendingNodeCount > 0 {
+					nodes, _ := db.GetPendingNodes()
+					for _, n := range nodes {
+						fmt.Printf("  %s  (%s)\n", n.Path, formatBytes(n.Size))
+					}
+				}
+
+				// 操作日志
+				fmt.Println()
+				fmt.Println("--- 操作日志 ---")
+				fmt.Printf("待处理:      %d\n", info.OpsLogPending)
+				fmt.Printf("已完成:      %d\n", info.OpsLogDone)
+				if info.OpsLogFailed > 0 {
+					fmt.Printf("失败:        %d\n", info.OpsLogFailed)
+				}
+
+				// Staging
+				fmt.Println()
+				fmt.Println("--- Staging ---")
+				fmt.Printf("文件数:      %d\n", info.StagingFileCount)
+				fmt.Printf("总大小:      %s\n", formatBytes(info.StagingTotalSize))
+			}
+		} else {
+			fmt.Println()
+			fmt.Println("--- 缓存 ---")
+			fmt.Println("缓存数据库不存在（尚未挂载过）")
+		}
+	}
+}
+
+func checkQryptProcess() bool {
+	cmd := exec.Command("pgrep", "-f", "qrypt mount")
+	out, err := cmd.Output()
+	return err == nil && len(out) > 0
+}
+
+func isMounted(point string) bool {
+	// macOS: mount | grep fuse
+	// Linux: mount | grep fuse
+	cmd := exec.Command("mount")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), point) && strings.Contains(string(out), "fuse")
+}
+
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for n/div >= unit && exp < len("KMGTPE")-1 {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+func formatComma(n int) string {
+	s := fmt.Sprintf("%d", n)
+	parts := make([]string, 0)
+	for len(s) > 3 {
+		parts = append([]string{s[len(s)-3:]}, parts...)
+		s = s[:len(s)-3]
+	}
+	parts = append([]string{s}, parts...)
+	return strings.Join(parts, ",")
+}
+
+func percentOrZero(a, b int64) int {
+	if b == 0 {
+		return 0
+	}
+	return int(a * 100 / b)
 }
 
 // resolveFullPath 将 rootPath 和用户路径拼接为完整路径
