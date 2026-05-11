@@ -69,8 +69,9 @@ func retryBackoff(attempt int) time.Duration {
 
 // QuarkDriver 封装了与夸克网盘 API 的交互
 type QuarkDriver struct {
-	client      *http.Client
-	cookie      string
+	client         *http.Client
+	downloadClient *http.Client // 大文件下载专用，无整体超时
+	cookie         string
 	cipher      Cipher   // 用于解析路径时加密
 	urlCache    sync.Map // fid -> cachedURL
 	dirCache    sync.Map // pdir_fid -> DirCache
@@ -122,22 +123,47 @@ func newHTTPClient() *http.Client {
 	}
 }
 
+// newDownloadClient 创建大文件下载专用的 HTTP 客户端，无整体超时限制。
+// 传输层仍保留连接超时，仅去除响应体读取时间限制。
+func newDownloadClient() *http.Client {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+	}
+
+	return &http.Client{
+		Transport: transport,
+	}
+}
+
 // NewQuarkDriver 创建一个新的驱动实例
 func NewQuarkDriver(cookie string) *QuarkDriver {
 	return &QuarkDriver{
-		client:      newHTTPClient(),
-		cookie:      cookie,
-		sem:         make(chan struct{}, 200), // 增加通用容量
-		mgmtSem:     make(chan struct{}, 500), // 显著增加管理操作容量，支持大规模删除
-		metaSem:     make(chan struct{}, 500), // 元数据专用，支持大规模刷新
-		DirCacheTTL: 60 * time.Second,
-		NegCacheTTL: 60 * time.Second,
+		client:         newHTTPClient(),
+		downloadClient: newDownloadClient(),
+		cookie:         cookie,
+		sem:            make(chan struct{}, 200), // 增加通用容量
+		mgmtSem:        make(chan struct{}, 500), // 显著增加管理操作容量，支持大规模删除
+		metaSem:        make(chan struct{}, 500), // 元数据专用，支持大规模刷新
+		DirCacheTTL:    60 * time.Second,
+		NegCacheTTL:    60 * time.Second,
 	}
 }
 
 // SetClient 用于测试，替换内部的 http.Client
 func (d *QuarkDriver) SetClient(c *http.Client) {
 	d.client = c
+	d.downloadClient = c
 }
 
 // request 发起 HTTP 请求并解析响应
@@ -341,7 +367,7 @@ func (d *QuarkDriver) DownloadChunk(downloadURL string, start, end int64) (io.Re
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	d.setHeaders(req)
 
-	resp, err := d.client.Do(req)
+	resp, err := d.downloadClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -2,14 +2,17 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
+
 	"github.com/spf13/cobra"
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
@@ -49,7 +52,35 @@ func main() {
 	}
 	initCmd.Flags().StringP("output", "o", "qrypt.toml", "输出文件路径")
 
-	rootCmd.AddCommand(mountCmd, initCmd)
+	// ls 子命令 - 列出目录内容
+	var lsCmd = &cobra.Command{
+		Use:   "ls [path]",
+		Short: "列出目录内容",
+		Args:  cobra.MaximumNArgs(1),
+		Run:   runList,
+	}
+	lsCmd.Flags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
+	lsCmd.Flags().BoolP("long", "l", false, "长格式显示（包含大小和时间）")
+	lsCmd.Flags().BoolP("encrypted", "e", false, "同时显示加密后的文件名")
+
+	// cat 子命令 - 解密并输出文件内容
+	var catCmd = &cobra.Command{
+		Use:   "cat <path>",
+		Short: "解密并输出文件内容",
+		Args:  cobra.ExactArgs(1),
+		Run:   runCat,
+	}
+	catCmd.Flags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
+
+	// config 子命令 - 显示当前配置摘要
+	var configCmd = &cobra.Command{
+		Use:   "config",
+		Short: "显示当前配置摘要",
+		Run:   runConfig,
+	}
+	configCmd.Flags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
+
+	rootCmd.AddCommand(mountCmd, initCmd, lsCmd, catCmd, configCmd)
 
 	// ---- tool 子命令组 ----
 	var toolCmd = &cobra.Command{
@@ -81,13 +112,7 @@ func main() {
 		Run:   runEncSize,
 	}
 
-	var configCmd = &cobra.Command{
-		Use:   "config",
-		Short: "显示当前配置摘要",
-		Run:   runToolConfig,
-	}
-
-	toolCmd.AddCommand(encryptCmd, decryptCmd, encSizeCmd, configCmd)
+	toolCmd.AddCommand(encryptCmd, decryptCmd, encSizeCmd)
 	rootCmd.AddCommand(toolCmd)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -324,7 +349,7 @@ file = "~/.qrypt/qrypt.log"
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ 已生成配置文件: %s\n", outputPath)
+	fmt.Printf("已生成配置文件: %s\n", outputPath)
 	fmt.Println("\n下一步:")
 	fmt.Println("  1. 编辑配置文件，填入你的 Cookie 和密码")
 	fmt.Println("  2. 运行: qrypt mount -f qrypt.toml")
@@ -416,9 +441,256 @@ func runEncSize(cmd *cobra.Command, args []string) {
 	fmt.Printf("明文大小:  %d\n加密大小:  %d\n", size, encSize)
 }
 
+// -- ls --
+
+func runList(cmd *cobra.Command, args []string) {
+	cfg, cipher := loadToolCfg(cmd)
+
+	d := driver.NewQuarkDriver(cfg.Quark.Cookie)
+	d.SetCipher(cipher)
+	if err := d.Auth(); err != nil {
+		fmt.Printf("认证失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	path := "/"
+	if len(args) > 0 {
+		path = args[0]
+	}
+	fullPath := resolveFullPath(cfg.Quark.RootPath, path)
+
+	fid, err := d.ResolvePath(fullPath)
+	if err != nil {
+		fmt.Printf("无法解析路径: %v\n", err)
+		os.Exit(1)
+	}
+
+	files, err := d.ListFiles(fid)
+	if err != nil {
+		fmt.Printf("无法列出目录内容: %v\n", err)
+		os.Exit(1)
+	}
+
+	showLong, _ := cmd.Flags().GetBool("long")
+	showEnc, _ := cmd.Flags().GetBool("encrypted")
+
+	for _, f := range files {
+		decName, decErr := cipher.DecryptSegment(f.FileName)
+		if decErr != nil {
+			decName = f.FileName
+		}
+
+		if showLong {
+			if f.IsDir() {
+				if showEnc && f.FileName != decName {
+					fmt.Printf("d %12s  %s  %s  [%s]\n", "-", f.ModTime().Format("01-02 15:04"), decName, f.FileName)
+				} else {
+					fmt.Printf("d %12s  %s  %s/\n", "-", f.ModTime().Format("01-02 15:04"), decName)
+				}
+			} else {
+				plainSize, err := cipher.DecryptedSize(f.Int64Size())
+				if err != nil {
+					plainSize = f.Int64Size()
+				}
+				if showEnc && f.FileName != decName {
+					fmt.Printf("- %10d  %s  %s  [%s]\n", plainSize, f.ModTime().Format("01-02 15:04"), decName, f.FileName)
+				} else {
+					fmt.Printf("- %10d  %s  %s\n", plainSize, f.ModTime().Format("01-02 15:04"), decName)
+				}
+			}
+		} else {
+			if f.IsDir() {
+				fmt.Printf("%s/\n", decName)
+			} else {
+				fmt.Println(decName)
+			}
+		}
+	}
+}
+
+// -- cat --
+
+const (
+	blocksPerSegment = 128 // 每个分段包含的加密块数 (~8MB 加密数据)
+	catPrefetchDist  = 4   // 后台预取分段数（内存 ~ 5×8MB = 40MB 峰值）
+)
+
+// catSeg 代表一个下载完成的分段
+type catSeg struct {
+	idx  int
+	data []byte
+	err  error
+}
+
+func runCat(cmd *cobra.Command, args []string) {
+	cfg, cipher := loadToolCfg(cmd)
+
+	d := driver.NewQuarkDriver(cfg.Quark.Cookie)
+	d.SetCipher(cipher)
+	if err := d.Auth(); err != nil {
+		fmt.Printf("认证失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	path := args[0]
+	fullPath := resolveFullPath(cfg.Quark.RootPath, path)
+
+	parentPath := filepath.Dir(fullPath)
+	baseName := filepath.Base(fullPath)
+
+	parentFid, err := d.ResolvePath(parentPath)
+	if err != nil {
+		fmt.Printf("无法解析路径: %v\n", err)
+		os.Exit(1)
+	}
+
+	files, err := d.ListFiles(parentFid)
+	if err != nil {
+		fmt.Printf("无法列出目录内容: %v\n", err)
+		os.Exit(1)
+	}
+
+	encName := cipher.EncryptSegment(baseName)
+	var targetFile *driver.File
+	for i := range files {
+		if files[i].FileName == encName {
+			targetFile = &files[i]
+			break
+		}
+	}
+	if targetFile == nil {
+		fmt.Printf("文件未找到: %s\n", baseName)
+		os.Exit(1)
+	}
+	if targetFile.IsDir() {
+		fmt.Printf("错误: %s 是一个目录\n", baseName)
+		os.Exit(1)
+	}
+
+	encSize := targetFile.Int64Size()
+	fid := targetFile.Fid
+
+	url, err := d.GetDownloadURL(fid)
+	if err != nil {
+		fmt.Printf("获取下载链接失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 1. 下载文件头获取 nonce（必须串行）
+	rc, err := d.DownloadChunk(url, 0, int64(crypt.FileHeaderSize-1))
+	if err != nil {
+		fmt.Printf("下载文件头失败: %v\n", err)
+		os.Exit(1)
+	}
+	header := make([]byte, crypt.FileHeaderSize)
+	if _, err := io.ReadFull(rc, header); err != nil {
+		rc.Close()
+		fmt.Printf("读取文件头失败: %v\n", err)
+		os.Exit(1)
+	}
+	rc.Close()
+
+	if string(header[:len(crypt.FileMagic)]) != crypt.FileMagic {
+		fmt.Fprintf(os.Stderr, "警告: 文件格式不是有效的 rclone 加密文件\n")
+	}
+
+	var fileNonce [crypt.FileNonceSize]byte
+	copy(fileNonce[:], header[crypt.FileMagicSize:])
+
+	bodySize := encSize - int64(crypt.FileHeaderSize)
+	if bodySize <= 0 {
+		return
+	}
+
+	// 2. 计算分段
+	segEncBytes := int64(blocksPerSegment * crypt.BlockSize)
+	numSegs := int((bodySize + segEncBytes - 1) / segEncBytes)
+
+	// 3. 流水线预取：启动初始 catPrefetchDist 个异步下载
+	type segFuture struct {
+		ch  chan catSeg
+		idx int
+	}
+	futures := make([]segFuture, 0, catPrefetchDist)
+
+	prefetch := func(idx int) {
+		ch := make(chan catSeg, 1)
+		go func() {
+			start := int64(crypt.FileHeaderSize) + int64(idx)*segEncBytes
+			end := start + segEncBytes - 1
+			if end >= encSize {
+				end = encSize - 1
+			}
+			rc, err := d.DownloadChunk(url, start, end)
+			if err != nil {
+				ch <- catSeg{idx: idx, err: err}
+				return
+			}
+			defer rc.Close()
+			data, err := io.ReadAll(rc)
+			if err != nil {
+				ch <- catSeg{idx: idx, err: err}
+				return
+			}
+			ch <- catSeg{idx: idx, data: data}
+		}()
+		futures = append(futures, segFuture{ch: ch, idx: idx})
+	}
+
+	for i := 0; i < catPrefetchDist && i < numSegs; i++ {
+		prefetch(i)
+	}
+
+	// 4. 按序处理，同时提交下一个预取任务
+	nextPrefetch := catPrefetchDist
+	for segIdx := 0; segIdx < numSegs; segIdx++ {
+		if nextPrefetch < numSegs {
+			prefetch(nextPrefetch)
+			nextPrefetch++
+		}
+
+		r := <-futures[0].ch
+		if r.err != nil {
+			fmt.Fprintf(os.Stderr, "\n下载分段 %d 失败: %v\n", r.idx, r.err)
+			os.Exit(1)
+		}
+
+		processCatSegment(r.data, cipher, fileNonce, segIdx*blocksPerSegment)
+		futures = futures[1:]
+	}
+}
+
+// processCatSegment 解密并输出一个分段中的所有块
+func processCatSegment(data []byte, cipher *crypt.RcloneCipher, fileNonce [crypt.FileNonceSize]byte, startBlockIdx int) {
+	blockIdx := startBlockIdx
+	for offset := 0; offset < len(data); {
+		blockEnd := offset + crypt.BlockSize
+		if blockEnd > len(data) {
+			blockEnd = len(data)
+		}
+		encBlock := data[offset:blockEnd]
+		offset = blockEnd
+
+		if len(encBlock) <= crypt.BlockHeaderSize {
+			break
+		}
+
+		plain, err := cipher.DecryptBlock(encBlock, uint64(blockIdx), fileNonce)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\n解密块 %d 失败: %v\n", blockIdx, err)
+			os.Exit(1)
+		}
+
+		if _, err := os.Stdout.Write(plain); err != nil {
+			os.Exit(0)
+		}
+		blockIdx++
+	}
+}
+
 // -- config --
 
-func runToolConfig(cmd *cobra.Command, args []string) {
+func runConfig(cmd *cobra.Command, args []string) {
 	cfg, _ := loadToolCfg(cmd)
 	fmt.Println("=== Qrypt 配置 ===")
 	fmt.Printf("Quark 根路径: %s\n", cfg.Quark.RootPath)
@@ -431,4 +703,17 @@ func runToolConfig(cmd *cobra.Command, args []string) {
 	fmt.Printf("日志级别:     %s\n", cfg.Log.Level)
 	fmt.Printf("并发上传:     %d\n", cfg.Sync.ConcurrentUploads)
 	fmt.Printf("缓存上限:     %s\n", cfg.Cache.MaxSize)
+}
+
+// resolveFullPath 将 rootPath 和用户路径拼接为完整路径
+func resolveFullPath(rootPath, userPath string) string {
+	root := strings.TrimRight(rootPath, "/")
+	user := strings.TrimLeft(userPath, "/")
+	if root == "" || root == "/" {
+		return "/" + user
+	}
+	if user == "" {
+		return root
+	}
+	return root + "/" + user
 }
