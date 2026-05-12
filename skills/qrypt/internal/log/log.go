@@ -4,12 +4,34 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+var sensitivePatterns = []struct {
+	pattern *regexp.Regexp
+	replace string
+}{
+	{regexp.MustCompile(`ctoken=[^;]+`),        "ctoken=***"},
+	{regexp.MustCompile(`__puus=[^;]+`),          "__puus=***"},
+	{regexp.MustCompile(`__kp=[^;]+`),            "__kp=***"},
+	{regexp.MustCompile(`__kps=[^;]+`),           "__kps=***"},
+	{regexp.MustCompile(`password\s*=\s*"[^"]+"`), `password="***"`},
+	{regexp.MustCompile(`salt\s*=\s*"[^"]*"`),     `salt=""`},
+	{regexp.MustCompile(`"cookie"\s*:\s*"[^"]+"`), `"cookie":"***"`},
+	{regexp.MustCompile(`Cookie:\s*[^\r\n]+`),     "Cookie: ***"},
+}
+
+func sanitize(msg string) string {
+	for _, sp := range sensitivePatterns {
+		msg = sp.pattern.ReplaceAllString(msg, sp.replace)
+	}
+	return msg
+}
 
 type Level int
 
@@ -113,7 +135,7 @@ func (l *Logger) logf(level Level, format string, v ...interface{}) {
 	if level < l.level {
 		return
 	}
-	msg := fmt.Sprintf(format, v...)
+	msg := sanitize(fmt.Sprintf(format, v...))
 	ts := time.Now().Format("2006-01-02 15:04:05")
 	line := fmt.Sprintf("[%s] %s %s", ts, level.String(), msg)
 

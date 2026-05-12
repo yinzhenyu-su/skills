@@ -63,9 +63,11 @@ type QryptFS struct {
 	nodes   sync.Map
 	fidNodes sync.Map
 
-	fetching        sync.Map
+	fetchingFiles   sync.Map
+	fetchingChunks  sync.Map
 	merging         sync.Map
 	prefetchSem     chan struct{}
+	lruStop         chan struct{}
 	deletingPaths   sync.Map
 	activeDeletions sync.Map
 	deletionsByParent sync.Map
@@ -135,6 +137,7 @@ func NewFS(
 		uploadChan:     make(chan syncTask, 1000),
 		metadataOpChan: make(chan metadataTask, 100000),
 		prefetchSem:    make(chan struct{}, 30),
+		lruStop:        make(chan struct{}),
 		memCache:       memCache,
 		maxRetries:     maxRetries,
 	}
@@ -153,6 +156,12 @@ func NewFS(
 	go fs.metadataWorker()
 
 	fs.recoverDirtyFiles()
+	fs.replayOpsLog()
+
+	go fs.lruEvictionLoop()
+	if fs.cacheMgr != nil {
+		fs.cacheMgr.MaintenanceStart()
+	}
 
 	return fs
 }
@@ -163,6 +172,7 @@ func (fs *QryptFS) IsShuttingDown() bool {
 
 func (fs *QryptFS) Shutdown() {
 	atomic.StoreInt32(&fs.shuttingDown, 1)
+	close(fs.lruStop)
 	close(fs.uploadChan)
 	close(fs.metadataOpChan)
 

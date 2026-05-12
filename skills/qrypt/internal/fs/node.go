@@ -74,3 +74,9 @@ func newNode(fid, parentFid, name, currentPath string, isFolder bool) *Node {
 
 func (n *Node) Cancel()        { atomic.StoreInt32(&n.cancelled, 1) }
 func (n *Node) IsCancelled() bool { return atomic.LoadInt32(&n.cancelled) == 1 }
+
+func (n *Node) isChildrenEmpty() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return len(n.children) == 0
+}

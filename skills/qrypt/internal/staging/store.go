@@ -151,6 +151,15 @@ func (s *Store) Remove(path string) error {
 	return nil
 }
 
+func (s *Store) Sync(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
 func (s *Store) Truncate(path string, size int64) error {
 	if err := s.Ensure(path); err != nil {
 		return err

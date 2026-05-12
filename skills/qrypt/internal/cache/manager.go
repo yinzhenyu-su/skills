@@ -1,6 +1,8 @@
 package cache
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +12,14 @@ import (
 
 	"github.com/yinzhenyu/skills/qrypt/internal/staging"
 )
+
+type OpsLogEntry struct {
+	OpType    string `json:"op"`
+	Path      string `json:"path"`
+	Fid       string `json:"fid,omitempty"`
+	Timestamp int64  `json:"ts"`
+	Done      bool   `json:"done"`
+}
 
 const CacheBatchBlocks = 16
 
@@ -453,10 +463,122 @@ func sortByAccessTime(chunks []struct {
 
 const maintenanceInterval = 10 * time.Minute
 
+// --- Ops Log (Journaling) ---
+
+func (m *CacheManager) opsLogPath() string {
+	return filepath.Join(m.cacheDir, "ops.jsonl")
+}
+
+func (m *CacheManager) AppendOpsLog(entry *OpsLogEntry) error {
+	entry.Timestamp = time.Now().UnixNano()
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(m.opsLogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	f.Write(data)
+	f.Write([]byte("\n"))
+	return nil
+}
+
+func (m *CacheManager) LoadOpsLog() ([]OpsLogEntry, error) {
+	f, err := os.Open(m.opsLogPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	var entries []OpsLogEntry
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var entry OpsLogEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries, scanner.Err()
+}
+
+func (m *CacheManager) MarkOpsLogDone(path string) error {
+	entries, err := m.LoadOpsLog()
+	if err != nil {
+		return err
+	}
+	for i := range entries {
+		if entries[i].Path == path && !entries[i].Done {
+			entries[i].Done = true
+		}
+	}
+	return m.rewriteOpsLog(entries)
+}
+
+func (m *CacheManager) PurgeOpsLog(olderThan time.Duration) error {
+	entries, err := m.LoadOpsLog()
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().Add(-olderThan)
+	var kept []OpsLogEntry
+	for _, e := range entries {
+		ts := time.Unix(0, e.Timestamp)
+		if e.Done && ts.Before(cutoff) {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return m.rewriteOpsLog(kept)
+}
+
+func (m *CacheManager) rewriteOpsLog(entries []OpsLogEntry) error {
+	if len(entries) == 0 {
+		os.Remove(m.opsLogPath())
+		return nil
+	}
+	f, err := os.Create(m.opsLogPath())
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	for _, e := range entries {
+		data, _ := json.Marshal(e)
+		f.Write(data)
+		f.Write([]byte("\n"))
+	}
+	return nil
+}
+
 func (m *CacheManager) Maintenance() error {
 	m.EvictIfNeeded(m.maxSize * 7 / 10)
 	m.CleanupStagingMetas(24 * time.Hour)
+	m.PurgeOpsLog(72 * time.Hour)
+	m.reportStaleUploadIDs()
 	return nil
+}
+
+func (m *CacheManager) reportStaleUploadIDs() {
+	const staleThreshold = 2 * time.Hour
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for path, n := range m.pendingNodes {
+		if n.UploadID != "" {
+			if m.staging != nil && !m.staging.Exists(n.LocalPath) {
+				fmt.Printf("[cache] WARN: stale uploadID=%s for fid=%s path=%s (staging missing), consider aborting manually via Quark API\n",
+					n.UploadID, n.Fid, path)
+			}
+		}
+	}
 }
 
 func (m *CacheManager) MaintenanceStart() {

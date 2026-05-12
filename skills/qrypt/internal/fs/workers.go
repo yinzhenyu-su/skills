@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 	"github.com/yinzhenyu/skills/qrypt/internal/quark"
 )
@@ -161,6 +162,28 @@ func (fs *QryptFS) metadataWorker() {
 	}
 }
 
+func (fs *QryptFS) logOpsBatch(tasks []metadataTask) {
+	if fs.cacheMgr == nil {
+		return
+	}
+	for _, t := range tasks {
+		fs.cacheMgr.AppendOpsLog(&cache.OpsLogEntry{
+			OpType: t.opType,
+			Path:   t.path,
+			Fid:    strings.Join(t.fids, ","),
+		})
+	}
+}
+
+func (fs *QryptFS) markOpsDone(tasks []metadataTask) {
+	if fs.cacheMgr == nil {
+		return
+	}
+	for _, t := range tasks {
+		fs.cacheMgr.MarkOpsLogDone(t.path)
+	}
+}
+
 func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -172,6 +195,7 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 	}
 	start := time.Now()
 	log.L.Debugf("processBatchMetadataTasks: start op=%s count=%d\n", tasks[0].opType, len(tasks))
+	fs.logOpsBatch(tasks)
 
 	validTasks := make([]metadataTask, 0, len(tasks))
 	var finalFids []string
@@ -227,6 +251,7 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 				}
 			}
 		}
+		fs.markOpsDone(tasks)
 		log.L.Debugf("processBatchMetadataTasks: local cleanup done (took %v)\n", time.Since(start))
 		return
 	}
@@ -236,13 +261,99 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 		if fs.cacheMgr != nil {
 			fs.cacheMgr.BatchDeleteNodeState(finalFids, finalPaths)
 		}
+		fs.markOpsDone(tasks)
 		log.L.Debugf("processBatchMetadataTasks: done (took %v)\n", time.Since(start))
 		return
 	}
 
 	log.L.Infof("processBatchMetadataTasks: queue %d FIDs for async delete (%d valid tasks, took %v)\n",
 		len(deleteFids), len(validTasks), time.Since(start))
+	fs.markOpsDone(tasks)
 	go fs.asyncDelete(deleteFids, finalFids, finalPaths, validTasks)
+}
+
+func (fs *QryptFS) replayOpsLog() {
+	if fs.cacheMgr == nil {
+		return
+	}
+	entries, err := fs.cacheMgr.LoadOpsLog()
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	var pending int
+	for _, e := range entries {
+		if !e.Done {
+			pending++
+			log.L.Infof("replayOpsLog: replaying pending %s operation on %s\n", e.OpType, e.Path)
+			fs.processMetadataTask(metadataTask{
+				opType: e.OpType,
+				path:   e.Path,
+				fids:   strings.Split(e.Fid, ","),
+			})
+		}
+	}
+	if pending > 0 {
+		log.L.Infof("replayOpsLog: replayed %d pending operations\n", pending)
+	}
+	fs.cacheMgr.PurgeOpsLog(72 * time.Hour)
+}
+
+func (fs *QryptFS) processMetadataTask(task metadataTask) {
+	switch task.opType {
+	case "DELETE":
+		fs.asyncDelete(task.fids, nil, nil, []metadataTask{task})
+	default:
+		log.L.Warnf("metadataWorker: unknown opType=%s\n", task.opType)
+	}
+}
+
+func (fs *QryptFS) lruEvictionLoop() {
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			fs.evictStaleNodes()
+		case <-fs.lruStop:
+			return
+		}
+	}
+}
+
+func (fs *QryptFS) evictStaleNodes() {
+	const maxNodeAge = 30 * time.Minute
+	const maxNodes = 50000
+
+	var count int
+	fs.nodes.Range(func(key, value interface{}) bool {
+		count++
+		if count <= 1000 {
+			return true
+		}
+		n := value.(*Node)
+		if n.currentPath == "/" || n.isDirty {
+			return true
+		}
+		n.mu.RLock()
+		lastCheck := n.lastMetadataCheck
+		n.mu.RUnlock()
+		if time.Since(lastCheck) > maxNodeAge {
+			n.mu.RLock()
+			fid := n.fid
+			isDir := n.isFolder
+			n.mu.RUnlock()
+			if !isDir || (isDir && n.isChildrenEmpty()) {
+				fs.deleteNodePath(n.currentPath, n)
+				if fid != "" && !strings.HasPrefix(fid, "local_") {
+					fs.fidNodes.Delete(fid)
+				}
+			}
+		}
+		return true
+	})
+	if count > maxNodes {
+		log.L.Warnf("lruEviction: node count %d exceeds limit %d, triggering aggressive eviction\n", count, maxNodes)
+	}
 }
 
 func (fs *QryptFS) asyncDelete(deleteFids, finalFids, finalPaths []string, validTasks []metadataTask) {
