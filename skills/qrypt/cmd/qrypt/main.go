@@ -66,7 +66,47 @@ func main() {
 	}
 	statusCmd.Flags().StringP("config", "f", "", "配置文件路径")
 
-	rootCmd.AddCommand(mountCmd, initCmd, lsCmd, catCmd, configCmd, statusCmd)
+	var rmCmd = &cobra.Command{
+		Use:   "rm <path>",
+		Short: "删除文件或目录",
+		Args:  cobra.ExactArgs(1),
+		Run:   runRm,
+	}
+	rmCmd.Flags().StringP("config", "f", "", "配置文件路径")
+
+	var mvCmd = &cobra.Command{
+		Use:   "mv <src> <dst>",
+		Short: "移动或重命名文件",
+		Args:  cobra.ExactArgs(2),
+		Run:   runMv,
+	}
+	mvCmd.Flags().StringP("config", "f", "", "配置文件路径")
+
+	var findCmd = &cobra.Command{
+		Use:   "find [path] <pattern>",
+		Short: "递归搜索文件名",
+		Args:  cobra.RangeArgs(1, 2),
+		Run:   runFind,
+	}
+	findCmd.Flags().StringP("config", "f", "", "配置文件路径")
+
+	var pullCmd = &cobra.Command{
+		Use:   "pull <remote> [local]",
+		Short: "下载并解密文件到本地",
+		Args:  cobra.RangeArgs(1, 2),
+		Run:   runPull,
+	}
+	pullCmd.Flags().StringP("config", "f", "", "配置文件路径")
+
+	var pushCmd = &cobra.Command{
+		Use:   "push <local> [remote]",
+		Short: "加密并上传本地文件到网盘",
+		Args:  cobra.RangeArgs(1, 2),
+		Run:   runPush,
+	}
+	pushCmd.Flags().StringP("config", "f", "", "配置文件路径")
+
+	rootCmd.AddCommand(mountCmd, initCmd, lsCmd, catCmd, configCmd, statusCmd, rmCmd, mvCmd, findCmd, pullCmd, pushCmd)
 
 	var toolCmd = &cobra.Command{
 		Use:   "tool",
