@@ -113,6 +113,9 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 	n.mu.Unlock()
 
 	if !strings.HasPrefix(fid, "local_") && !lastUpload.IsZero() && time.Since(lastUpload) < 10*time.Second {
+		n.mu.Lock()
+		n.isDirty = false
+		n.mu.Unlock()
 		return nil
 	}
 
