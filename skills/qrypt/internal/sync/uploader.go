@@ -143,27 +143,22 @@ func (u *Uploader) Upload(req Request) (Result, error) {
 	etags := make([]string, 0, max(1, int((encSize+int64(partSize)-1)/int64(partSize))))
 	md5h := md5.New()
 	sha1h := sha1.New()
+	hashTee := io.TeeReader(encReader, io.MultiWriter(md5h, sha1h))
 
 	skipBytes := int64(req.LastPart) * int64(partSize)
 	if skipBytes > 0 {
-		if err := encReader.SkipEncrypted(skipBytes); err != nil {
+		if _, err := io.CopyN(io.Discard, hashTee, skipBytes); err != nil && err != io.EOF {
 			return result, fmt.Errorf("skip encrypted failed: %w", err)
 		}
 	}
 
 	for partNumber := req.LastPart + 1; ; partNumber++ {
-		n, readErr := io.ReadFull(encReader, buf)
+		n, readErr := io.ReadFull(hashTee, buf)
 		if readErr == io.EOF && n == 0 {
 			break
 		}
 		if readErr != nil && readErr != io.ErrUnexpectedEOF {
 			return result, readErr
-		}
-		if _, err := md5h.Write(buf[:n]); err != nil {
-			return result, err
-		}
-		if _, err := sha1h.Write(buf[:n]); err != nil {
-			return result, err
 		}
 
 		var etag string
