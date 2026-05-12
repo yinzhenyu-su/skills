@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/log"
 )
 
 func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
@@ -24,6 +25,11 @@ func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
 			os.Exit(1)
 		}
 		cfg = config.DefaultConfig()
+	}
+
+	logFile := config.ExpandHome(cfg.Log.File)
+	if logger, lerr := log.New(cfg.Log.Level, logFile, nil); lerr == nil {
+		log.L = logger
 	}
 
 	if pwd, _ := cmd.Flags().GetString("password"); pwd != "" {
