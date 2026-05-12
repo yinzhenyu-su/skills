@@ -30,7 +30,7 @@ func (r *EncryptingReader) SkipEncrypted(n int64) error {
 		}
 		tmp := buf[:toRead]
 		if _, err := io.ReadFull(r, tmp); err != nil {
-			if err == io.EOF {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				return nil
 			}
 			return err
