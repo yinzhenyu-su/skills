@@ -155,7 +155,7 @@ func (fs *QryptFS) getDecryptedChunk(n *Node, idx uint64) ([]byte, error) {
 	batchIdx := idx / FetchBatchBlocks
 	batchKey := fmt.Sprintf("%s_batch_%d", n.fid, batchIdx)
 
-	actual, loaded := fs.fetching.LoadOrStore(batchKey, make(chan struct{}))
+	actual, loaded := fs.fetchingChunks.LoadOrStore(batchKey, make(chan struct{}))
 	if loaded {
 		<-actual.(chan struct{})
 		if v, ok := fs.memCache.Get(mKey); ok {
@@ -173,7 +173,7 @@ func (fs *QryptFS) getDecryptedChunk(n *Node, idx uint64) ([]byte, error) {
 
 	defer func() {
 		close(actual.(chan struct{}))
-		fs.fetching.Delete(batchKey)
+		fs.fetchingChunks.Delete(batchKey)
 	}()
 
 	if err := fs.fetchBatch(n, batchIdx); err != nil {
@@ -192,7 +192,7 @@ func (fs *QryptFS) getDecryptedChunk(n *Node, idx uint64) ([]byte, error) {
 		}
 	}
 	log.L.Warnf("getDecryptedChunk: chunk %s_%d not in memCache or disk after fetchBatch succeeded\n", n.fid, idx)
-	return make([]byte, 0, crypt.BlockDataSize), nil
+	return nil, fmt.Errorf("chunk %s_%d lost from cache after fetchBatch", n.fid, idx)
 }
 
 func (fs *QryptFS) fetchBatch(n *Node, batchIdx uint64) error {

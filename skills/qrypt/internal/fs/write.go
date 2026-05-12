@@ -255,3 +255,38 @@ func (fs *QryptFS) Open(path string, flags int) (errc int, fh uint64) {
 	}
 	return 0, uint64(uintptr(unsafe.Pointer(n)))
 }
+
+func (fs *QryptFS) Fsync(path string, datasync bool, fh uint64) (errc int) {
+	log.L.Infof("[FUSE] Fsync: path=%s, datasync=%v, fh=%d\n", path, datasync, fh)
+	node, errc := fs.lookup(path)
+	if errc != 0 {
+		return errc
+	}
+	node.mu.RLock()
+	dirty := node.isDirty
+	localPath := node.localPath
+	node.mu.RUnlock()
+	if dirty && localPath != "" && fs.staging != nil {
+		if err := fs.staging.Sync(localPath); err != nil {
+			return -fuse.EIO
+		}
+	}
+	return 0
+}
+
+func (fs *QryptFS) Ftruncate(path string, size int64, fh uint64) (errc int) {
+	log.L.Infof("[FUSE] Ftruncate: path=%s, size=%d, fh=%d\n", path, size, fh)
+	return fs.Truncate(path, size, fh)
+}
+
+func (fs *QryptFS) Releasedir(path string, fh uint64) (errc int) {
+	return 0
+}
+
+func (fs *QryptFS) Init() {
+	log.L.Infof("[FUSE] Init: QryptFS starting up\n")
+}
+
+func (fs *QryptFS) Destroy() {
+	log.L.Infof("[FUSE] Destroy: QryptFS shutting down\n")
+}

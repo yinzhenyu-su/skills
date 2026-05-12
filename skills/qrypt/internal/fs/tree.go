@@ -508,7 +508,7 @@ func (fs *QryptFS) fetchFiles(fid string) ([]quark.File, error) {
 	start := time.Now()
 	log.L.Debugf("fetchFiles: fid=%s\n", fid)
 
-	if v, ok := fs.fetching.Load(fid); ok {
+	if v, ok := fs.fetchingFiles.Load(fid); ok {
 		r := v.(*fetchFilesResult)
 		<-r.done
 		log.L.Debugf("fetchFiles: waited for concurrent fetch of %s (took %v)\n", fid, time.Since(start))
@@ -516,13 +516,13 @@ func (fs *QryptFS) fetchFiles(fid string) ([]quark.File, error) {
 	}
 
 	r := &fetchFilesResult{done: make(chan struct{})}
-	if actual, loaded := fs.fetching.LoadOrStore(fid, r); loaded {
+	if actual, loaded := fs.fetchingFiles.LoadOrStore(fid, r); loaded {
 		existing := actual.(*fetchFilesResult)
 		<-existing.done
 		log.L.Debugf("fetchFiles: waited for concurrent fetch of %s (took %v)\n", fid, time.Since(start))
 		return existing.files, existing.err
 	}
-	defer fs.fetching.Delete(fid)
+	defer fs.fetchingFiles.Delete(fid)
 
 	r.files, r.err = fs.fileSvc.ListFiles(fid)
 	close(r.done)

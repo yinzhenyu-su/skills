@@ -30,7 +30,7 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 	if time.Since(lastCheck) > MetadataTTL || forceRefresh {
 		files, err := fs.fetchFiles(parentFid)
 		if err != nil {
-			// Fall back to local cache
+			log.L.Warnf("Readdir: fetchFiles failed for %s: %v, using cached children\n", path, err)
 		} else {
 			fs.MergeRemoteChanges(path, parentFid, files)
 
