@@ -89,6 +89,17 @@ func main() {
 		Run:   runFind,
 	}
 	findCmd.Flags().StringP("config", "f", "", "配置文件路径")
+	findCmd.Flags().Bool("glob", false, "Glob 模式匹配")
+	findCmd.Flags().Bool("regex", false, "正则表达式匹配")
+	findCmd.Flags().Bool("exact", false, "精确匹配（非子串）")
+	findCmd.Flags().BoolP("case-sensitive", "s", false, "大小写敏感")
+	findCmd.Flags().StringP("type", "t", "", "过滤类型: f=文件, d=目录")
+	findCmd.Flags().Int("maxdepth", -1, "最大递归深度 (-1=不限)")
+	findCmd.Flags().IntP("max", "n", 0, "匹配数量上限 (0=不限)")
+	findCmd.Flags().Bool("json", false, "JSON 格式输出")
+	findCmd.Flags().BoolP("count", "c", false, "只显示匹配数")
+	findCmd.Flags().Int("workers", 1, "并发遍历协程数 (1-8)")
+	findCmd.Flags().String("size", "", "按大小过滤 (例: +1M, -500K, 100B)")
 
 	var pullCmd = &cobra.Command{
 		Use:   "pull <remote> [local]",
