@@ -70,9 +70,9 @@ func (fs *QryptFS) uploadWorker() {
 				}(task.node, backoff)
 			} else {
 				task.node.mu.Lock()
-				task.node.isDirty = false
 				task.node.syncQueued = false
 				task.node.mu.Unlock()
+				log.L.Warnf("uploadWorker: sync permanently failed for %s, data preserved as dirty\n", task.node.currentPath)
 				if fs.cacheMgr != nil {
 					fs.cacheMgr.RemovePendingNode(task.node.currentPath)
 				}

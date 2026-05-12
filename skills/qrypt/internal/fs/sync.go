@@ -78,13 +78,28 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		return nil
 	}
 
+	// ┌──────────────────────────────────────────────────────────────┐
+	// │ WARNING: syncQueued lifecycle — concurrent-worker dupe guard │
+	// │                                                              │
+	// │ The syncQueued flag prevents multiple tasks for the same     │
+	// │ node from being queued.  The defer below MUST NOT clear the  │
+	// │ flag when re-enqueuing — doing so creates a TOCTOU window    │
+	// │ where a concurrent Release can queue a second task, letting  │
+	// │ two workers upload the same file simultaneously. The Quark   │
+	// │ API then auto-renames the second upload → file(1).txt dupes. │
+	// │                                                              │
+	// │ The re-enqueue sends directly to uploadChan (bypassing       │
+	// │ enqueueSyncDelay) because syncQueued is already true.        │
+	// └──────────────────────────────────────────────────────────────┘
 	defer func() {
 		n.mu.Lock()
-		n.syncQueued = false
 		isStillDirty := n.isDirty
-		n.mu.Unlock()
 		if isStillDirty && err == nil {
-			fs.enqueueSync(n)
+			n.mu.Unlock()
+			fs.uploadChan <- syncTask{node: n}
+		} else {
+			n.syncQueued = false
+			n.mu.Unlock()
 		}
 	}()
 
@@ -100,9 +115,15 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 			}
 		}
 	}
+
+	// ── Snapshot (lock-protected, used after unlock) ──────────────
+	// These values reflect the file state at syncFile start and are
+	// used later for the upload request (snapshotSize, snapshotName,
+	// parentFid), conflict detection (fid), and cleanup (localPath).
+	// The 10s delay below can cause fid to diverge from n.fid — see
+	// • currentFid re-read just before conflict detection.
 	snapshotSize := n.size
 	snapshotName := n.name
-	snapshotMtime := n.mtime
 	parentFid := n.parentFid
 	fid := n.fid
 	localPath := n.localPath
@@ -112,18 +133,56 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 	lastPart := n.lastPart
 	n.mu.Unlock()
 
+	// ── 10s upload cooldown ───────────────────────────────────────
+	// Prevents rapid re-uploads after a successful upload.  Because
+	// syncFile returns nil here, the defer re-enqueues and we loop.
+	// After ~10s the guard expires and conflict detection runs with a
+	// freshly re-read currentFid.
 	if !strings.HasPrefix(fid, "local_") && !lastUpload.IsZero() && time.Since(lastUpload) < 10*time.Second {
-		n.mu.Lock()
-		n.isDirty = false
-		n.mu.Unlock()
 		return nil
 	}
 
-	if !strings.HasPrefix(fid, "local_") {
+	// ── Refresh n.fid after 10s delay ─────────────────────────────
+	// The snapshot fid above was captured BEFORE the 10s guard, so
+	// it may point to a server entry that a PRIOR syncFile's upload
+	// already deleted-and-replaced (new fid).  If we used the stale
+	// fid in the conflict checks below, every ListFiles hit would
+	// look like "file exists but fid differs" → false conflict.
+	n.mu.RLock()
+	currentFid := n.fid
+	n.mu.RUnlock()
+
+	// ┌──────────────────────────────────────────────────────────────┐
+	// │ CONFLICT DETECTION (against server parent dir)               │
+	// │                                                              │
+	// │ Both checks use currentFid (freshly re-read) rather than the │
+	// │ snapshot fid.  The 10s guard can delay execution long enough │
+	// │ for a prior syncFile on another worker to complete an upload │
+	// │ (deleteExistingFileByName → UploadPre → upload parts → fin) │
+	// │ which changes n.fid AND deletes the old fid from the server. │
+	// │                                                              │
+	// │ Check 1 — name match, different fid:                         │
+	// │   A file with the same decrypted name exists in the parent   │
+	// │   dir but its fid does not match currentFid.  This means     │
+	// │   someone else uploaded a file with the same name → conflict.│
+	// │                                                              │
+	// │ Check 2 — our fid gone, name exists:                         │
+	// │   currentFid is not found on the server at all.  This means  │
+	// │   the file was deleted remotely.  If another file with the   │
+	// │   same name exists, treat it as conflict.  Otherwise reset   │
+	// │   fid to local_ to upload as a brand-new file.               │
+	// │                                                              │
+	// │ NOTE: There is deliberately NO mtime comparison here — this  │
+	// │ is an encrypted filesystem where the server's recorded mtime │
+	// │ (upload completion) never matches the client's mtime (save   │
+	// │ time), producing false positives with clock skew. The two    │
+	// │ fid-based checks above catch every legitimate conflict.      │
+	// └──────────────────────────────────────────────────────────────┘
+	if !strings.HasPrefix(fid, "local_") && !strings.HasPrefix(currentFid, "local_") {
 		files, listErr := fs.fileSvc.ListFiles(parentFid)
 		if listErr == nil {
 			for _, f := range files {
-				if f.Fid == fid {
+				if f.Fid == currentFid {
 					continue
 				}
 				decName, _ := fs.cipher.DecryptSegment(f.FileName)
@@ -135,8 +194,8 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		}
 	}
 
-	if !strings.HasPrefix(fid, "local_") {
-		rf, err := fs.fileExistsOnServerDetailed(fid, parentFid)
+	if !strings.HasPrefix(fid, "local_") && !strings.HasPrefix(currentFid, "local_") {
+		rf, err := fs.fileExistsOnServerDetailed(currentFid, parentFid)
 		if err != nil {
 			return fmt.Errorf("pre-upload check failed: %v", err)
 		}
@@ -152,11 +211,6 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 				}
 			}
 			fid = "local_" + n.name
-		} else {
-			if rf.ModTime().UnixMilli() > n.baseServerMtime {
-				fs.resolveConflict(path, n, *rf)
-				return nil
-			}
 		}
 	}
 
@@ -217,10 +271,12 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 	n.encSize = result.EncryptedSize
 	n.uploadedFid = result.Fid
 	n.isDirty = false
-	n.baseServerMtime = snapshotMtime.UnixMilli()
+	n.baseServerMtime = time.Now().UnixMilli()
 	n.baseServerSize = n.size
 	n.lastMetadataCheck = time.Now()
 	n.lastUploadTime = time.Now()
+	n.uploadID = ""
+	n.lastPart = 0
 	localPath = n.localPath
 	if fs.cacheMgr != nil {
 		fs.cacheMgr.RemovePendingNode(path)
@@ -313,6 +369,11 @@ func (fs *QryptFS) resolveConflict(path string, n *Node, rf quark.File) {
 		n.fid = "local_" + newName + "_" + fmt.Sprint(time.Now().UnixNano())
 	}
 	n.name = newName
+	n.uploadID = ""
+	if newNonce, err := fs.cipher.GenerateRandomNonce(); err == nil {
+		n.fileNonce = newNonce
+		n.hasNonce = true
+	}
 	n.mu.Unlock()
 
 	fs.replaceNodePath(path, conflictPath, n)
