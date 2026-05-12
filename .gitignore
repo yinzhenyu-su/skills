@@ -6,4 +6,6 @@ qrypt.toml
 */qrypt/cache
 skills/qrypt/qrypt
 skills/qrypt/mount-quark.sh
+!skills/qrypt
 .env.local
+.sisyphus/

@@ -134,8 +134,6 @@ salt = ""
 [cache]
 # 缓存目录
 dir = "~/.qrypt/cache"
-# 数据库文件名
-db_name = "qrypt_cache.db"
 # 最大缓存大小 (支持 KB, MB, GB, TB)
 max_size = "10GB"
 

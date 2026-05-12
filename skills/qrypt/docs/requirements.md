@@ -131,10 +131,8 @@ password = "your_password"
 salt = ""
 
 [cache]
-# 本地缓存目录（存储分块数据与 SQLite 元数据）
+# 本地缓存目录（存储分块数据）
 dir = "~/.qrypt/cache"
-# 元数据数据库文件名
-db_name = "qrypt_cache.db"
 # 最大磁盘缓存占用 (支持 KB, MB, GB, TB)
 max_size = "10GB"
 

@@ -4,24 +4,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/yinzhenyu/skills/qrypt/internal/staging"
 )
 
-// CacheManager 协调磁盘存储和元数据数据库
 const CacheBatchBlocks = 16
 
-type CacheManager struct {
-	DB          *CacheDB
-	cacheDir    string
-	maxSize     int64
-	staging     *staging.Store
-	evictCount  int64
+type ChunkInfo struct {
+	FilePath  string
+	Offset    int64
+	Size      int64
+	IsDirty   bool
+	AccessAt  time.Time
 }
 
-// CacheDBPendingNode 定义待同步的节点（兼容 db.go 的 PendingNode）
-type CacheDBPendingNode struct {
+type PendingNode struct {
 	Path            string
 	Fid             string
 	ParentFid       string
@@ -36,6 +36,31 @@ type CacheDBPendingNode struct {
 	LastPart        int
 }
 
+type StagingMeta struct {
+	Fid       string
+	LocalPath string
+	Size      int64
+	Status    string
+	UpdatedAt time.Time
+}
+
+type fileChunkCache struct {
+	mu     sync.RWMutex
+	chunks map[int64]*ChunkInfo
+}
+
+type CacheManager struct {
+	cacheDir string
+	maxSize  int64
+	staging  *staging.Store
+	evictCount int64
+
+	mu            sync.RWMutex
+	pendingNodes  map[string]*PendingNode
+	stagingMetas  map[string]*StagingMeta
+	chunkIndex    map[string]*fileChunkCache
+}
+
 func (m *CacheManager) CacheDir() string {
 	return m.cacheDir
 }
@@ -44,139 +69,147 @@ func (m *CacheManager) StagingDir() string {
 	return filepath.Join(m.cacheDir, "staging")
 }
 
-// Staging 返回 staging store 实例
 func (m *CacheManager) Staging() *staging.Store {
 	return m.staging
 }
 
-func (m *CacheManager) GetDB() interface{} {
-	return m.DB
-}
-
-// NewCacheManager 创建缓存管理器
-func NewCacheManager(cacheDir string, dbPath string, maxSize int64) (*CacheManager, error) {
+func NewCacheManager(cacheDir string, maxSize int64) (*CacheManager, error) {
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return nil, err
 	}
 
-	// 如果 dbPath 不是绝对路径，拼接到 cacheDir 下
-	if !filepath.IsAbs(dbPath) {
-		dbPath = filepath.Join(cacheDir, dbPath)
-	}
-
-	db, err := NewCacheDB(dbPath)
-	if err != nil {
-		return nil, err
-	}
-
-	m := &CacheManager{
-		DB:       db,
-		cacheDir: cacheDir,
-		maxSize:  maxSize,
-	}
-
-	// 初始化 staging store
 	stagingDir := filepath.Join(cacheDir, "staging")
 	store, err := staging.NewStore(stagingDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create staging store: %w", err)
 	}
-	// 设置元数据存储回调
-	store.SetMetaStore(m)
-	m.staging = store
 
-	// 启动时清理孤立的 staging 文件
+	m := &CacheManager{
+		cacheDir:     cacheDir,
+		maxSize:      maxSize,
+		staging:      store,
+		pendingNodes: make(map[string]*PendingNode),
+		stagingMetas: make(map[string]*StagingMeta),
+		chunkIndex:   make(map[string]*fileChunkCache),
+	}
+
 	m.cleanupOrphanedStagingFiles()
 
 	return m, nil
 }
 
 func (m *CacheManager) cleanupOrphanedStagingFiles() {
-	pendingNodes, err := m.DB.GetPendingNodes()
-	if err != nil {
-		fmt.Printf("cleanupOrphanedStagingFiles: failed to get pending nodes: %v\n", err)
-		return
-	}
-
+	m.mu.RLock()
 	activeFids := make(map[string]bool)
-	for _, n := range pendingNodes {
+	for _, n := range m.pendingNodes {
 		if n.Fid != "" {
 			activeFids[n.Fid] = true
 		}
 	}
+	m.mu.RUnlock()
 
 	cleaned, err := m.staging.CleanupOrphanedStagingFiles(activeFids)
 	if err != nil {
 		fmt.Printf("cleanupOrphanedStagingFiles: failed: %v\n", err)
 		return
 	}
-
 	if len(cleaned) > 0 {
 		fmt.Printf("cleanupOrphanedStagingFiles: removed %d orphaned staging files\n", len(cleaned))
 	}
 }
 
-// SaveStagingMeta 实现 MetaStore 接口
+// --- Staging Meta (MetaStore interface) ---
+
 func (m *CacheManager) SaveStagingMeta(fid, localPath string, size int64) error {
-	return m.DB.SaveStagingMeta(fid, localPath, size)
-}
-
-// UpdateStagingMeta 实现 MetaStore 接口
-func (m *CacheManager) UpdateStagingMeta(fid string, size int64) error {
-	return m.DB.UpdateStagingMeta(fid, size)
-}
-
-// RemoveStagingMeta 实现 MetaStore 接口
-func (m *CacheManager) RemoveStagingMeta(fid string) error {
-	return m.DB.RemoveStagingMeta(fid)
-}
-
-// GetChunk 读取分块内容（支持合并存储）
-func (m *CacheManager) GetChunk(fid string, chunkIndex int64) ([]byte, error) {
-	path, offset, chunkSize, found, err := m.DB.GetChunk(fid, chunkIndex)
-	if err != nil || !found {
-		return nil, err
+	m.mu.Lock()
+	m.stagingMetas[fid] = &StagingMeta{
+		Fid:       fid,
+		LocalPath: localPath,
+		Size:      size,
+		Status:    "active",
+		UpdatedAt: time.Now(),
 	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *CacheManager) UpdateStagingMeta(fid string, size int64) error {
+	m.mu.Lock()
+	if s, ok := m.stagingMetas[fid]; ok {
+		s.Size = size
+		s.UpdatedAt = time.Now()
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *CacheManager) RemoveStagingMeta(fid string) error {
+	m.mu.Lock()
+	delete(m.stagingMetas, fid)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *CacheManager) GetStagingMeta(fid string) *StagingMeta {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.stagingMetas[fid]
+}
+
+// --- Chunk Cache ---
+
+func (m *CacheManager) getOrCreateChunkCache(fid string) *fileChunkCache {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	fc, ok := m.chunkIndex[fid]
+	if !ok {
+		fc = &fileChunkCache{chunks: make(map[int64]*ChunkInfo)}
+		m.chunkIndex[fid] = fc
+	}
+	return fc
+}
+
+func (m *CacheManager) GetChunk(fid string, chunkIndex int64) ([]byte, error) {
+	fc := m.getOrCreateChunkCache(fid)
+	fc.mu.RLock()
+	ci, ok := fc.chunks[chunkIndex]
+	if !ok {
+		fc.mu.RUnlock()
+		return nil, nil
+	}
+	fc.mu.RUnlock()
 
 	var data []byte
-	if offset > 0 || chunkSize > 0 {
-		// 合并存储格式：只读取分块所在的部分
-		f, err := os.Open(path)
+	if ci.Offset > 0 || ci.Size > 0 {
+		f, err := os.Open(ci.FilePath)
 		if err != nil {
 			return nil, err
 		}
 		defer f.Close()
-		data = make([]byte, chunkSize)
-		if _, err := f.ReadAt(data, offset); err != nil {
+		data = make([]byte, ci.Size)
+		if _, err := f.ReadAt(data, ci.Offset); err != nil {
 			return nil, err
 		}
 	} else {
-		// 旧格式：每个文件一个分块
-		data, err = os.ReadFile(path)
+		var err error
+		data, err = os.ReadFile(ci.FilePath)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	// 异步更新访问时间 (LRU)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				fmt.Printf("PANIC in UpdateAccessTime: %v\n", r)
-			}
-		}()
-		_ = m.DB.UpdateAccessTime(fid, chunkIndex)
-	}()
+	ci.AccessAt = time.Now()
 	return data, nil
 }
 
-// HasChunk 检查本地缓存是否存在指定分块
 func (m *CacheManager) HasChunk(fid string, chunkIndex int64) (bool, error) {
-	_, _, _, found, err := m.DB.GetChunk(fid, chunkIndex)
-	return found, err
+	fc := m.getOrCreateChunkCache(fid)
+	fc.mu.RLock()
+	_, ok := fc.chunks[chunkIndex]
+	fc.mu.RUnlock()
+	return ok, nil
 }
 
-// PutChunk 存储分块内容（合并到批处理文件）
 func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDirty bool) error {
 	suffix := ".dec.batch"
 	if isDirty {
@@ -187,7 +220,6 @@ func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDir
 	fileName := fmt.Sprintf("%s_batch_%d%s", fid, batchIdx, suffix)
 	path := filepath.Join(m.cacheDir, fileName)
 
-	// 写入到合并文件中的偏移位置
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
@@ -198,201 +230,233 @@ func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDir
 	}
 	f.Close()
 
-	if err := m.DB.InsertChunk(fid, chunkIndex, path, int64(len(data)), offset, isDirty); err != nil {
-		return err
+	fc := m.getOrCreateChunkCache(fid)
+	fc.mu.Lock()
+	fc.chunks[chunkIndex] = &ChunkInfo{
+		FilePath: path,
+		Offset:   offset,
+		Size:     int64(len(data)),
+		IsDirty:  isDirty,
+		AccessAt: time.Now(),
 	}
+	fc.mu.Unlock()
 
-	// 采样检查缓存驱逐（每 100 次写入检查一次）
 	m.evictCount++
 	if m.evictCount%100 == 0 {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Printf("PANIC in EvictIfNeeded: %v\n", r)
-				}
-			}()
-			_ = m.EvictIfNeeded(m.maxSize * 7 / 10)
-		}()
+		go m.EvictIfNeeded(m.maxSize * 7 / 10)
 	}
 
 	return nil
 }
 
-// SavePendingNode 持久化未完成的文件节点
-func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64, uploadID string, lastPart int) error {
-	return m.DB.SavePendingNode(path, fid, parentFid, name, localPath, size, isFolder, nonce, baseMtime, baseSize, uploadID, lastPart)
-}
-
-// RemovePendingNode 移除已完成的文件节点
-func (m *CacheManager) RemovePendingNode(path string) error {
-	return m.DB.RemovePendingNode(path)
-}
-
-// UpdatePendingNodeUpload 更新 pending node 的 upload_id
-func (m *CacheManager) UpdatePendingNodeUpload(path, uploadID string) error {
-	return m.DB.UpdatePendingNodeUpload(path, uploadID)
-}
-
-// UpdatePendingNodeLastPart 更新 pending node 的 last_part（上传进度标记）
-func (m *CacheManager) UpdatePendingNodeLastPart(path string, lastPart int) error {
-	return m.DB.UpdatePendingNodeLastPart(path, lastPart)
-}
-
-// RemovePendingNodesByPrefix 按路径前缀移除待同步节点
-func (m *CacheManager) RemovePendingNodesByPrefix(prefix string) error {
-	return m.DB.RemovePendingNodesByPrefix(prefix)
-}
-
-// RemovePendingNodesByFid 按 fid 移除待同步节点
-func (m *CacheManager) RemovePendingNodesByFid(fid string) error {
-	return m.DB.RemovePendingNodesByFid(fid)
-}
-
-// GetPendingNodes 获取所有待同步的节点
-func (m *CacheManager) GetPendingNodes() ([]CacheDBPendingNode, error) {
-	nodes, err := m.DB.GetPendingNodes()
-	if err != nil {
-		return nil, err
-	}
-	var result []CacheDBPendingNode
-	for _, n := range nodes {
-		result = append(result, CacheDBPendingNode{
-			Path:            n.Path,
-			Fid:             n.Fid,
-			ParentFid:       n.ParentFid,
-			Name:            n.Name,
-			LocalPath:       n.LocalPath,
-			Size:            n.Size,
-			IsFolder:        n.IsFolder,
-			Nonce:           n.Nonce,
-			BaseServerMtime: n.BaseServerMtime,
-			BaseServerSize:  n.BaseServerSize,
-			UploadID:        n.UploadID,
-			LastPart:        n.LastPart,
-		})
-	}
-	return result, nil
-}
-
-// GetDirtyChunks 获取文件的所有脏分块索引
-func (m *CacheManager) GetDirtyChunks(fid string) ([]int64, error) {
-	return m.DB.GetDirtyChunks(fid)
-}
-
-// GetCachedName 获取解密文件名缓存
-func (m *CacheManager) GetCachedName(fid, encryptedName string) (string, bool, error) {
-	return m.DB.GetCachedName(fid, encryptedName)
-}
-
-// SaveCachedName 保存解密文件名缓存
-func (m *CacheManager) SaveCachedName(fid, encryptedName, decryptedName string) error {
-	return m.DB.SaveCachedName(fid, encryptedName, decryptedName)
-}
-
-// RemoveChunksByFid 删除某个 fid 的本地缓存块
 func (m *CacheManager) RemoveChunksByFid(fid string) error {
-	paths, err := m.DB.GetChunkPathsByFid(fid)
-	if err != nil {
-		return err
+	fc := m.getOrCreateChunkCache(fid)
+	fc.mu.Lock()
+	paths := make(map[string]bool)
+	for _, ci := range fc.chunks {
+		paths[ci.FilePath] = true
 	}
-	for _, p := range paths {
-		_ = os.Remove(p)
+	delete(m.chunkIndex, fid)
+	fc.mu.Unlock()
+
+	for p := range paths {
+		os.Remove(p)
 	}
-	return m.DB.DeleteChunksByFid(fid)
+	return nil
 }
 
-// EvictIfNeeded 检查并清理旧缓存
-func (m *CacheManager) EvictIfNeeded(lowWatermark int64) error {
-	total, err := m.DB.GetTotalSize()
-	if err != nil {
-		return err
+func (m *CacheManager) GetDirtyChunks(fid string) []int64 {
+	fc := m.getOrCreateChunkCache(fid)
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	var indices []int64
+	for idx, ci := range fc.chunks {
+		if ci.IsDirty {
+			indices = append(indices, idx)
+		}
 	}
+	return indices
+}
 
+func (m *CacheManager) getTotalChunkSize() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var total int64
+	for _, fc := range m.chunkIndex {
+		fc.mu.RLock()
+		for _, ci := range fc.chunks {
+			total += ci.Size
+		}
+		fc.mu.RUnlock()
+	}
+	return total
+}
+
+// --- Pending Nodes ---
+
+func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64, uploadID string, lastPart int) error {
+	m.mu.Lock()
+	m.pendingNodes[path] = &PendingNode{
+		Path:            path,
+		Fid:             fid,
+		ParentFid:       parentFid,
+		Name:            name,
+		LocalPath:       localPath,
+		Size:            size,
+		IsFolder:        isFolder,
+		Nonce:           nonce,
+		BaseServerMtime: baseMtime,
+		BaseServerSize:  baseSize,
+		UploadID:        uploadID,
+		LastPart:        lastPart,
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *CacheManager) RemovePendingNode(path string) error {
+	m.mu.Lock()
+	delete(m.pendingNodes, path)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *CacheManager) UpdatePendingNodeUpload(path, uploadID string) error {
+	m.mu.Lock()
+	if n, ok := m.pendingNodes[path]; ok {
+		n.UploadID = uploadID
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *CacheManager) UpdatePendingNodeLastPart(path string, lastPart int) error {
+	m.mu.Lock()
+	if n, ok := m.pendingNodes[path]; ok {
+		n.LastPart = lastPart
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *CacheManager) RemovePendingNodesByPrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	like := prefix
+	if like[len(like)-1] != '/' {
+		like += "/"
+	}
+	m.mu.Lock()
+	for path := range m.pendingNodes {
+		if path == prefix || (len(path) > len(like) && path[:len(like)] == like) {
+			delete(m.pendingNodes, path)
+		}
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *CacheManager) RemovePendingNodesByFid(fid string) error {
+	if fid == "" {
+		return nil
+	}
+	m.mu.Lock()
+	for path, n := range m.pendingNodes {
+		if n.Fid == fid {
+			delete(m.pendingNodes, path)
+		}
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *CacheManager) GetPendingNodes() []PendingNode {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	nodes := make([]PendingNode, 0, len(m.pendingNodes))
+	for _, n := range m.pendingNodes {
+		nn := *n
+		if nn.Nonce != nil {
+			nn.Nonce = append([]byte(nil), n.Nonce...)
+		}
+		nodes = append(nodes, nn)
+	}
+	return nodes
+}
+
+// --- Cache Eviction ---
+
+func (m *CacheManager) EvictIfNeeded(lowWatermark int64) error {
+	total := m.getTotalChunkSize()
 	if total <= m.maxSize {
 		return nil
 	}
 
-	targetSize := total - lowWatermark
-	chunks, err := m.DB.GetOldestChunks(targetSize)
-	if err != nil {
-		return err
-	}
+	targetEvict := total - lowWatermark
 
-	// 记录已删除的文件路径，合并文件只需删一次
-	deletedPaths := make(map[string]bool)
-	for _, c := range chunks {
-		if !deletedPaths[c.Path] {
-			os.Remove(c.Path)
-			deletedPaths[c.Path] = true
+	m.mu.Lock()
+	var allChunks []struct {
+		fid string
+		idx int64
+		ci  *ChunkInfo
+	}
+	for fid, fc := range m.chunkIndex {
+		fc.mu.RLock()
+		for idx, ci := range fc.chunks {
+			if !ci.IsDirty {
+				allChunks = append(allChunks, struct {
+					fid string
+					idx int64
+					ci  *ChunkInfo
+				}{fid, idx, ci})
+			}
 		}
-		m.DB.DeleteChunk(c.Fid, c.Index)
+		fc.mu.RUnlock()
+	}
+	m.mu.Unlock()
+
+	sortByAccessTime(allChunks)
+
+	var evicted int64
+	deletedPaths := make(map[string]bool)
+	for _, c := range allChunks {
+		if evicted >= targetEvict {
+			break
+		}
+		if !deletedPaths[c.ci.FilePath] {
+			os.Remove(c.ci.FilePath)
+			deletedPaths[c.ci.FilePath] = true
+		}
+		evicted += c.ci.Size
+
+		fc := m.getOrCreateChunkCache(c.fid)
+		fc.mu.Lock()
+		delete(fc.chunks, c.idx)
+		fc.mu.Unlock()
 	}
 
 	return nil
 }
 
-// CleanupStagingMetas 清理过期的 staging 元数据
-func (m *CacheManager) CleanupStagingMetas(abandonedMaxAge time.Duration) error {
-	pendingNodes, err := m.DB.GetPendingNodes()
-	if err != nil {
-		return err
-	}
-
-	activeFids := make(map[string]bool)
-	for _, n := range pendingNodes {
-		if n.Fid != "" {
-			activeFids[n.Fid] = true
-		}
-	}
-
-	allMetas, err := m.DB.GetStagingMetasByStatus("active")
-	if err != nil {
-		return err
-	}
-	orphanFids := []string{}
-	for _, meta := range allMetas {
-		if !activeFids[meta.Fid] {
-			orphanFids = append(orphanFids, meta.Fid)
-		}
-	}
-
-	return m.DB.CleanupStagingMetas(abandonedMaxAge, orphanFids)
+func sortByAccessTime(chunks []struct {
+	fid string
+	idx int64
+	ci  *ChunkInfo
+}) {
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].ci.AccessAt.Before(chunks[j].ci.AccessAt)
+	})
 }
 
-// maintenanceInterval 后台维护循环间隔
+// --- Maintenance ---
+
 const maintenanceInterval = 10 * time.Minute
 
 func (m *CacheManager) Maintenance() error {
-	// 1. 如果缓存超过上限，驱逐最久未访问的分块
-	_ = m.EvictIfNeeded(m.maxSize * 7 / 10)
-
-	// 2. 清理过期 staging 元数据
-	_ = m.CleanupStagingMetas(24 * time.Hour)
-
-	// 3. 清理 7 天未访问的缓存 chunks（含物理文件）
-	deleted, freedBytes, cErr := m.DB.CleanupOldChunks(7)
-	if cErr != nil {
-		fmt.Printf("Maintenance: CleanupOldChunks error: %v\n", cErr)
-	} else if deleted > 0 {
-		fmt.Printf("Maintenance: cleaned %d old chunks (%.1f MB freed)\n", deleted, float64(freedBytes)/1048576.0)
-	}
-
-	// 4. 清理 30 天前已完成的操作日志
-	if deletedLogs, logErr := m.DB.CleanupOldOpsLog(30); logErr != nil {
-		fmt.Printf("Maintenance: CleanupOldOpsLog error: %v\n", logErr)
-	} else if deletedLogs > 0 {
-		fmt.Printf("Maintenance: cleaned %d old ops_log entries\n", deletedLogs)
-	}
-
-	// 5. 清理 30 天未使用的文件名缓存
-	if deletedNC, ncErr := m.DB.CleanupOldNameCache(30); ncErr != nil {
-		fmt.Printf("Maintenance: CleanupOldNameCache error: %v\n", ncErr)
-	} else if deletedNC > 0 {
-		fmt.Printf("Maintenance: cleaned %d old name_cache entries\n", deletedNC)
-	}
-
-	// 6. 清理 30 天未访问的分块 + VACUUM
-	return m.DB.Maintenance()
+	m.EvictIfNeeded(m.maxSize * 7 / 10)
+	m.CleanupStagingMetas(24 * time.Hour)
+	return nil
 }
 
 func (m *CacheManager) MaintenanceStart() {
@@ -402,24 +466,94 @@ func (m *CacheManager) MaintenanceStart() {
 				fmt.Printf("PANIC in MaintenanceStart: %v\n", r)
 			}
 		}()
-		// 启动后先跑一次
-		_ = m.Maintenance()
+		m.Maintenance()
 		ticker := time.NewTicker(maintenanceInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			_ = m.Maintenance()
+			m.Maintenance()
 		}
 	}()
 }
 
 func (m *CacheManager) Close() error {
-	return m.DB.Close()
+	return nil
 }
+
+// --- Staging Cleanup (kept for compatibility) ---
+
+func (m *CacheManager) CleanupStagingMetas(abandonedMaxAge time.Duration) error {
+	m.mu.RLock()
+	activeFids := make(map[string]bool)
+	for _, n := range m.pendingNodes {
+		if n.Fid != "" {
+			activeFids[n.Fid] = true
+		}
+	}
+	metas := make([]StagingMeta, 0, len(m.stagingMetas))
+	for _, s := range m.stagingMetas {
+		metas = append(metas, *s)
+	}
+	m.mu.RUnlock()
+
+	var orphanFids []string
+	for _, meta := range metas {
+		if meta.Status == "active" && !activeFids[meta.Fid] {
+			orphanFids = append(orphanFids, meta.Fid)
+		}
+	}
+
+	for _, fid := range orphanFids {
+		meta := m.GetStagingMeta(fid)
+		if meta != nil && meta.Status == "active" {
+			m.mu.Lock()
+			if s, exists := m.stagingMetas[fid]; exists {
+				s.Status = "abandoned"
+			}
+			m.mu.Unlock()
+		}
+	}
+
+	m.mu.Lock()
+	for fid, s := range m.stagingMetas {
+		if s.Status == "abandoned" && time.Since(s.UpdatedAt) > abandonedMaxAge {
+			if s.LocalPath != "" {
+				os.Remove(s.LocalPath)
+			}
+			delete(m.stagingMetas, fid)
+		}
+	}
+	m.mu.Unlock()
+
+	return nil
+}
+
+// --- Batch operations (removed SQLite, replaced with simple iterations) ---
 
 func (m *CacheManager) BatchDeleteNodeState(fids []string, paths []string) error {
-	return m.DB.BatchDeleteNodeState(fids, paths)
-}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-func (m *CacheManager) BatchMarkOpsDone(fids []string, paths []string) error {
-	return m.DB.BatchMarkOpsDone(fids, paths)
+	for _, path := range paths {
+		delete(m.pendingNodes, path)
+	}
+
+	fidSet := make(map[string]bool, len(fids))
+	for _, f := range fids {
+		if f != "" {
+			fidSet[f] = true
+		}
+	}
+
+	for path, n := range m.pendingNodes {
+		if fidSet[n.Fid] {
+			delete(m.pendingNodes, path)
+		}
+	}
+
+	for _, f := range fids {
+		delete(m.chunkIndex, f)
+		delete(m.stagingMetas, f)
+	}
+
+	return nil
 }
