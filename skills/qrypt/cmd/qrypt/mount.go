@@ -53,15 +53,27 @@ func runMount(cmd *cobra.Command, args []string) {
 	}
 
 	if cfg.Quark.Cookie == "" {
-		fmt.Println("错误: 缺少 Quark Cookie (配置文件或 -c 参数)")
+		fmt.Println("错误: 缺少 Quark Cookie")
+		fmt.Println("  请通过以下方式之一设置：")
+		fmt.Println("    1. 在配置文件中设置 quark.cookie")
+		fmt.Println("    2. 使用 -c <cookie> 命令行参数")
+		fmt.Println("")
+		fmt.Println("  Cookie 获取方法：登录 https://pan.quark.cn，F12 → Network → 任意请求头中复制 Cookie")
 		os.Exit(1)
 	}
 	if cfg.Encryption.Password == "" {
-		fmt.Println("错误: 缺少加密密码 (配置文件或 -p 参数)")
+		fmt.Println("错误: 缺少加密密码")
+		fmt.Println("  请通过以下方式之一设置：")
+		fmt.Println("    1. 在配置文件中设置 encryption.password")
+		fmt.Println("    2. 使用 -p <password> 命令行参数")
 		os.Exit(1)
 	}
 	if cfg.Mount.Point == "" {
-		fmt.Println("错误: 缺少挂载点 (配置文件或 -m 参数)")
+		fmt.Println("错误: 缺少挂载点")
+		fmt.Println("  请通过以下方式之一设置：")
+		fmt.Println("    1. 在配置文件中设置 mount.point")
+		fmt.Println("    2. 使用 -m <path> 命令行参数")
+		fmt.Println("    3. 运行 qrypt init 生成配置文件模板")
 		os.Exit(1)
 	}
 
