@@ -37,6 +37,30 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 
 	w, wOk := fs.drv.(drive.Writer)
 
+	if !isLocal && wOk {
+		encName := fs.cipher.EncryptSegment(newName)
+		oldEncName := fs.cipher.EncryptSegment(oldNode.name)
+		if encName != oldEncName {
+			renameEntry := drive.Entry{ID: oldNode.fid}
+			var renameErr error
+			for attempt := 0; attempt < 5; attempt++ {
+				renameErr = w.Rename(context.Background(), renameEntry, encName)
+				if renameErr == nil {
+					break
+				}
+				if errors.Is(renameErr, drive.ErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
+					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+					continue
+				}
+				break
+			}
+			if renameErr != nil {
+				log.L.Errorf("Rename: API call failed for %s -> %s: %v\n", oldPath, newPath, renameErr)
+				return -fuse.EIO
+			}
+		}
+	}
+
 	if oldParent != newParent {
 		newParentNode, errc := fs.lookup(newParent)
 		if errc != 0 {
@@ -66,30 +90,6 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 		oldNode.mu.Lock()
 		oldNode.parentFid = newParentNode.fid
 		oldNode.mu.Unlock()
-	}
-
-	if !isLocal && wOk {
-		encName := fs.cipher.EncryptSegment(newName)
-		oldEncName := fs.cipher.EncryptSegment(oldNode.name)
-		if encName != oldEncName {
-			renameEntry := drive.Entry{ID: oldNode.fid}
-			var renameErr error
-			for attempt := 0; attempt < 5; attempt++ {
-				renameErr = w.Rename(context.Background(), renameEntry, encName)
-				if renameErr == nil {
-					break
-				}
-				if errors.Is(renameErr, drive.ErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
-					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-					continue
-				}
-				break
-			}
-			if renameErr != nil {
-				log.L.Errorf("Rename: API call failed for %s -> %s: %v\n", oldPath, newPath, renameErr)
-				return -fuse.EIO
-			}
-		}
 	}
 
 	oldNode.mu.Lock()
