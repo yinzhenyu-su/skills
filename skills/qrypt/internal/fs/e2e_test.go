@@ -675,3 +675,82 @@ func TestE2E_Fsync(t *testing.T) {
 	}
 	s.fs.Release("/fsync_test.txt", 0)
 }
+
+// ============================================================
+// Writeback-specific e2e tests
+// ============================================================
+
+// TestE2E_WritebackFsyncThenRead verifies data survives Fsync + page flush.
+func TestE2E_WritebackFsyncThenRead(t *testing.T) {
+	s := newE2E(t)
+	fh := s.mustCreate("/wbfsync.txt")
+	s.mustWrite("/wbfsync.txt", []byte("fsync data"), 0)
+	s.fs.Fsync("/wbfsync.txt", false, fh)
+	got := s.mustRead("/wbfsync.txt", 20, 0)
+	if string(got) != "fsync data" {
+		t.Errorf("got %q, want %q", string(got), "fsync data")
+	}
+	s.fs.Release("/wbfsync.txt", fh)
+}
+
+// TestE2E_WritebackMultipleWritesThenRead verifies page coalescing through
+// several small sequential writes.
+func TestE2E_WritebackMultipleWritesThenRead(t *testing.T) {
+	s := newE2E(t)
+	fh := s.mustCreate("/wbmulti.txt")
+	for i := 0; i < 20; i++ {
+		s.mustWrite("/wbmulti.txt", []byte{byte('A' + i)}, int64(i))
+	}
+	s.fs.Fsync("/wbmulti.txt", false, fh)
+	got := s.mustRead("/wbmulti.txt", 20, 0)
+	expected := "ABCDEFGHIJKLMNOPQRST"
+	if string(got) != expected {
+		t.Errorf("got %q, want %q", string(got), expected)
+	}
+	s.fs.Release("/wbmulti.txt", fh)
+}
+
+// TestE2E_WritebackWriteAfterFsync verifies that writing after Fsync does
+// not corrupt previously flushed data (page buffer kept, new writes extend).
+func TestE2E_WritebackWriteAfterFsync(t *testing.T) {
+	s := newE2E(t)
+	fh := s.mustCreate("/wbappend.txt")
+	s.mustWrite("/wbappend.txt", []byte("AAA"), 0)
+	s.fs.Fsync("/wbappend.txt", false, fh)
+	s.mustWrite("/wbappend.txt", []byte("BBB"), 3)
+	s.fs.Fsync("/wbappend.txt", false, fh)
+	got := s.mustRead("/wbappend.txt", 6, 0)
+	if string(got) != "AAABBB" {
+		t.Errorf("got %q, want %q", string(got), "AAABBB")
+	}
+	s.fs.Release("/wbappend.txt", fh)
+}
+
+// TestE2E_WritebackOverwriteAfterFsync verifies overwriting at an existing
+// offset after Fsync picks up the new data.
+func TestE2E_WritebackOverwriteAfterFsync(t *testing.T) {
+	s := newE2E(t)
+	fh := s.mustCreate("/wboverwrite.txt")
+	s.mustWrite("/wboverwrite.txt", []byte("xxxxxxxxxxxx"), 0)
+	s.fs.Fsync("/wboverwrite.txt", false, fh)
+	s.mustWrite("/wboverwrite.txt", []byte("OOO"), 2)
+	s.fs.Fsync("/wboverwrite.txt", false, fh)
+	got := s.mustRead("/wboverwrite.txt", 12, 0)
+	if string(got) != "xxOOOxxxxxxx" {
+		t.Errorf("got %q, want %q", string(got), "xxOOOxxxxxxx")
+	}
+	s.fs.Release("/wboverwrite.txt", fh)
+}
+
+// TestE2E_WritebackReleaseTriggersFlush verifies that Release enqueues sync
+// and the page data is readable afterward (via page buffer).
+func TestE2E_WritebackReleaseRead(t *testing.T) {
+	s := newE2E(t)
+	fh := s.mustCreate("/wbrelease.txt")
+	s.mustWrite("/wbrelease.txt", []byte("release data"), 0)
+	s.fs.Release("/wbrelease.txt", fh)
+	got := s.mustRead("/wbrelease.txt", 20, 0)
+	if string(got) != "release data" {
+		t.Errorf("got %q, want %q", string(got), "release data")
+	}
+}

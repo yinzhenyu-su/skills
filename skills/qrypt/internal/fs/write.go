@@ -110,6 +110,7 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 	}
 
 	node.isDirty = true
+	node.expectedFid = ""
 	node.mtime = time.Now()
 	written, err := fs.staging.WriteAt(node.localPath, buff, ofst)
 	if err != nil {
@@ -150,6 +151,7 @@ func (fs *QryptFS) Truncate(path string, size int64, fh uint64) (errc int) {
 
 	n.size = size
 	n.isDirty = true
+	n.expectedFid = ""
 	n.mtime = time.Now()
 	if fs.staging == nil {
 		return -fuse.EIO

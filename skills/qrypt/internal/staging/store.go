@@ -5,11 +5,33 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
+	"time"
 )
 
+const (
+	pageFlushDelay     = 250 * time.Millisecond
+	pageMaxSize        = 1 << 20 // 1MB — flush early if page grows beyond this
+	pageInitialBufSize = 4096
+)
+
+// Page buffers writes for a single staging file. Consecutive writes to the
+// same file are coalesced in memory and flushed asynchronously.
+type Page struct {
+	mu     sync.Mutex
+	buf    []byte // backing buffer; grows via append / overwrite
+	dirty  bool
+	timer  *time.Timer
+	fid    string
+	flush  func(fid string, buf []byte) error // calls staging's write-to-disk
+	onDone func(fid string)                    // cleanup after flush/close
+}
+
+// Store manages staging files on disk with an optional writeback page cache.
 type Store struct {
-	dir string
+	dir   string
+	pages sync.Map // fid → *Page
 }
 
 func NewStore(dir string) (*Store, error) {
@@ -98,24 +120,141 @@ func (s *Store) Ensure(path string) error {
 	return f.Close()
 }
 
+// getPage returns the Page for the given fid, creating one if needed.
+func (s *Store) getPage(fid string) *Page {
+	if v, ok := s.pages.Load(fid); ok {
+		return v.(*Page)
+	}
+	p := &Page{
+		fid:   fid,
+		buf:   make([]byte, 0, pageInitialBufSize),
+		flush: func(fid string, buf []byte) error { return s.writePage(fid, buf) },
+		onDone: func(fid string) {
+			s.pages.Delete(fid)
+		},
+	}
+	s.pages.Store(fid, p)
+	return p
+}
+
+// writePage writes a Page's full buffer to the staging file on disk.
+func (s *Store) writePage(fid string, buf []byte) error {
+	path := s.Path(fid)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteAt(buf, 0)
+	return err
+}
+
+// WriteAt buffers data in a Page if one exists or can be created for the fid
+// extracted from path; otherwise falls through to a direct disk write.
 func (s *Store) WriteAt(path string, data []byte, off int64) (int, error) {
 	if err := s.checkDiskSpace(); err != nil {
 		return 0, err
 	}
+
+	fid := FidFromPath(path)
+
+	// Use page cache if we already have one, or if the write is small enough
+	// to benefit from coalescing (< pageMaxSize / 4).
+	if _, ok := s.pages.Load(fid); ok || len(data) < pageMaxSize/4 {
+		p := s.getPage(fid)
+		return p.WriteAt(data, off)
+	}
+
+	// Large write, no existing page — direct to disk.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return 0, err
 	}
 	defer f.Close()
+	return f.WriteAt(data, off)
+}
 
-	n, err := f.WriteAt(data, off)
-	if err != nil {
-		return n, err
+// Page.WriteAt buffers data in memory. Multiple writes to the same fid are
+// coalesced until a flush trigger (timer, Sync, Close, or page full).
+func (p *Page) WriteAt(data []byte, off int64) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	need := off + int64(len(data))
+	if need > int64(len(p.buf)) {
+		newBuf := make([]byte, need)
+		copy(newBuf, p.buf)
+		p.buf = newBuf
 	}
-	return n, nil
+	copy(p.buf[off:], data)
+	p.dirty = true
+
+	// Flush early if page exceeds threshold.
+	if len(p.buf) > pageMaxSize {
+		p.mu.Unlock()
+		p.flushNow()
+		p.mu.Lock()
+	} else {
+		p.resetTimer()
+	}
+
+	return len(data), nil
+}
+
+// flushNow writes buffered data to disk.  After flushing, the buffer is kept
+// in memory (dirty cleared) so subsequent writes can extend it without losing
+// data at earlier offsets.  Caller must NOT hold p.mu (flush releases it while
+// writing to disk).
+func (p *Page) flushNow() error {
+	p.mu.Lock()
+	if !p.dirty {
+		p.mu.Unlock()
+		return nil
+	}
+	buf := make([]byte, len(p.buf))
+	copy(buf, p.buf)
+	p.dirty = false
+	p.stopTimer()
+	p.mu.Unlock()
+
+	return p.flush(p.fid, buf)
+}
+
+// resetTimer (re-)arms the flush timer.  Caller must hold p.mu.
+func (p *Page) resetTimer() {
+	if p.timer != nil {
+		p.timer.Stop()
+	}
+	page := p
+	p.timer = time.AfterFunc(pageFlushDelay, func() {
+		_ = page.flushNow()
+	})
+}
+
+// stopTimer stops the flush timer.  Caller must hold p.mu.
+func (p *Page) stopTimer() {
+	if p.timer != nil {
+		p.timer.Stop()
+		p.timer = nil
+	}
 }
 
 func (s *Store) ReadAt(path string, buf []byte, off int64) (int, error) {
+	fid := FidFromPath(path)
+	if v, ok := s.pages.Load(fid); ok {
+		p := v.(*Page)
+		p.mu.Lock()
+		if p.dirty && int(off)+len(buf) <= len(p.buf) {
+			// Data is entirely in the page buffer — read from there.
+			n := copy(buf, p.buf[off:])
+			p.mu.Unlock()
+			return n, nil
+		}
+		// Partial or beyond page — flush to disk first for consistency.
+		p.mu.Unlock()
+		_ = p.flushNow()
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
@@ -124,7 +263,20 @@ func (s *Store) ReadAt(path string, buf []byte, off int64) (int, error) {
 	return f.ReadAt(buf, off)
 }
 
+// flushBuf flushes any pending page buffer for the given path to disk.
+// Used by read/size/truncate paths that need disk consistency.
+func (s *Store) flushBuf(path string) error {
+	fid := FidFromPath(path)
+	if v, ok := s.pages.Load(fid); ok {
+		return v.(*Page).flushNow()
+	}
+	return nil
+}
+
 func (s *Store) OpenReader(path string) (io.ReadCloser, error) {
+	if err := s.flushBuf(path); err != nil {
+		return nil, err
+	}
 	return os.Open(path)
 }
 
@@ -134,11 +286,31 @@ func (s *Store) Exists(path string) bool {
 }
 
 func (s *Store) FileSize(path string) (int64, error) {
+	if err := s.flushBuf(path); err != nil {
+		return 0, err
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, err
 	}
 	return info.Size(), nil
+}
+
+// Truncate resizes the staging file on disk and invalidates the page buffer
+// for that fid so subsequent writes build a fresh page.
+func (s *Store) Truncate(path string, size int64) error {
+	// Flush any buffered data to disk first so the on-disk file is current.
+	if err := s.flushBuf(path); err != nil {
+		return err
+	}
+	// Discard the page — truncate changes the file size and the page buffer
+	// would reference stale offset ranges.
+	fid := FidFromPath(path)
+	s.pages.Delete(fid)
+	if err := s.Ensure(path); err != nil {
+		return err
+	}
+	return os.Truncate(path, size)
 }
 
 func (s *Store) Remove(path string) error {
@@ -152,6 +324,13 @@ func (s *Store) Remove(path string) error {
 }
 
 func (s *Store) Sync(path string) error {
+	fid := FidFromPath(path)
+	if v, ok := s.pages.Load(fid); ok {
+		if err := v.(*Page).flushNow(); err != nil {
+			return err
+		}
+	}
+	// Also fsync the on-disk file so the page flush is durable.
 	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
 		return err
@@ -160,11 +339,32 @@ func (s *Store) Sync(path string) error {
 	return f.Sync()
 }
 
-func (s *Store) Truncate(path string, size int64) error {
-	if err := s.Ensure(path); err != nil {
-		return err
+// Close flushes and destroys the page for the given path.  It is safe to call
+// multiple times (no-op after the first flush).
+func (s *Store) Close(path string) error {
+	fid := FidFromPath(path)
+	if v, ok := s.pages.Load(fid); ok {
+		p := v.(*Page)
+		p.mu.Lock()
+		if p.timer != nil {
+			p.timer.Stop()
+			p.timer = nil
+		}
+		dirty := p.dirty
+		buf := p.buf
+		p.buf = nil
+		p.dirty = false
+		p.mu.Unlock()
+
+		s.pages.Delete(fid)
+
+		if dirty && len(buf) > 0 {
+			if err := s.writePage(fid, buf); err != nil {
+				return err
+			}
+		}
 	}
-	return os.Truncate(path, size)
+	return nil
 }
 
 func (s *Store) ListStagingFiles() ([]string, error) {

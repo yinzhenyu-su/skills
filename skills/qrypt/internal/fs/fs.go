@@ -10,6 +10,7 @@ import (
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/log"
 	"github.com/yinzhenyu/skills/qrypt/internal/quark"
 	"github.com/yinzhenyu/skills/qrypt/internal/staging"
 	syncpkg "github.com/yinzhenyu/skills/qrypt/internal/sync"
@@ -157,6 +158,23 @@ func NewFS(
 
 	fs.recoverDirtyFiles()
 	fs.replayOpsLog()
+
+	if fs.staging != nil {
+		activeFids := make(map[string]bool)
+		fs.nodes.Range(func(key, value interface{}) bool {
+			n := value.(*Node)
+			n.mu.RLock()
+			activeFids[n.fid] = true
+			n.mu.RUnlock()
+			return true
+		})
+		cleaned, err := fs.staging.CleanupOrphanedStagingFiles(activeFids)
+		if err != nil {
+			log.L.Warnf("staging cleanup: %v\n", err)
+		} else if len(cleaned) > 0 {
+			log.L.Infof("staging cleanup: removed %d orphaned staging files\n", len(cleaned))
+		}
+	}
 
 	go fs.lruEvictionLoop()
 	if fs.cacheMgr != nil {
