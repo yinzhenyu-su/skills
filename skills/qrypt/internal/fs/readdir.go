@@ -7,7 +7,7 @@ import (
 
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 )
 
 func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t, ofst int64) bool, ofst int64, fh uint64) (errc int) {
@@ -119,7 +119,7 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 	return 0
 }
 
-func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remoteFiles []quark.File) {
+func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remoteFiles []drive.Entry) {
 	if parentFid == "" {
 		return
 	}
@@ -142,25 +142,25 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 	}
 
 	seenFids := make(map[string]bool)
-	remoteMap := make(map[string]quark.File)
+	remoteMap := make(map[string]drive.Entry)
 	remoteFids := make(map[string]bool)
 
+	var decName string
 	for _, f := range remoteFiles {
-		if f.Fid == parentFid {
+		if f.ID == parentFid {
 			continue
 		}
-		seenFids[f.Fid] = true
-		remoteFids[f.Fid] = true
+		seenFids[f.ID] = true
+		remoteFids[f.ID] = true
 
-		decName := ""
-		if v, ok := fs.fidNodes.Load(f.Fid); ok {
+		if v, ok := fs.fidNodes.Load(f.ID); ok {
 			pn := v.(*Node)
 			pn.mu.RLock()
 			decName = pn.name
 			pn.mu.RUnlock()
 		}
 		if decName == "" {
-			decName, _ = fs.cipher.DecryptSegment(f.FileName)
+			decName, _ = fs.cipher.DecryptSegment(f.Name)
 		}
 
 		if decName == "" || decName == "." || decName == ".." {
@@ -218,7 +218,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 
 		rf, exists := remoteMap[name]
 
-		if exists && rf.Fid == expectedFid {
+		if exists && rf.ID == expectedFid {
 			n.mu.Lock()
 			if n.fid != expectedFid {
 				n.fid = expectedFid
@@ -231,7 +231,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			if !exists {
 				continue
 			}
-			if rf.Fid == fid {
+			if rf.ID == fid {
 				n.mu.Lock()
 				if n.source != "remote" {
 					n.source = "remote"
@@ -256,26 +256,26 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		}
 
 		if !strings.HasPrefix(fid, "local_") {
-			if rf.Fid != fid {
+			if rf.ID != fid {
 				// FID changed
 			}
 
-			remoteMtime := rf.ModTime().UnixMilli()
+			remoteMtime := rf.ModTime.UnixMilli()
 			n.mu.RLock()
 			source := n.source
 			n.mu.RUnlock()
 
 			if source == "remote" && baseMtime > 0 && remoteMtime > baseMtime+2000 {
 				if !isDirty {
-					decSize, errDec := fs.cipher.DecryptedSize(rf.Int64Size())
+					decSize, errDec := fs.cipher.DecryptedSize(rf.Size)
 					if errDec != nil {
-						log.L.Warnf("MergeRemoteChanges: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", entry.path, rf.Fid, rf.Int64Size(), errDec)
+						log.L.Warnf("MergeRemoteChanges: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", entry.path, rf.ID, rf.Size, errDec)
 					}
 					n.mu.Lock()
-					n.fid = rf.Fid
+					n.fid = rf.ID
 					n.size = decSize
-					n.encSize = rf.Int64Size()
-					n.mtime = rf.ModTime()
+					n.encSize = rf.Size
+					n.mtime = rf.ModTime
 					n.baseServerMtime = remoteMtime
 					n.baseServerSize = decSize
 					n.lastMetadataCheck = time.Now()
@@ -303,26 +303,26 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		if seenLocalNames[name] {
 			continue
 		}
-		if _, inDeletion := fs.activeDeletions.Load(rf.Fid); inDeletion {
-			log.L.Debugf("MergeRemoteChanges: skipping resurrected file %s (fid=%s) in %s\n", name, rf.Fid, parentPath)
+		if _, inDeletion := fs.activeDeletions.Load(rf.ID); inDeletion {
+			log.L.Debugf("MergeRemoteChanges: skipping resurrected file %s (fid=%s) in %s\n", name, rf.ID, parentPath)
 			continue
 		}
-		log.L.Debugf("MergeRemoteChanges: adding new remote file %s (fid=%s, size=%d) to %s\n", name, rf.Fid, rf.Int64Size(), parentPath)
+		log.L.Debugf("MergeRemoteChanges: adding new remote file %s (fid=%s, size=%d) to %s\n", name, rf.ID, rf.Size, parentPath)
 
 		childPath := prefix + name
-		decSize, errDec := fs.cipher.DecryptedSize(rf.Int64Size())
+		decSize, errDec := fs.cipher.DecryptedSize(rf.Size)
 		if errDec != nil {
-			log.L.Warnf("MergeRemoteChanges new file: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", childPath, rf.Fid, rf.Int64Size(), errDec)
+			log.L.Warnf("MergeRemoteChanges new file: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", childPath, rf.ID, rf.Size, errDec)
 		}
-		modTime := rf.ModTime()
+		modTime := rf.ModTime
 		fs.storeNode(childPath, &Node{
-			fid:               rf.Fid,
+			fid:               rf.ID,
 			parentFid:         parentFid,
 			name:              name,
 			size:              decSize,
-			encSize:           rf.Int64Size(),
+			encSize:           rf.Size,
 			currentPath:       childPath,
-			isFolder:          rf.IsDir(),
+			isFolder:          rf.IsDir,
 			mtime:             modTime,
 			baseServerMtime:   modTime.UnixMilli(),
 			baseServerSize:    decSize,

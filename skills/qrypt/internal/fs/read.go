@@ -1,12 +1,14 @@
 package fs
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 )
 
@@ -196,20 +198,14 @@ func (fs *QryptFS) getDecryptedChunk(n *Node, idx uint64) ([]byte, error) {
 }
 
 func (fs *QryptFS) fetchBatch(n *Node, batchIdx uint64) error {
-	url, err := fs.fileSvc.GetDownloadURL(n.fid)
-	if err != nil {
-		log.L.Errorf("fetchBatch: GetDownloadURL failed for %s: %v\n", n.fid, err)
-		return err
-	}
-	log.L.Debugf("fetchBatch: downloading %s batch=%d url_len=%d\n", n.fid, batchIdx, len(url))
-
 	n.mu.RLock()
 	encSize := n.encSize
+	fid := n.fid
 	n.mu.RUnlock()
 
-	startBlock := batchIdx * FetchBatchBlocks
-	endBlock := startBlock + FetchBatchBlocks - 1
+	entry := nodeToEntry(n)
 
+	startBlock := batchIdx * FetchBatchBlocks
 	var pStart, pEnd int64
 	if batchIdx == 0 {
 		pStart = 0
@@ -222,29 +218,15 @@ func (fs *QryptFS) fetchBatch(n *Node, batchIdx uint64) error {
 		pEnd = encSize - 1
 	}
 
-	rc, err := fs.fileSvc.Client().DownloadChunk(url, pStart, pEnd)
+	endBlock := startBlock + FetchBatchBlocks - 1
+	batchSize := pEnd - pStart + 1
+	rc, err := fs.drv.Read(context.Background(), entry, pStart, batchSize)
 	if err != nil {
 		if strings.Contains(err.Error(), "416") {
 			return nil
 		}
-		if strings.Contains(err.Error(), "403") {
-			log.L.Warnf("fetchBatch: got 403 for %s batch=%d, refreshing download URL and retrying\n", n.fid, batchIdx)
-			fs.fileSvc.Cache().InvalidateURL(n.fid)
-			url, err = fs.fileSvc.GetDownloadURL(n.fid)
-			if err != nil {
-				log.L.Errorf("fetchBatch: retry GetDownloadURL failed for %s: %v\n", n.fid, err)
-				return err
-			}
-			rc, err = fs.fileSvc.Client().DownloadChunk(url, pStart, pEnd)
-			if err != nil {
-				if strings.Contains(err.Error(), "416") {
-					return nil
-				}
-				return err
-			}
-		} else {
-			return err
-		}
+		log.L.Errorf("fetchBatch: Read failed for %s: %v\n", fid, err)
+		return err
 	}
 	defer rc.Close()
 
@@ -295,6 +277,16 @@ func (fs *QryptFS) fetchBatch(n *Node, batchIdx uint64) error {
 	}
 
 	return nil
+}
+
+func nodeToEntry(n *Node) drive.Entry {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return drive.Entry{
+		ID:   n.fid,
+		Name: n.name,
+		Size: n.encSize,
+	}
 }
 
 func (fs *QryptFS) Statfs(path string, stat *fuse.Statfs_t) (errc int) {

@@ -15,13 +15,27 @@ func runInit(cmd *cobra.Command, args []string) {
 	}
 
 	exampleConfig := `# Qrypt 配置文件
-# Quark Drive 加密挂载工具
+# Cloud Drive Rclone-Compatible Crypt Mount Tool
 
-[quark]
+[drive]
+# 存储后端类型: quark | yun139
+type = "quark"
+
+[drive.quark]
 # 夸克网盘 Cookie（必填）
 cookie = ""
 # 挂载的网盘路径（默认根目录）
 root_path = "/Test"
+
+# 切换其他驱动：取消注释对应节，修改 drive.type
+# [drive]
+# type = "yun139"
+#
+# [drive.yun139]
+# 天翼云盘 Authorization（必填）
+# authorization = ""
+# 挂载的根目录 ID（默认 /）
+# root_id = "/"
 
 [encryption]
 # 加密密码（必填，与 rclone crypt 兼容）

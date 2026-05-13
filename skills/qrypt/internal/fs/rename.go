@@ -1,13 +1,15 @@
 package fs
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
 )
 
 func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
@@ -33,22 +35,24 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 	newName := filepath.Base(newPath)
 	isLocal := strings.HasPrefix(oldNode.fid, "local_")
 
+	w, wOk := fs.drv.(drive.Writer)
+
 	if oldParent != newParent {
 		newParentNode, errc := fs.lookup(newParent)
 		if errc != 0 {
 			return errc
 		}
 
-		if !isLocal {
+		if !isLocal && wOk {
+			moveEntry := drive.Entry{ID: oldNode.fid}
 			var moveErr error
 			for attempt := 0; attempt < 5; attempt++ {
-				moveErr = fs.manageSvc.Move([]string{oldNode.fid}, newParentNode.fid, oldNode.parentFid)
+				moveErr = w.Move(context.Background(), moveEntry, newParentNode.fid)
 				if moveErr == nil {
 					break
 				}
-				if strings.Contains(moveErr.Error(), quark.ErrDirAlreadyExists) || strings.Contains(moveErr.Error(), "conflict") {
+				if errors.Is(moveErr, drive.ErrDirAlreadyExists) || strings.Contains(moveErr.Error(), "conflict") {
 					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-					fs.cacheSvc.RemoveDir(newParentNode.fid)
 					continue
 				}
 				break
@@ -61,25 +65,20 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 		oldNode.mu.Lock()
 		oldNode.parentFid = newParentNode.fid
 		oldNode.mu.Unlock()
-
-		oldParentNode, errc := fs.lookup(oldParent)
-		if errc == 0 {
-			fs.cacheSvc.RemoveDir(oldParentNode.fid)
-		}
-		fs.cacheSvc.RemoveDir(newParentNode.fid)
 	}
 
-	if !isLocal {
+	if !isLocal && wOk {
 		encName := fs.cipher.EncryptSegment(newName)
 		oldEncName := fs.cipher.EncryptSegment(oldNode.name)
 		if encName != oldEncName {
+			renameEntry := drive.Entry{ID: oldNode.fid}
 			var renameErr error
 			for attempt := 0; attempt < 5; attempt++ {
-				renameErr = fs.manageSvc.Rename(oldNode.fid, encName)
+				renameErr = w.Rename(context.Background(), renameEntry, encName)
 				if renameErr == nil {
 					break
 				}
-				if strings.Contains(renameErr.Error(), quark.ErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
+				if errors.Is(renameErr, drive.ErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
 					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 					continue
 				}
@@ -100,18 +99,6 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 
 	if oldNode.isFolder {
 		fs.renameSubtreePaths(oldPath, newPath)
-	}
-
-	parentNode, errc := fs.lookup(newParent)
-	if errc == 0 {
-		fs.cacheSvc.DeleteNeg(parentNode.fid, newName)
-		fs.cacheSvc.RemoveDir(parentNode.fid)
-	}
-	if oldParent != newParent {
-		oldParentNode, errc := fs.lookup(oldParent)
-		if errc == 0 {
-			fs.cacheSvc.RemoveDir(oldParentNode.fid)
-		}
 	}
 
 	return 0

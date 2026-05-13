@@ -13,9 +13,9 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	factory "github.com/yinzhenyu/skills/qrypt/internal/drive/factory"
 	"github.com/yinzhenyu/skills/qrypt/internal/fs"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
 )
 
 func runMount(cmd *cobra.Command, args []string) {
@@ -30,8 +30,15 @@ func runMount(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	if driveType, _ := cmd.Flags().GetString("drive-type"); driveType != "" {
+		cfg.Drive.Type = driveType
+	}
 	if cookie, _ := cmd.Flags().GetString("cookie"); cookie != "" {
 		cfg.Quark.Cookie = cookie
+		if cfg.Drive.Quark == nil {
+			cfg.Drive.Quark = &config.QuarkOptions{}
+		}
+		cfg.Drive.Quark.Cookie = cookie
 	}
 	if password, _ := cmd.Flags().GetString("password"); password != "" {
 		cfg.Encryption.Password = password
@@ -47,15 +54,19 @@ func runMount(cmd *cobra.Command, args []string) {
 	}
 	if rootPath, _ := cmd.Flags().GetString("root-path"); rootPath != "" {
 		cfg.Quark.RootPath = rootPath
+		if cfg.Drive.Quark == nil {
+			cfg.Drive.Quark = &config.QuarkOptions{}
+		}
+		cfg.Drive.Quark.RootPath = rootPath
 	}
 	if logLevel, _ := cmd.Flags().GetString("log-level"); logLevel != "" {
 		cfg.Log.Level = logLevel
 	}
 
-	if cfg.Quark.Cookie == "" {
+	if cfg.Drive.Type == "quark" && (cfg.Drive.Quark == nil || cfg.Drive.Quark.Cookie == "") {
 		fmt.Println("错误: 缺少 Quark Cookie")
 		fmt.Println("  请通过以下方式之一设置：")
-		fmt.Println("    1. 在配置文件中设置 quark.cookie")
+		fmt.Println("    1. 在配置文件中设置 [drive.quark] 或 [quark] 节的 cookie")
 		fmt.Println("    2. 使用 -c <cookie> 命令行参数")
 		fmt.Println("")
 		fmt.Println("  Cookie 获取方法：登录 https://pan.quark.cn，F12 → Network → 任意请求头中复制 Cookie")
@@ -105,30 +116,34 @@ func runMount(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	quarkClient := quark.NewClient(cfg.Quark.Cookie)
-	cacheSvc := quark.NewCacheService()
-	if cacheTTL, err := config.ParseDuration(cfg.Sync.DirCacheTTL); err == nil {
-		cacheSvc.DirCacheTTL = cacheTTL
+	drv, err := factory.NewDriverFromConfig(cfg.Drive)
+	if err != nil {
+		fmt.Printf("创建驱动失败: %v\n", err)
+		os.Exit(1)
 	}
-	fileSvc := quark.NewFileService(quarkClient, cacheSvc, cipher)
-	manageSvc := quark.NewManageService(quarkClient)
 
-	if err := fileSvc.Auth(); err != nil {
+	if err := drv.Init(nil); err != nil {
 		fmt.Printf("认证失败: %v\n", err)
 		os.Exit(1)
 	}
 
 	rootFid := "0"
-	if cfg.Quark.RootPath != "/" && cfg.Quark.RootPath != "" {
-		fmt.Printf("解析路径: %s...\n", cfg.Quark.RootPath)
-		fid, err := fileSvc.ResolvePath(cfg.Quark.RootPath)
-		if err != nil {
-			fmt.Printf("解析路径失败: %v\n", err)
-			os.Exit(1)
+	// Resolve root path for Quark driver (which has path-based root resolution).
+	if resolver, ok := drv.(interface{ ResolvePath(ctx interface{}, path string) (string, error) }); ok {
+		rootPath := cfg.Quark.RootPath
+		if rootPath != "" && rootPath != "/" {
+			fmt.Printf("解析路径: %s...\n", rootPath)
+			fid, err := resolver.ResolvePath(nil, rootPath)
+			if err != nil {
+				fmt.Printf("解析路径失败: %v\n", err)
+				os.Exit(1)
+			}
+			rootFid = fid
 		}
-		rootFid = fid
+	} else if cfg.Drive.Type == "yun139" && cfg.Drive.Yun139 != nil && cfg.Drive.Yun139.RootID != "" {
+		rootFid = cfg.Drive.Yun139.RootID
 	}
-	fmt.Printf("根目录 FID: %s\n", rootFid)
+	fmt.Printf("根目录 ID: %s\n", rootFid)
 
 	cacheMaxSize, err := config.ParseSize(cfg.Cache.MaxSize)
 	if err != nil {
@@ -141,7 +156,7 @@ func runMount(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	vfs := fs.NewFS(fileSvc, manageSvc, cacheSvc, cipher, cacheMgr, quarkClient, rootFid, fs.FSOptions{
+	vfs := fs.NewFS(drv, cipher, cacheMgr, rootFid, fs.FSOptions{
 		MaxRetries:        cfg.Sync.MaxRetries,
 		ConcurrentUploads: cfg.Sync.ConcurrentUploads,
 		MemCacheSizeMB:    cfg.Cache.MemCacheSizeMB,

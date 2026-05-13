@@ -7,8 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2"
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive/quarkmock"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 )
 
@@ -21,7 +24,24 @@ func newE2E(t *testing.T) *e2eSuite {
 	t.Helper()
 	logger, _ := log.New("off", "", nil)
 	log.L = logger
-	return &e2eSuite{t: t, fs: newTestFS(t)}
+
+	cacheDir := t.TempDir()
+	cm, err := cache.NewCacheManager(cacheDir, 100*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memCache, _ := lru.New[string, []byte](100)
+	cph, _ := crypt.NewRcloneCipher("e2etest", "")
+
+	drv := quarkmock.NewDriver()
+	fs := NewFS(drv, cph, cm, "0", FSOptions{MaxRetries: 3, ConcurrentUploads: 3})
+	fs.memCache = memCache
+
+	fs.storeNode("/", &Node{
+		fid: "0", name: "", currentPath: "/", isFolder: true, source: "remote",
+	})
+	return &e2eSuite{t: t, fs: fs}
 }
 
 func (s *e2eSuite) lookup(path string) *Node {

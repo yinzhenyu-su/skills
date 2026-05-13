@@ -1,13 +1,14 @@
 package fs
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
 )
 
 func (fs *QryptFS) storeNode(path string, n *Node) {
@@ -286,19 +287,19 @@ func (fs *QryptFS) lookupExtended(path string, refresh bool) (*Node, int) {
 				found := false
 				if err == nil {
 					for _, f := range files {
-						if f.Fid == fid {
+						if f.ID == fid {
 							if _, inDeletion := fs.activeDeletions.Load(fid); inDeletion {
 								break
 							}
-							decSize, err := fs.cipher.DecryptedSize(f.Int64Size())
+							decSize, err := fs.cipher.DecryptedSize(f.Size)
 							if err != nil {
-								log.L.Warnf("lookupExtended: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", path, fid, f.Int64Size(), err)
+								log.L.Warnf("lookupExtended: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", path, fid, f.Size, err)
 							}
 							n.mu.Lock()
 							n.size = decSize
-							n.encSize = f.Int64Size()
-							n.mtime = f.ModTime()
-							n.baseServerMtime = f.ModTime().UnixMilli()
+							n.encSize = f.Size
+							n.mtime = f.ModTime
+							n.baseServerMtime = f.ModTime.UnixMilli()
 							n.baseServerSize = decSize
 							n.lastMetadataCheck = time.Now()
 							n.mu.Unlock()
@@ -351,11 +352,11 @@ func (fs *QryptFS) lookupExtended(path string, refresh bool) (*Node, int) {
 
 		found := false
 		for _, f := range files {
-			decName, _ := fs.cipher.DecryptSegment(f.FileName)
+			decName, _ := fs.cipher.DecryptSegment(f.Name)
 			if decName != part {
 				continue
 			}
-			if _, inDeletion := fs.activeDeletions.Load(f.Fid); inDeletion {
+			if _, inDeletion := fs.activeDeletions.Load(f.ID); inDeletion {
 				found = false
 				break
 			}
@@ -372,23 +373,23 @@ func (fs *QryptFS) lookupExtended(path string, refresh bool) (*Node, int) {
 				}
 			}
 
-			decSize, errDec := fs.cipher.DecryptedSize(f.Int64Size())
+			decSize, errDec := fs.cipher.DecryptedSize(f.Size)
 			if errDec != nil {
-				log.L.Warnf("lookupExtended path resolution: DecryptedSize failed for fid=%s name=%s encSize=%d: %v\n", f.Fid, part, f.Int64Size(), errDec)
+				log.L.Warnf("lookupExtended path resolution: DecryptedSize failed for fid=%s name=%s encSize=%d: %v\n", f.ID, part, f.Size, errDec)
 			}
-			modTime := f.ModTime()
+			modTime := f.ModTime
 			lastCheck := time.Time{}
-			if !f.IsDir() {
+			if !f.IsDir {
 				lastCheck = time.Now()
 			}
 			newNode := &Node{
-				fid:               f.Fid,
+				fid:               f.ID,
 				parentFid:         currentFid,
 				name:              decName,
 				size:              decSize,
-				encSize:           f.Int64Size(),
+				encSize:           f.Size,
 				currentPath:       currentPath,
-				isFolder:          f.IsDir(),
+				isFolder:          f.IsDir,
 				mtime:             modTime,
 				baseServerMtime:   modTime.UnixMilli(),
 				baseServerSize:    decSize,
@@ -396,7 +397,7 @@ func (fs *QryptFS) lookupExtended(path string, refresh bool) (*Node, int) {
 				source:            "remote",
 			}
 			fs.storeNode(currentPath, newNode)
-			currentFid = f.Fid
+			currentFid = f.ID
 			found = true
 			break
 		}
@@ -496,12 +497,12 @@ func (fs *QryptFS) persistPendingPath(oldPath, newPath string, n *Node) {
 }
 
 type fetchFilesResult struct {
-	files []quark.File
+	files []drive.Entry
 	err   error
 	done  chan struct{}
 }
 
-func (fs *QryptFS) fetchFiles(fid string) ([]quark.File, error) {
+func (fs *QryptFS) fetchFiles(fid string) ([]drive.Entry, error) {
 	if fid == "" {
 		return nil, nil
 	}
@@ -524,7 +525,7 @@ func (fs *QryptFS) fetchFiles(fid string) ([]quark.File, error) {
 	}
 	defer fs.fetchingFiles.Delete(fid)
 
-	r.files, r.err = fs.fileSvc.ListFiles(fid)
+	r.files, r.err = fs.drv.List(context.Background(), fid)
 	close(r.done)
 	log.L.Debugf("fetchFiles: done fid=%s got %d files err=%v (took %v)\n", fid, len(r.files), r.err, time.Since(start))
 	return r.files, r.err

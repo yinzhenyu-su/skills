@@ -62,7 +62,6 @@ func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uin
 	n.localPath = localPath
 
 	fs.storeNode(path, n)
-	fs.cacheSvc.DeleteNeg(parentNode.fid, name)
 	n.mu.Lock()
 	fs.maybeSavePendingNodeLocked(path, n, true)
 	n.mu.Unlock()

@@ -1,14 +1,16 @@
 package fs
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
 )
 
 func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
@@ -33,23 +35,40 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 
 	encName := fs.cipher.EncryptSegment(name)
 
-	fid, err := fs.manageSvc.CreateDir(parentNode.fid, encName)
+	w, ok := fs.drv.(drive.Writer)
+	if !ok {
+		log.L.Errorf("Mkdir: driver does not support write operations\n")
+		return -fuse.EIO
+	}
+
+	var fid string
+	entry, err := w.Mkdir(context.Background(), parentNode.fid, encName)
 	if err != nil {
-		if strings.Contains(err.Error(), quark.ErrDirAlreadyExists) {
-			if foundFid, findErr := fs.fileSvc.FindChildByName(parentNode.fid, encName); findErr == nil {
-				fid = foundFid
-				if _, inDeletion := fs.activeDeletions.Load(fid); inDeletion {
-					fs.activeDeletions.Delete(fid)
-					if val, ok := fs.deletionsByParent.Load(parentNode.fid); ok {
-						val.(*sync.Map).Delete(fid)
-					}
-				}
-			} else {
+		if errors.Is(err, drive.ErrDirAlreadyExists) {
+			entries, listErr := fs.drv.List(context.Background(), parentNode.fid)
+			if listErr != nil {
 				return -fuse.EIO
+			}
+			for _, e := range entries {
+				if e.Name == encName && e.IsDir {
+					fid = e.ID
+					break
+				}
+			}
+			if fid == "" {
+				return -fuse.EIO
+			}
+			if _, inDeletion := fs.activeDeletions.Load(fid); inDeletion {
+				fs.activeDeletions.Delete(fid)
+				if val, ok := fs.deletionsByParent.Load(parentNode.fid); ok {
+					val.(*sync.Map).Delete(fid)
+				}
 			}
 		} else {
 			return -fuse.EIO
 		}
+	} else {
+		fid = entry.ID
 	}
 
 	fs.deletingPaths.Delete(path)
@@ -87,11 +106,6 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 		lastMetadataCheck: time.Now(),
 		source:            "local",
 	})
-	fs.cacheSvc.DeleteNeg(parentNode.fid, name)
-	if v, ok := fs.nodes.Load(parentPath); ok {
-		fs.cacheSvc.DeleteNeg(v.(*Node).fid, name)
-	}
-	fs.cacheSvc.RemoveDir(parentNode.fid)
 
 	return 0
 }

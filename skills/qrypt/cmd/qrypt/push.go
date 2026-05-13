@@ -7,19 +7,15 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
+	quark "github.com/yinzhenyu/skills/qrypt/internal/drive/quark"
 	"github.com/yinzhenyu/skills/qrypt/internal/sync"
 )
 
 func runPush(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
-	quarkClient := quark.NewClient(cfg.Quark.Cookie)
-	cacheSvc := quark.NewCacheService()
-	fileSvc := quark.NewFileService(quarkClient, cacheSvc, cipher)
-	manageSvc := quark.NewManageService(quarkClient)
-	uploadSvc := quark.NewUploadService(quarkClient)
+	drv := quark.NewDriver(cfg.Quark.Cookie, cfg.Quark.RootPath)
 
-	if err := fileSvc.Auth(); err != nil {
+	if err := drv.Init(nil); err != nil {
 		fmt.Printf("认证失败: %v\n", err)
 		os.Exit(1)
 	}
@@ -62,7 +58,7 @@ func runPush(cmd *cobra.Command, args []string) {
 
 	stat, err := os.Stat(remotePath)
 	if remotePath != "" && err == nil && stat.IsDir() {
-		parentFid, err = fileSvc.ResolvePath(fullRemotePath)
+		parentFid, err = drv.ResolvePath(nil, fullRemotePath)
 		if err != nil {
 			fmt.Printf("无法解析目标路径: %v\n", err)
 			os.Exit(1)
@@ -71,14 +67,14 @@ func runPush(cmd *cobra.Command, args []string) {
 	} else {
 		remoteParentPath := filepath.Dir(fullRemotePath)
 		remoteFileName = filepath.Base(fullRemotePath)
-		parentFid, err = fileSvc.ResolvePath(remoteParentPath)
+		parentFid, err = drv.ResolvePath(nil, remoteParentPath)
 		if err != nil {
 			fmt.Printf("无法解析目标路径: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
-	uploader := sync.NewUploader(fileSvc, manageSvc, uploadSvc, cacheSvc, cipher)
+	uploader := sync.NewUploader(drv, cipher)
 
 	plainSize := localInfo.Size()
 	var dataReader func() (io.ReadCloser, error)

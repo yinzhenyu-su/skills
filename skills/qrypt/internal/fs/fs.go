@@ -10,8 +10,8 @@ import (
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
 	"github.com/yinzhenyu/skills/qrypt/internal/staging"
 	syncpkg "github.com/yinzhenyu/skills/qrypt/internal/sync"
 )
@@ -53,12 +53,10 @@ type deletionState struct {
 type QryptFS struct {
 	fuse.FileSystemBase
 
-	fileSvc   *quark.FileService
-	manageSvc *quark.ManageService
-	cacheSvc  *quark.CacheService
-	cipher    *crypt.RcloneCipher
-	cacheMgr  *cache.CacheManager
-	staging   *staging.Store
+	drv     drive.Driver
+	cipher  *crypt.RcloneCipher
+	cacheMgr *cache.CacheManager
+	staging *staging.Store
 
 	rootFid string
 	nodes   sync.Map
@@ -92,12 +90,9 @@ type FSOptions struct {
 }
 
 func NewFS(
-	fileSvc *quark.FileService,
-	manageSvc *quark.ManageService,
-	cacheSvc *quark.CacheService,
+	drv drive.Driver,
 	cipher *crypt.RcloneCipher,
 	cacheMgr *cache.CacheManager,
-	quarkClient *quark.Client,
 	rootFid string,
 	opts FSOptions,
 ) *QryptFS {
@@ -123,13 +118,10 @@ func NewFS(
 		stg = cacheMgr.Staging()
 	}
 
-	uploadSvc := quark.NewUploadService(quarkClient)
-	uploader := syncpkg.NewUploader(fileSvc, manageSvc, uploadSvc, cacheSvc, cipher)
+	uploader := syncpkg.NewUploader(drv, cipher)
 
 	fs := &QryptFS{
-		fileSvc:        fileSvc,
-		manageSvc:      manageSvc,
-		cacheSvc:       cacheSvc,
+		drv:            drv,
 		cipher:         cipher,
 		cacheMgr:       cacheMgr,
 		staging:        stg,

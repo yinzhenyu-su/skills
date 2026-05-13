@@ -15,16 +15,17 @@ func main() {
 
 	var mountCmd = &cobra.Command{
 		Use:   "mount",
-		Short: "Mount Quark Drive to a local directory",
+		Short: "Mount cloud drive to a local directory",
 		Run:   runMount,
 	}
 	mountCmd.Flags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
+	mountCmd.Flags().String("drive-type", "", "驱动类型: quark, yun139 (默认: 配置文件 drive.type)")
 	mountCmd.Flags().StringP("cookie", "c", "", "Quark Drive Cookie")
 	mountCmd.Flags().StringP("cache", "a", "", "本地缓存目录")
 	mountCmd.Flags().StringP("mount", "m", "", "本地挂载点")
 	mountCmd.Flags().StringP("password", "p", "", "Rclone 密码")
 	mountCmd.Flags().StringP("salt", "s", "", "Rclone salt (可选)")
-	mountCmd.Flags().StringP("root-path", "r", "", "Quark Drive 挂载路径")
+	mountCmd.Flags().StringP("root-path", "r", "", "网盘挂载路径")
 	mountCmd.Flags().String("log-level", "", "日志级别: debug, info, warn, error")
 
 	var initCmd = &cobra.Command{

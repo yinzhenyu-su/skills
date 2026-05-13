@@ -8,6 +8,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
+	factory "github.com/yinzhenyu/skills/qrypt/internal/drive/factory"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 )
 
@@ -49,6 +51,19 @@ func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
 		os.Exit(1)
 	}
 	return cfg, cipher
+}
+
+func loadToolDriver(cfg *config.Config) drive.Driver {
+	drv, err := factory.NewDriverFromConfig(cfg.Drive)
+	if err != nil {
+		fmt.Printf("创建驱动失败: %v\n", err)
+		os.Exit(1)
+	}
+	if err := drv.Init(nil); err != nil {
+		fmt.Printf("认证失败: %v\n", err)
+		os.Exit(1)
+	}
+	return drv
 }
 
 func maskStr(s string) string {

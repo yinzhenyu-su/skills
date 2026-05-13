@@ -1,14 +1,16 @@
 package fs
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
 	syncpkg "github.com/yinzhenyu/skills/qrypt/internal/sync"
 )
 
@@ -179,13 +181,13 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 	// │ fid-based checks above catch every legitimate conflict.      │
 	// └──────────────────────────────────────────────────────────────┘
 	if !strings.HasPrefix(fid, "local_") && !strings.HasPrefix(currentFid, "local_") {
-		files, listErr := fs.fileSvc.ListFiles(parentFid)
+		files, listErr := fs.drv.List(context.Background(), parentFid)
 		if listErr == nil {
 			for _, f := range files {
-				if f.Fid == currentFid {
+				if f.ID == currentFid {
 					continue
 				}
-				decName, _ := fs.cipher.DecryptSegment(f.FileName)
+				decName, _ := fs.cipher.DecryptSegment(f.Name)
 				if decName == snapshotName {
 					fs.resolveConflict(path, n, f)
 					return nil
@@ -200,10 +202,10 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 			return fmt.Errorf("pre-upload check failed: %v", err)
 		}
 		if rf == nil {
-			files, err := fs.fileSvc.ListFiles(parentFid)
+			files, err := fs.drv.List(context.Background(), parentFid)
 			if err == nil {
 				for _, f := range files {
-					decName, _ := fs.cipher.DecryptSegment(f.FileName)
+					decName, _ := fs.cipher.DecryptSegment(f.Name)
 					if decName == snapshotName {
 						fs.resolveConflict(path, n, f)
 						return nil
@@ -296,6 +298,8 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 }
 
 func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snapshotName, parentFid string) {
+	w, wOk := fs.drv.(drive.Writer)
+
 	if newFid != "" && !strings.HasPrefix(newFid, "local_") {
 		n.mu.RLock()
 		curParentFid := n.parentFid
@@ -308,12 +312,13 @@ func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snap
 			!strings.HasPrefix(parentFid, "local_") &&
 			!strings.HasPrefix(curParentFid, "local_") {
 			log.L.Infof("syncFilePostUpload: moving %s (fid=%s) from parent %s to %s\n", path, newFid, parentFid, curParentFid)
-			if err := fs.manageSvc.Move([]string{newFid}, curParentFid, parentFid); err != nil {
-				log.L.Errorf("syncFilePostUpload: move failed for %s: %v\n", path, err)
-			} else {
-				log.L.Debugf("syncFilePostUpload: move succeeded\n")
-				fs.cacheSvc.RemoveDir(parentFid)
-				fs.cacheSvc.RemoveDir(curParentFid)
+			if wOk {
+				moveEntry := drive.Entry{ID: newFid}
+				if err := w.Move(context.Background(), moveEntry, curParentFid); err != nil {
+					log.L.Errorf("syncFilePostUpload: move failed for %s: %v\n", path, err)
+				} else {
+					log.L.Debugf("syncFilePostUpload: move succeeded\n")
+				}
 			}
 		} else if curParentFid != parentFid {
 			log.L.Debugf("syncFilePostUpload: parentFid changed but skipping move (local_ prefix): %s -> %s\n", parentFid, curParentFid)
@@ -322,8 +327,11 @@ func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snap
 		if curName != snapshotName {
 			encName := fs.cipher.EncryptSegment(curName)
 			log.L.Infof("syncFilePostUpload: renaming %s from %s to %s\n", path, snapshotName, curName)
-			if err := fs.manageSvc.Rename(newFid, encName); err != nil {
-				log.L.Errorf("syncFilePostUpload: rename failed for %s: %v\n", path, err)
+			if wOk {
+				renameEntry := drive.Entry{ID: newFid}
+				if err := w.Rename(context.Background(), renameEntry, encName); err != nil {
+					log.L.Errorf("syncFilePostUpload: rename failed for %s: %v\n", path, err)
+				}
 			}
 		}
 	}
@@ -337,28 +345,27 @@ func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snap
 	}
 }
 
-func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*quark.File, error) {
+func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*drive.Entry, error) {
 	if fid == "" || strings.HasPrefix(fid, "local_") {
 		return nil, nil
 	}
-	files, err := fs.fileSvc.ListFiles(parentFid)
+	files, err := fs.drv.List(context.Background(), parentFid)
 	if err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "404") || strings.Contains(msg, "not found") || strings.Contains(msg, quark.ErrFileNotFound) {
+		if errors.Is(err, drive.ErrNotFound) || strings.Contains(err.Error(), "404") {
 			return nil, nil
 		}
 		return nil, err
 	}
 	for _, f := range files {
-		if f.Fid == fid {
+		if f.ID == fid {
 			return &f, nil
 		}
 	}
 	return nil, nil
 }
 
-func (fs *QryptFS) resolveConflict(path string, n *Node, rf quark.File) {
-	log.L.Infof("resolveConflict: %s remote fid=%s\n", path, rf.Fid)
+func (fs *QryptFS) resolveConflict(path string, n *Node, rf drive.Entry) {
+	log.L.Infof("resolveConflict: %s remote fid=%s\n", path, rf.ID)
 	ext := filepath.Ext(path)
 	base := strings.TrimSuffix(path, ext)
 	conflictPath := fmt.Sprintf("%s [Local Conflict %s]%s", base, time.Now().Format("20060102_150405"), ext)
@@ -379,19 +386,19 @@ func (fs *QryptFS) resolveConflict(path string, n *Node, rf quark.File) {
 	fs.replaceNodePath(path, conflictPath, n)
 	fs.persistPendingPath(path, conflictPath, n)
 
-	decSize, errDec := fs.cipher.DecryptedSize(rf.Int64Size())
+	decSize, errDec := fs.cipher.DecryptedSize(rf.Size)
 	if errDec != nil {
-		log.L.Warnf("resolveConflict: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", path, rf.Fid, rf.Int64Size(), errDec)
+		log.L.Warnf("resolveConflict: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", path, rf.ID, rf.Size, errDec)
 	}
-	modTime := rf.ModTime()
+	modTime := rf.ModTime
 	fs.storeNode(path, &Node{
-		fid:               rf.Fid,
+		fid:               rf.ID,
 		parentFid:         n.parentFid,
 		name:              filepath.Base(path),
 		size:              decSize,
-		encSize:           rf.Int64Size(),
+		encSize:           rf.Size,
 		currentPath:       path,
-		isFolder:          rf.IsDir(),
+		isFolder:          rf.IsDir,
 		mtime:             modTime,
 		baseServerMtime:   modTime.UnixMilli(),
 		baseServerSize:    decSize,
@@ -454,19 +461,9 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		}
 
 		encName := fs.cipher.EncryptSegment(mountName)
-		newFid, createErr := fs.manageSvc.CreateDir("0", encName)
+		newFid, createErr := fs.ensureRemoteDir("0", encName)
 		if createErr != nil {
-			if strings.Contains(createErr.Error(), quark.ErrDirAlreadyExists) {
-				time.Sleep(2 * time.Second)
-				fs.cacheSvc.RemoveDir("0")
-				if found, findErr := fs.fileSvc.FindChildByName("0", encName); findErr == nil {
-					newFid = found
-				} else {
-					return createErr
-				}
-			} else {
-				return createErr
-			}
+			return createErr
 		}
 		mountRootNode.mu.Lock()
 		mountRootNode.fid = newFid
@@ -478,21 +475,11 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 	currentRemoteParentFid := "0"
 	for _, level := range levels {
 		encName := fs.cipher.EncryptSegment(level.segName)
-		fid, err := fs.fileSvc.FindChildByName(currentRemoteParentFid, encName)
+		fid, err := fs.findChildDir(context.Background(), currentRemoteParentFid, encName)
 		if err != nil {
-			newFid, createErr := fs.manageSvc.CreateDir(currentRemoteParentFid, encName)
+			newFid, createErr := fs.ensureRemoteDir(currentRemoteParentFid, encName)
 			if createErr != nil {
-				if strings.Contains(createErr.Error(), quark.ErrDirAlreadyExists) {
-					time.Sleep(2 * time.Second)
-					fs.cacheSvc.RemoveDir(currentRemoteParentFid)
-					if found, findErr := fs.fileSvc.FindChildByName(currentRemoteParentFid, encName); findErr == nil {
-						newFid = found
-					} else {
-						return createErr
-					}
-				} else {
-					return createErr
-				}
+				return createErr
 			}
 			fid = newFid
 		}
@@ -521,14 +508,41 @@ func (fs *QryptFS) dirExistsOnServer(fid string) bool {
 	if fid == "" || fid == "0" || fid == "root" {
 		return true
 	}
-	_, err := fs.fileSvc.ListFiles(fid)
+	_, err := fs.drv.List(context.Background(), fid)
 	if err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "404") || strings.Contains(msg, "not found") || strings.Contains(msg, quark.ErrFileNotFound) {
+		if errors.Is(err, drive.ErrNotFound) || strings.Contains(err.Error(), "404") {
 			return false
 		}
 	}
 	return true
+}
+
+func (fs *QryptFS) findChildDir(ctx context.Context, parentFid, encName string) (string, error) {
+	entries, err := fs.drv.List(ctx, parentFid)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.Name == encName && e.IsDir {
+			return e.ID, nil
+		}
+	}
+	return "", fmt.Errorf("child dir not found: %s", encName)
+}
+
+func (fs *QryptFS) ensureRemoteDir(parentFid, encName string) (string, error) {
+	w, ok := fs.drv.(drive.Writer)
+	if !ok {
+		return "", fmt.Errorf("driver does not support write operations")
+	}
+	entry, err := w.Mkdir(context.Background(), parentFid, encName)
+	if err == nil {
+		return entry.ID, nil
+	}
+	if errors.Is(err, drive.ErrDirAlreadyExists) {
+		return fs.findChildDir(context.Background(), parentFid, encName)
+	}
+	return "", err
 }
 
 func (fs *QryptFS) cleanupLocalUploadState(path string, n *Node, recursive bool) {

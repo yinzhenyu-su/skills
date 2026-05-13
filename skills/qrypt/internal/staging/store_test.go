@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func TestCreateAndPath(t *testing.T) {
 	if !filepath.IsAbs(path) {
 		t.Errorf("expected absolute path, got %s", path)
 	}
-	if !filepath.HasPrefix(path, dir) {
+	if !strings.HasPrefix(path, dir) {
 		t.Errorf("expected under %s, got %s", dir, path)
 	}
 

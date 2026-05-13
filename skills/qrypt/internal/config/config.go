@@ -10,7 +10,9 @@ import (
 )
 
 type Config struct {
+	// Deprecated: Use Drive.Quark instead. Kept for backward compatibility.
 	Quark      QuarkConfig      `toml:"quark"`
+	Drive      DriveConfig      `toml:"drive"`
 	Encryption EncryptionConfig `toml:"encryption"`
 	Cache      CacheConfig      `toml:"cache"`
 	Mount      MountConfig      `toml:"mount"`
@@ -18,9 +20,30 @@ type Config struct {
 	Log        LogConfig        `toml:"log"`
 }
 
+// QuarkConfig is the deprecated top-level Quark configuration.
+// Deprecated: Use Drive.Quark instead.
 type QuarkConfig struct {
 	Cookie   string `toml:"cookie"`
 	RootPath string `toml:"root_path"`
+}
+
+// DriveConfig selects the storage backend and holds driver-specific options.
+type DriveConfig struct {
+	Type   string          `toml:"type"` // "quark" | "yun139"
+	Quark  *QuarkOptions   `toml:"quark"`
+	Yun139 *Yun139Options  `toml:"yun139"`
+}
+
+// QuarkOptions holds configuration for the Quark drive backend.
+type QuarkOptions struct {
+	Cookie   string `toml:"cookie"`
+	RootPath string `toml:"root_path"`
+}
+
+// Yun139Options holds configuration for the 139 cloud drive backend.
+type Yun139Options struct {
+	Authorization string `toml:"authorization"`
+	RootID        string `toml:"root_id"`
 }
 
 type EncryptionConfig struct {
@@ -59,6 +82,12 @@ func DefaultConfig() *Config {
 	return &Config{
 		Quark: QuarkConfig{
 			RootPath: "/Test",
+		},
+		Drive: DriveConfig{
+			Type: "quark",
+			Quark: &QuarkOptions{
+				RootPath: "/Test",
+			},
 		},
 		Encryption: EncryptionConfig{},
 		Cache: CacheConfig{
@@ -106,6 +135,21 @@ func LoadConfig(path string) (*Config, error) {
 	if _, err := toml.DecodeFile(path, config); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+
+	// Backward compatibility: auto-migrate old [quark] section to DriveConfig.
+	if config.Drive.Type == "" && config.Quark.Cookie != "" {
+		config.Drive.Type = "quark"
+		config.Drive.Quark = &QuarkOptions{
+			Cookie:   config.Quark.Cookie,
+			RootPath: config.Quark.RootPath,
+		}
+	}
+	// If new format was used, propagate back to old field for CLI tool compat.
+	if config.Drive.Quark != nil && config.Quark.Cookie == "" {
+		config.Quark.Cookie = config.Drive.Quark.Cookie
+		config.Quark.RootPath = config.Drive.Quark.RootPath
+	}
+
 	config.Cache.Dir = ExpandHome(config.Cache.Dir)
 	config.Mount.Point = ExpandHome(config.Mount.Point)
 	config.Log.File = ExpandHome(config.Log.File)

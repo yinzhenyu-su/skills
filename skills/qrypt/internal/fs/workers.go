@@ -1,14 +1,15 @@
 package fs
 
 import (
-	"fmt"
+	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
 )
 
 func (fs *QryptFS) uploadWorker() {
@@ -366,30 +367,28 @@ func (fs *QryptFS) asyncDelete(deleteFids, finalFids, finalPaths []string, valid
 		}
 	}()
 
+	w, ok := fs.drv.(drive.Writer)
+	if !ok {
+		log.L.Errorf("asyncDelete: driver does not support delete\n")
+		return
+	}
+
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		done := make(chan error, 1)
-		go func() {
-			done <- fs.manageSvc.Delete(deleteFids)
-		}()
-		select {
-		case err = <-done:
-			if err != nil {
-				log.L.Warnf("asyncDelete: attempt %d/3 returned error: %v\n", attempt+1, err)
+		var lastErr error
+		for _, fid := range deleteFids {
+			entry := drive.Entry{ID: fid}
+			if e := w.Remove(context.Background(), entry); e != nil {
+				if !errors.Is(e, drive.ErrNotFound) {
+					lastErr = e
+					break
+				}
 			}
-		case <-time.After(30 * time.Second):
-			err = fmt.Errorf("DELETE API timeout after 30s (attempt %d/3)", attempt+1)
-			log.L.Warnf("asyncDelete: timeout for %d FIDs, attempt %d\n", len(deleteFids), attempt+1)
 		}
+		err = lastErr
+
 		if err != nil {
-			msg := strings.ToLower(err.Error())
-			if strings.Contains(msg, "404") || strings.Contains(msg, "not found") ||
-				strings.Contains(msg, strings.ToLower(quark.ErrFileNotFound)) ||
-				strings.Contains(msg, strings.ToLower(quark.ErrAlreadyDeleted)) {
-				log.L.Infof("asyncDelete: resource already deleted (404), treating as success\n")
-				err = nil
-				break
-			}
+			log.L.Warnf("asyncDelete: attempt %d/3 returned error: %v\n", attempt+1, err)
 			if attempt < 2 {
 				log.L.Warnf("asyncDelete: retry %d/3 in %.0fs: %v\n", attempt+1, float64(attempt+1)*0.5, err)
 				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)

@@ -1,12 +1,8 @@
 package fs
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,33 +10,18 @@ import (
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	localfs "github.com/yinzhenyu/skills/qrypt/internal/drive/localfs"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
 	"github.com/yinzhenyu/skills/qrypt/internal/staging"
 )
-
-type rewriteTransport struct {
-	target string
-}
-
-func (rt rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	mockURL := rt.target + req.URL.Path
-	if req.URL.RawQuery != "" {
-		mockURL += "?" + req.URL.RawQuery
-	}
-	mockReq, _ := http.NewRequest(req.Method, mockURL, req.Body)
-	mockReq.Header = req.Header
-	return http.DefaultTransport.RoundTrip(mockReq)
-}
 
 func newTestFS(t *testing.T) *QryptFS {
 	t.Helper()
 
+	rootDir := t.TempDir()
 	cacheDir := t.TempDir()
 	stagingDir := filepath.Join(cacheDir, "staging")
-	os.MkdirAll(stagingDir, 0o755)
-	store, err := staging.NewStore(stagingDir)
-	if err != nil {
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,101 +33,29 @@ func newTestFS(t *testing.T) *QryptFS {
 	memCache, _ := lru.New[string, []byte](100)
 	logger, _ := log.New("off", "", nil)
 	log.L = logger
-	_ = logger
 
 	cph, _ := crypt.NewRcloneCipher("testpassword", "")
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/file/list", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": 200,
-			"code":   0,
-			"data":   []interface{}{},
-		})
-	})
-	mux.HandleFunc("/file/sort", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": 200,
-			"code":   0,
-			"data":   []interface{}{},
-		})
-	})
-	mux.HandleFunc("/file/download", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": 200,
-			"code":   0,
-			"data":   []map[string]string{{"download_url": "http://mock.dl/test"}},
-		})
-	})
-	mux.HandleFunc("/file/create", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": 200,
-			"code":   0,
-			"data":   []map[string]string{{"fid": "new_fid_mock"}},
-		})
-	})
-	mux.HandleFunc("/file", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"status": 200,
-				"code":   0,
-				"data":   map[string]string{"fid": "new_dir_fid"},
-			})
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": 200,
-			"code":   0,
-			"data":   []interface{}{},
-		})
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": 200,
-			"code":   0,
-			"data":   []interface{}{},
-		})
-	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
+	drv := localfs.NewDriver(rootDir)
 
-	fakeClient := quark.NewClient("test_cookie=abc")
-	fakeClient.SetClientForTest(&http.Client{
-		Transport: rewriteTransport{target: server.URL},
+	vfs := NewFS(drv, cph, cm, "0", FSOptions{
+		MaxRetries:        3,
+		ConcurrentUploads: 1,
+	})
+	vfs.memCache = memCache
+
+	vfs.storeNode("/", &Node{
+		fid:        "0",
+		name:       "",
+		currentPath: "/",
+		isFolder:   true,
+		source:     "remote",
 	})
 
-	fs := &QryptFS{
-		fileSvc:        quark.NewFileService(fakeClient, quark.NewCacheService(), cph),
-		manageSvc:      quark.NewManageService(fakeClient),
-		cacheSvc:       quark.NewCacheService(),
-		cipher:         cph,
-		cacheMgr:       cm,
-		staging:        store,
-		rootFid:        "root_fid_test",
-		prefetchSem:    make(chan struct{}, 30),
-		lruStop:        make(chan struct{}),
-		memCache:       memCache,
-		uploadChan:     make(chan syncTask, 100),
-		metadataOpChan: make(chan metadataTask, 1000),
-		maxRetries:     3,
-	}
-	fs.nodes = sync.Map{}
-	fs.fidNodes = sync.Map{}
-	fs.fetchingFiles = sync.Map{}
-	fs.fetchingChunks = sync.Map{}
-	fs.merging = sync.Map{}
-	fs.deletingPaths = sync.Map{}
-	fs.activeDeletions = sync.Map{}
-	fs.deletionsByParent = sync.Map{}
-	fs.retryState = sync.Map{}
-
-	rootNode := newNode(fs.rootFid, "0", "", "/", true)
-	rootNode.source = "remote"
-	rootNode.mtime = time.Now()
-	fs.storeNode("/", rootNode)
-
-	return fs
+	return vfs
 }
+
+
 
 func TestStoreNode(t *testing.T) {
 	fs := newTestFS(t)
