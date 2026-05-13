@@ -1,0 +1,56 @@
+# Qrypt 配置文件
+# Cloud Drive Rclone-Compatible Crypt Mount Tool
+
+[drive]
+# 存储后端类型: quark | yun139
+type = "quark"
+
+[drive.quark]
+# 夸克网盘 Cookie（必填）
+cookie = ""
+# 挂载的网盘路径（默认根目录）
+root_path = "/Test"
+
+# 切换其他驱动：取消注释对应节，修改 drive.type
+# [drive]
+# type = "yun139"
+#
+# [drive.yun139]
+# 天翼云盘 Authorization（必填）
+# authorization = ""
+# 挂载的根目录 ID（默认 /）
+# root_id = "/"
+
+[encryption]
+# 加密密码（必填，与 rclone crypt 兼容）
+password = ""
+# 加密盐（可选）
+salt = ""
+
+[cache]
+# 缓存目录
+dir = "~/.qrypt/cache"
+# 最大缓存大小 (支持 KB, MB, GB, TB)
+max_size = "10GB"
+# 内存缓存 (MB, 0=默认 512)
+mem_cache_size_mb = 512
+
+[mount]
+# 本地挂载点
+point = "~/Qrypt"
+# 允许其他用户访问（需要 /etc/fuse.conf 配置）
+allow_other = false
+
+[sync]
+# 同步失败重试次数
+max_retries = 3
+# 并发上传数
+concurrent_uploads = 3
+# 目录列表缓存时间 (支持 s, m, h)
+dir_cache_ttl = "5m"
+
+[log]
+# 日志级别: debug, info, warn, error
+level = "debug"
+# 日志文件路径（空则输出到终端）
+file = "~/.qrypt/qrypt.log"
