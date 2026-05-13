@@ -1,24 +1,29 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 )
 
 func runMv(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
-	quarkClient := quark.NewClient(cfg.Quark.Cookie)
-	cacheSvc := quark.NewCacheService()
-	fileSvc := quark.NewFileService(quarkClient, cacheSvc, cipher)
-	manageSvc := quark.NewManageService(quarkClient)
+	drv := loadToolDriver(cfg, cipher)
 
-	if err := fileSvc.Auth(); err != nil {
-		fmt.Printf("认证失败: %v\n", err)
+	w, wOk := drv.(drive.Writer)
+	if !wOk {
+		fmt.Printf("该驱动不支持移动操作\n")
+		os.Exit(1)
+	}
+
+	resolver, rOk := drv.(pathResolver)
+	if !rOk {
+		fmt.Printf("该驱动不支持路径解析\n")
 		os.Exit(1)
 	}
 
@@ -26,7 +31,7 @@ func runMv(cmd *cobra.Command, args []string) {
 	dstArg := args[1]
 	fullSrcPath := resolveFullPath(cfg.Quark.RootPath, srcPath)
 
-	srcFid, err := fileSvc.ResolvePath(fullSrcPath)
+	srcFid, err := resolver.ResolvePath(nil, fullSrcPath)
 	if err != nil {
 		fmt.Printf("无法解析源路径: %v\n", err)
 		os.Exit(1)
@@ -39,30 +44,30 @@ func runMv(cmd *cobra.Command, args []string) {
 
 	if moveIntoDir {
 		fullDstDir := resolveFullPath(cfg.Quark.RootPath, dstArg)
-		dstParentFid, err = fileSvc.ResolvePath(fullDstDir)
+		dstParentFid, err = resolver.ResolvePath(nil, fullDstDir)
 		if err != nil {
 			fmt.Printf("无法解析目标目录: %v\n", err)
 			os.Exit(1)
 		}
 
 		srcParentPath := filepath.Dir(fullSrcPath)
-		srcParentFid, err := fileSvc.ResolvePath(srcParentPath)
+		srcParentFid, err := resolver.ResolvePath(nil, srcParentPath)
 		if err != nil {
 			fmt.Printf("无法解析源目录: %v\n", err)
 			os.Exit(1)
 		}
-		files, err := fileSvc.ListFiles(srcParentFid)
+		entries, err := drv.List(nil, srcParentFid)
 		if err != nil {
 			fmt.Printf("无法列出文件: %v\n", err)
 			os.Exit(1)
 		}
-		for _, f := range files {
-			if f.Fid == srcFid {
-				decName, decErr := cipher.DecryptSegment(f.FileName)
+		for _, e := range entries {
+			if e.ID == srcFid {
+				decName, decErr := cipher.DecryptSegment(e.Name)
 				if decErr == nil {
 					dstName = cipher.EncryptSegment(decName)
 				} else {
-					dstName = f.FileName
+					dstName = e.Name
 				}
 				break
 			}
@@ -76,21 +81,21 @@ func runMv(cmd *cobra.Command, args []string) {
 		dstParentPath := filepath.Dir(fullDstPath)
 		dstNameArg := filepath.Base(fullDstPath)
 
-		dstParentFid, err = fileSvc.ResolvePath(dstParentPath)
+		dstParentFid, err = resolver.ResolvePath(nil, dstParentPath)
 		if err != nil {
 			fmt.Printf("无法解析目标路径: %v\n", err)
 			os.Exit(1)
 		}
 
 		if dstParentFid != "0" {
-			existingFiles, _ := fileSvc.ListFiles(dstParentFid)
-			for _, f := range existingFiles {
-				if f.Fid == srcFid {
+			existingEntries, _ := drv.List(nil, dstParentFid)
+			for _, e := range existingEntries {
+				if e.ID == srcFid {
 					continue
 				}
-				decName, decErr := cipher.DecryptSegment(f.FileName)
-				if decErr == nil && decName == dstNameArg && f.IsDir() {
-					dstParentFid = f.Fid
+				decName, decErr := cipher.DecryptSegment(e.Name)
+				if decErr == nil && decName == dstNameArg && e.IsDir {
+					dstParentFid = e.ID
 					dstName = ""
 					moveIntoDir = true
 					break
@@ -103,39 +108,34 @@ func runMv(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	ctx := context.Background()
+
 	srcParentPath := filepath.Dir(fullSrcPath)
-	srcParentFid, err := fileSvc.ResolvePath(srcParentPath)
+	srcParentFid, err := resolver.ResolvePath(nil, srcParentPath)
 	if err != nil {
 		fmt.Printf("无法解析源目录: %v\n", err)
 		os.Exit(1)
 	}
 
-	if srcParentFid == dstParentFid && (moveIntoDir || dstName == "") {
-		fmt.Println("源和目标相同")
-		os.Exit(1)
-	}
-
-	if srcParentFid == dstParentFid && !moveIntoDir {
-		if err := manageSvc.Rename(srcFid, dstName); err != nil {
-			fmt.Printf("重命名失败: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("已重命名: %s → %s\n", srcPath, dstArg)
-	} else {
-		if err := manageSvc.Move([]string{srcFid}, dstParentFid, srcParentFid); err != nil {
+	needsMove := srcParentFid != dstParentFid
+	if needsMove || moveIntoDir {
+		moveEntry := drive.Entry{ID: srcFid}
+		if err := w.Move(ctx, moveEntry, dstParentFid); err != nil {
 			fmt.Printf("移动失败: %v\n", err)
 			os.Exit(1)
 		}
-		if !moveIntoDir && dstName != "" {
-			if err := manageSvc.Rename(srcFid, dstName); err != nil {
-				fmt.Printf("重命名失败: %v\n", err)
-				os.Exit(1)
-			}
-		}
-		if moveIntoDir {
-			fmt.Printf("已移动: %s → %s\n", srcPath, dstArg)
-		} else {
-			fmt.Printf("已移动: %s → %s\n", srcPath, dstArg)
+	}
+
+	srcName := filepath.Base(fullSrcPath)
+	srcEncName := cipher.EncryptSegment(srcName)
+
+	if dstName != srcEncName {
+		renameEntry := drive.Entry{ID: srcFid}
+		if err := w.Rename(ctx, renameEntry, dstName); err != nil {
+			fmt.Printf("重命名失败: %v\n", err)
+			os.Exit(1)
 		}
 	}
+
+	fmt.Printf("已重命名: %s → %s\n", srcPath, dstArg)
 }

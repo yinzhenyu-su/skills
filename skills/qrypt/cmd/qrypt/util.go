@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -10,8 +11,13 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	factory "github.com/yinzhenyu/skills/qrypt/internal/drive/factory"
+	quark "github.com/yinzhenyu/skills/qrypt/internal/drive/quark"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 )
+
+type pathResolver interface {
+	ResolvePath(ctx context.Context, path string) (string, error)
+}
 
 func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
 	configPath, _ := cmd.Flags().GetString("config")
@@ -53,7 +59,7 @@ func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
 	return cfg, cipher
 }
 
-func loadToolDriver(cfg *config.Config) drive.Driver {
+func loadToolDriver(cfg *config.Config, cipher *crypt.RcloneCipher) drive.Driver {
 	drv, err := factory.NewDriverFromConfig(cfg.Drive)
 	if err != nil {
 		fmt.Printf("创建驱动失败: %v\n", err)
@@ -62,6 +68,9 @@ func loadToolDriver(cfg *config.Config) drive.Driver {
 	if err := drv.Init(nil); err != nil {
 		fmt.Printf("认证失败: %v\n", err)
 		os.Exit(1)
+	}
+	if qd, ok := drv.(*quark.QuarkDriver); ok && cipher != nil {
+		qd.SetCipher(cipher)
 	}
 	return drv
 }

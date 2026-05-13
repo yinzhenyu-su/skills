@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 )
 
 const (
@@ -91,19 +91,19 @@ func (m *nodeMatcher) matchName(name string) bool {
 	}
 }
 
-func (m *nodeMatcher) matchFile(f quark.File) bool {
+func (m *nodeMatcher) matchEntry(e drive.Entry) bool {
 	switch m.fileType {
 	case 1:
-		if f.IsDir() {
+		if e.IsDir {
 			return false
 		}
 	case 2:
-		if !f.IsDir() {
+		if !e.IsDir {
 			return false
 		}
 	}
-	if m.sizeOp != 0 && !f.IsDir() {
-		s := f.Int64Size()
+	if m.sizeOp != 0 && !e.IsDir {
+		s := e.Size
 		switch m.sizeOp {
 		case 1:
 			if s <= m.sizeBytes {
@@ -123,7 +123,7 @@ func (m *nodeMatcher) matchFile(f quark.File) bool {
 }
 
 type fileLister interface {
-	ListFiles(parentFid string) ([]quark.File, error)
+	List(parentID string) ([]drive.Entry, error)
 }
 
 type cipherHelper interface {
@@ -132,7 +132,7 @@ type cipherHelper interface {
 }
 
 type finder struct {
-	fileSvc fileLister
+	lister  fileLister
 	cipher  cipherHelper
 	opts    *findOptions
 	matcher *nodeMatcher
@@ -144,7 +144,7 @@ type finder struct {
 	outMu   sync.Mutex
 }
 
-func newFinder(fileSvc fileLister, cipher cipherHelper, opts *findOptions) *finder {
+func newFinder(lister fileLister, cipher cipherHelper, opts *findOptions) *finder {
 	workers := opts.workers
 	if workers <= 0 {
 		workers = 1
@@ -153,7 +153,7 @@ func newFinder(fileSvc fileLister, cipher cipherHelper, opts *findOptions) *find
 		workers = 8
 	}
 	return &finder{
-		fileSvc: fileSvc,
+		lister:  lister,
 		cipher:  cipher,
 		opts:    opts,
 		matcher: newMatcher(opts.pattern, opts),
@@ -182,40 +182,40 @@ func (f *finder) visitDir(fid, displayPath string, depth int) {
 	if f.stopped.Load() {
 		return
 	}
-	files, err := f.fileSvc.ListFiles(fid)
+	entries, err := f.lister.List(fid)
 	if err != nil {
 		return
 	}
-	for _, file := range files {
+	for _, e := range entries {
 		if f.stopped.Load() {
 			return
 		}
-		decName, decErr := f.cipher.DecryptSegment(file.FileName)
+		decName, decErr := f.cipher.DecryptSegment(e.Name)
 		if decErr != nil {
-			decName = file.FileName
+			decName = e.Name
 		}
 		childPath := filepath.Join(displayPath, decName)
 
-		if f.matcher.matchName(decName) && f.matcher.matchFile(file) {
+		if f.matcher.matchName(decName) && f.matcher.matchEntry(e) {
 			f.count.Add(1)
 			if !f.opts.countOnly {
-				f.output(childPath, file.IsDir())
+				f.output(childPath, e.IsDir)
 			}
 			if f.opts.maxMatches > 0 && f.count.Load() >= int32(f.opts.maxMatches) {
 				f.stopped.Store(true)
 				return
 			}
 		}
-		if file.IsDir() && (f.opts.maxDepth < 0 || depth < f.opts.maxDepth) {
+		if e.IsDir && (f.opts.maxDepth < 0 || depth < f.opts.maxDepth) {
 			select {
 			case f.sem <- struct{}{}:
 				f.wg.Add(1)
 				go func(cfid, cpath string, cdepth int) {
 					defer func() { <-f.sem; f.wg.Done() }()
 					f.visitDir(cfid, cpath, cdepth)
-				}(file.Fid, childPath, depth+1)
+				}(e.ID, childPath, depth+1)
 			default:
-				f.visitDir(file.Fid, childPath, depth+1)
+				f.visitDir(e.ID, childPath, depth+1)
 			}
 		}
 	}
@@ -232,7 +232,7 @@ func (f *finder) output(childPath string, isDir bool) {
 		b, _ := json.Marshal(struct {
 			Type string `json:"type"`
 			Path string `json:"path"`
-		}{typ, childPath})
+		}{Type: typ, Path: childPath})
 		fmt.Println(string(b))
 	} else {
 		if isDir {
@@ -245,12 +245,11 @@ func (f *finder) output(childPath string, isDir bool) {
 
 func runFind(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
-	quarkClient := quark.NewClient(cfg.Quark.Cookie)
-	cacheSvc := quark.NewCacheService()
-	fileSvc := quark.NewFileService(quarkClient, cacheSvc, cipher)
+	drv := loadToolDriver(cfg, cipher)
 
-	if err := fileSvc.Auth(); err != nil {
-		fmt.Printf("认证失败: %v\n", err)
+	resolver, ok := drv.(pathResolver)
+	if !ok {
+		fmt.Printf("该驱动不支持路径解析\n")
 		os.Exit(1)
 	}
 
@@ -281,7 +280,7 @@ func runFind(cmd *cobra.Command, args []string) {
 	}
 
 	fullRootPath := resolveFullPath(cfg.Quark.RootPath, rootPath)
-	rootFid, err := fileSvc.ResolvePath(fullRootPath)
+	rootFid, err := resolver.ResolvePath(nil, fullRootPath)
 	if err != nil {
 		fmt.Printf("无法解析路径: %v\n", err)
 		os.Exit(1)
@@ -325,6 +324,7 @@ func runFind(cmd *cobra.Command, args []string) {
 	}
 
 	opts := &findOptions{
+		pattern:       pattern,
 		matchMode:     matchMode,
 		caseSensitive: caseSensitive,
 		fileType:      ft,
@@ -336,38 +336,19 @@ func runFind(cmd *cobra.Command, args []string) {
 		sizeOp:        sizeOp,
 		sizeBytes:     sizeBytes,
 	}
-	opts.pattern = pattern
 
-	f := newFinder(fileSvc, cipher, opts)
+	f := newFinder(listAdapter{drv: drv}, cipher, opts)
 	matched := f.run(rootFid, fullRootPath)
 
-	if f.opts.countOnly {
+	if opts.countOnly {
 		fmt.Println(matched)
 	}
 }
 
-func findRecursive(fileSvc fileLister, cipher interface {
-	DecryptSegment(string) (string, error)
-	EncryptSegment(string) string
-}, parentFid, currentPath, patternLower string, matched *int) error {
-	f := &finder{
-		fileSvc: fileSvc,
-		cipher:  cipher,
-		opts:    &findOptions{maxDepth: -1},
-		matcher: &nodeMatcher{
-			pattern:       patternLower,
-			mode:          matchSubstring,
-			caseSensitive: false,
-		},
-		sem: make(chan struct{}, 1),
-	}
-	f.sem <- struct{}{}
-	f.wg.Add(1)
-	go func() {
-		defer func() { <-f.sem; f.wg.Done() }()
-		f.visitDir(parentFid, currentPath, 0)
-	}()
-	f.wg.Wait()
-	*matched = int(f.count.Load())
-	return nil
+type listAdapter struct {
+	drv drive.Reader
+}
+
+func (a listAdapter) List(parentID string) ([]drive.Entry, error) {
+	return a.drv.List(nil, parentID)
 }

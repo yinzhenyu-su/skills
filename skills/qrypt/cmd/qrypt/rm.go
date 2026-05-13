@@ -1,35 +1,39 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/quark"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 )
 
 func runRm(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
-	quarkClient := quark.NewClient(cfg.Quark.Cookie)
-	cacheSvc := quark.NewCacheService()
-	fileSvc := quark.NewFileService(quarkClient, cacheSvc, cipher)
-	manageSvc := quark.NewManageService(quarkClient)
-
-	if err := fileSvc.Auth(); err != nil {
-		fmt.Printf("认证失败: %v\n", err)
-		os.Exit(1)
-	}
+	drv := loadToolDriver(cfg, cipher)
 
 	path := args[0]
 	fullPath := resolveFullPath(cfg.Quark.RootPath, path)
 
-	fid, err := fileSvc.ResolvePath(fullPath)
+	resolver, ok := drv.(pathResolver)
+	if !ok {
+		fmt.Printf("该驱动不支持路径解析\n")
+		os.Exit(1)
+	}
+	fid, err := resolver.ResolvePath(nil, fullPath)
 	if err != nil {
 		fmt.Printf("无法解析路径: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := manageSvc.Delete([]string{fid}); err != nil {
+	w, ok := drv.(drive.Writer)
+	if !ok {
+		fmt.Printf("该驱动不支持删除操作\n")
+		os.Exit(1)
+	}
+
+	if err := w.Remove(context.Background(), drive.Entry{ID: fid}); err != nil {
 		fmt.Printf("删除失败: %v\n", err)
 		os.Exit(1)
 	}

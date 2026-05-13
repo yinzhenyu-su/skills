@@ -323,3 +323,20 @@ drv := quarkmock.NewDriver()
 2. **CacheService 在内部**：每个驱动自行管理缓存，不在 Driver 接口暴露。
 3. **Put-only 上传**：没有 SessionedUploader。staging 提供崩溃恢复。
 4. **ID 驱动**：一切操作通过 ID 寻址，不暴露路径逻辑到接口层。
+
+## ⚠️ 注意事项
+
+### Quark 上传流程：不要把 OSS 操作当成 Quark API
+
+`Put()` 的完整上传流程是：
+
+```
+/file/upload/pre  →  OSS PUT parts  →  /file/update/hash  →  OSS CompleteMultipartUpload  →  /file/upload/finish
+```
+
+最后两步容易踩坑：
+- `/file/upload/commit` **不存在**。如果需要提交分片上传，必须直接 POST 到阿里云 OSS 的 CompleteMultipartUpload（XML body + ETag），而不是调 Quark API。
+- `/file/upload/finish` 的请求体只需 `{obj_key, task_id}`，不要传多余字段。
+- `/file/update/hash` 的请求体只需 `{md5, sha1, task_id}`，不要传 fid/bucket/upload_id。
+
+参考实现：`quark/driver.go` 中的 `ossComplete()` 方法。

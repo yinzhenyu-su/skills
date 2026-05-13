@@ -103,7 +103,9 @@ func (c *client) updateCookie(key, value string) {
 func isMgmtPath(path string) bool {
 	return strings.HasPrefix(path, "/file/delete") ||
 		strings.HasPrefix(path, "/file/rename") ||
-		strings.HasPrefix(path, "/file/move")
+		strings.HasPrefix(path, "/file/move") ||
+		strings.HasPrefix(path, "/file/upload/commit") ||
+		strings.HasPrefix(path, "/file/upload/finish")
 }
 
 func isMetaPath(path string) bool {
@@ -156,7 +158,7 @@ func tryNextMgmtBase(err error) bool {
 		return true
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "API Error (Status 404)") || strings.Contains(msg, "API Error (Status 405)")
+	return strings.Contains(msg, "(Status 404)") || strings.Contains(msg, "(Status 405)")
 }
 
 func (c *client) doRequest(method, baseURL, path string, query map[string]string, body interface{}, result interface{}) error {
@@ -195,6 +197,7 @@ func (c *client) doRequest(method, baseURL, path string, query map[string]string
 		}
 
 		req.Header.Set("Cookie", cookie)
+		req.Header.Set("Origin", "https://pan.quark.cn")
 		req.Header.Set("Referer", referer)
 		req.Header.Set("User-Agent", userAgent)
 		req.Header.Set("Accept", "application/json, text/plain, */*")
@@ -235,6 +238,10 @@ func (c *client) doRequest(method, baseURL, path string, query map[string]string
 			if err := json.Unmarshal(bodyBytes, result); err != nil {
 				return fmt.Errorf("parse response failed: %w", err)
 			}
+		}
+
+		if resp.StatusCode >= 400 {
+			return fmt.Errorf("API Error (Status %d): %s", resp.StatusCode, string(bodyBytes))
 		}
 
 		return nil

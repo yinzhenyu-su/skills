@@ -3,6 +3,9 @@ package quark
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 )
@@ -20,6 +24,12 @@ type QuarkDriver struct {
 	cache    *cacheManager
 	cookie   string
 	rootPath string
+	cipher   *crypt.RcloneCipher
+}
+
+// SetCipher attaches a cipher for path-name encryption/decryption in ResolvePath.
+func (d *QuarkDriver) SetCipher(c *crypt.RcloneCipher) {
+	d.cipher = c
 }
 
 var (
@@ -297,14 +307,21 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 	}
 
 	if preResp.Data.Finish && preResp.Data.Fid != "" {
-		return drive.Entry{ID: preResp.Data.Fid, Name: name}, nil
+		finishData := map[string]interface{}{
+			"fid":       preResp.Data.Fid,
+			"obj_key":   preResp.Data.ObjKey,
+			"bucket":    preResp.Data.Bucket,
+			"task_id":   preResp.Data.TaskId,
+			"upload_id": preResp.Data.UploadId,
+		}
+		d.cl.request(http.MethodPost, "/file/upload/finish", nil, finishData, nil)
+		return drive.Entry{ID: preResp.Data.Fid, Name: name, Size: size}, nil
 	}
 
 	partSize := preResp.Metadata.PartSize
 	if partSize <= 0 {
 		partSize = 4 * 1024 * 1024
 	}
-	uploadID := preResp.Data.UploadId
 
 	allData, err := io.ReadAll(body)
 	if err != nil {
@@ -315,6 +332,7 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 		totalParts = 1
 	}
 
+	etags := make([]string, 0, totalParts)
 	for partNumber := 1; partNumber <= totalParts; partNumber++ {
 		start := (partNumber - 1) * partSize
 		end := start + partSize
@@ -322,20 +340,21 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 			end = int(size)
 		}
 		partData := allData[start:end]
-		err := d.uploadPart(&preResp, partNumber, partData)
+		etag, err := d.uploadPart(&preResp, partNumber, partData)
 		if err != nil {
 			return drive.Entry{}, fmt.Errorf("upload part %d: %w", partNumber, err)
 		}
+		etags = append(etags, etag)
 	}
 
 	encSize := int64(len(allData))
+	md5Hex := fmt.Sprintf("%X", md5.Sum(allData))
+	sha1Hex := fmt.Sprintf("%X", sha1.Sum(allData))
 
 	hashData := map[string]interface{}{
-		"fid":       preResp.Data.Fid,
-		"obj_key":   preResp.Data.ObjKey,
-		"bucket":    preResp.Data.Bucket,
-		"task_id":   preResp.Data.TaskId,
-		"upload_id": uploadID,
+		"md5":     md5Hex,
+		"sha1":    sha1Hex,
+		"task_id": preResp.Data.TaskId,
 	}
 	var hashResp hashResp
 	err = d.cl.request(http.MethodPost, "/file/update/hash", nil, hashData, &hashResp)
@@ -344,38 +363,22 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 	}
 
 	if hashResp.Data.Finish {
+		if hashResp.Data.Fid != "" {
+			preResp.Data.Fid = hashResp.Data.Fid
+		}
+		d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskId)
 		return drive.Entry{
-			ID:   hashResp.Data.Fid,
+			ID:   preResp.Data.Fid,
 			Name: name,
 			Size: encSize,
 		}, nil
 	}
 
-	commitData := map[string]interface{}{
-		"fid":       preResp.Data.Fid,
-		"obj_key":   preResp.Data.ObjKey,
-		"bucket":    preResp.Data.Bucket,
-		"task_id":   preResp.Data.TaskId,
-		"upload_id": uploadID,
-	}
-	err = d.cl.request(http.MethodPost, "/file/upload/commit", nil, commitData, nil)
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("upload commit: %w", err)
+	if err := d.ossComplete(&preResp, etags); err != nil {
+		return drive.Entry{}, fmt.Errorf("upload complete: %w", err)
 	}
 
-	finishData := map[string]interface{}{
-		"fid":       preResp.Data.Fid,
-		"obj_key":   preResp.Data.ObjKey,
-		"bucket":    preResp.Data.Bucket,
-		"task_id":   preResp.Data.TaskId,
-		"upload_id": uploadID,
-	}
-	var finishResp upPreResp
-	err = d.cl.request(http.MethodPost, "/file/upload/finish", nil, finishData, &finishResp)
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("upload finish: %w", err)
-	}
-
+	d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskId)
 	return drive.Entry{
 		ID:   preResp.Data.Fid,
 		Name: name,
@@ -383,7 +386,98 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 	}, nil
 }
 
-func (d *QuarkDriver) uploadPart(pre *upPreResp, partNumber int, data []byte) error {
+func (d *QuarkDriver) uploadFinish(fid, objKey, taskID string) {
+	finishData := map[string]interface{}{
+		"obj_key": objKey,
+		"task_id": taskID,
+	}
+	d.cl.request(http.MethodPost, "/file/upload/finish", nil, finishData, nil)
+}
+
+// ossComplete sends OSS CompleteMultipartUpload directly to Alibaba OSS
+// (NOT a Quark API call). /file/upload/commit does not exist — do not use it.
+func (d *QuarkDriver) ossComplete(pre *upPreResp, etags []string) error {
+	if len(etags) == 0 {
+		return nil
+	}
+
+	var xmlBody strings.Builder
+	xmlBody.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
+<CompleteMultipartUpload>`)
+	for i, etag := range etags {
+		xmlBody.WriteString(fmt.Sprintf(`
+<Part>
+<PartNumber>%d</PartNumber>
+<ETag>%s</ETag>
+</Part>`, i+1, etag))
+	}
+	xmlBody.WriteString(`
+</CompleteMultipartUpload>`)
+	body := xmlBody.String()
+
+	m := md5.New()
+	m.Write([]byte(body))
+	contentMd5 := base64.StdEncoding.EncodeToString(m.Sum(nil))
+
+	for attempt := 0; attempt <= ossMaxRetries; attempt++ {
+		timeStr := time.Now().UTC().Format(http.TimeFormat)
+		callbackB64 := base64.StdEncoding.EncodeToString([]byte(pre.Data.Callback))
+		authMeta := fmt.Sprintf("POST\n%s\napplication/xml\n%s\nx-oss-callback:%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s/%s?uploadId=%s",
+			contentMd5, timeStr, callbackB64, timeStr, pre.Data.Bucket, pre.Data.ObjKey, pre.Data.UploadId)
+
+		authData := map[string]interface{}{
+			"auth_info": pre.Data.AuthInfo,
+			"auth_meta": authMeta,
+			"task_id":   pre.Data.TaskId,
+		}
+		var authResp upAuthResp
+		err := d.cl.request(http.MethodPost, "/file/upload/auth", nil, authData, &authResp)
+		if err != nil {
+			if attempt < ossMaxRetries {
+				time.Sleep(retryBackoff(attempt))
+				continue
+			}
+			return err
+		}
+
+		u := getOSSURL(pre)
+		q := "?uploadId=" + pre.Data.UploadId
+		req, err := http.NewRequest(http.MethodPost, u+q, strings.NewReader(body))
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Authorization", authResp.Data.AuthKey)
+		req.Header.Set("Content-MD5", contentMd5)
+		req.Header.Set("Content-Type", "application/xml")
+		req.Header.Set("x-oss-callback", callbackB64)
+		req.Header.Set("x-oss-date", timeStr)
+		req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
+		req.Header.Set("Referer", referer)
+		req.Header.Set("User-Agent", userAgent)
+
+		resp, err := d.cl.httpClient.Do(req)
+		if err != nil {
+			if attempt < ossMaxRetries {
+				time.Sleep(retryBackoff(attempt))
+				continue
+			}
+			return fmt.Errorf("oss complete: %w", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+		if attempt < ossMaxRetries {
+			time.Sleep(retryBackoff(attempt))
+			continue
+		}
+		return fmt.Errorf("oss complete status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (d *QuarkDriver) uploadPart(pre *upPreResp, partNumber int, data []byte) (string, error) {
 	for attempt := 0; attempt <= ossMaxRetries; attempt++ {
 		dateStr := time.Now().UTC().Format(http.TimeFormat)
 		authMeta := fmt.Sprintf("PUT\n\napplication/octet-stream\n%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s/%s?partNumber=%d&uploadId=%s",
@@ -402,14 +496,14 @@ func (d *QuarkDriver) uploadPart(pre *upPreResp, partNumber int, data []byte) er
 				time.Sleep(retryBackoff(attempt))
 				continue
 			}
-			return err
+			return "", err
 		}
 
 		u := getOSSURL(pre)
 		q := "?partNumber=" + strconv.Itoa(partNumber) + "&uploadId=" + pre.Data.UploadId
 		req, err := http.NewRequest(http.MethodPut, u+q, bytes.NewReader(data))
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		req.Header.Set("Authorization", authResp.Data.AuthKey)
@@ -424,20 +518,21 @@ func (d *QuarkDriver) uploadPart(pre *upPreResp, partNumber int, data []byte) er
 				time.Sleep(retryBackoff(attempt))
 				continue
 			}
-			return fmt.Errorf("upload part %d http: %w", partNumber, err)
+			return "", fmt.Errorf("upload part %d http: %w", partNumber, err)
 		}
+		etag := resp.Header.Get("Etag")
 		resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return nil
+			return etag, nil
 		}
 		if attempt < ossMaxRetries {
 			time.Sleep(retryBackoff(attempt))
 			continue
 		}
-		return fmt.Errorf("upload part %d status %d", partNumber, resp.StatusCode)
+		return "", fmt.Errorf("upload part %d status %d", partNumber, resp.StatusCode)
 	}
-	return nil
+	return "", nil
 }
 
 func getOSSURL(pre *upPreResp) string {
@@ -480,8 +575,12 @@ func (d *QuarkDriver) ResolvePath(ctx context.Context, path string) (string, err
 			return "", err
 		}
 		found := false
+		encSeg := ""
+		if d.cipher != nil {
+			encSeg = d.cipher.EncryptSegment(seg)
+		}
 		for _, e := range entries {
-			if e.Name == seg {
+			if e.Name == seg || (encSeg != "" && strings.EqualFold(e.Name, encSeg)) {
 				currentFid = e.ID
 				found = true
 				break
