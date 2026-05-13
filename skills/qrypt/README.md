@@ -7,7 +7,7 @@ Qrypt 是一个跨平台的 Quark Drive 挂载工具，支持 macOS 和 Linux。
 - **rclone 兼容加解密**：支持 scrypt 派生、EME-AES 文件名处理、NaCl Secretbox 分块内容处理
 - **配置文件支持**：TOML 格式配置文件，命令行参数可覆盖
 - **路径挂载**：支持通过 `--root-path` 指定网盘子目录作为挂载根
-- **本地缓存**：支持分块缓存与元数据持久化（SQLite）
+- **本地缓存**：内存索引 + 磁盘 batch 文件分块缓存
 - **跨平台支持**：macOS (macFUSE) 和 Linux (libfuse)
 - **智能过滤**：过滤 `.DS_Store` 等元数据请求，减少无效云端操作
 - **上传闭环**：支持分片上传后的 hash 上报与完成确认流程

@@ -10,7 +10,7 @@ Go FUSE 工具，将夸克网盘 (Quark Drive) 挂载为本地文件系统，兼
 qrypt/
 ├── cmd/qrypt/       # CLI 命令 (cobra): mount, init, ls, find, push, pull, mv, rm, cat, status, config, tool
 ├── internal/
-│   ├── cache/       # SQLite 分块缓存 + 元数据持久化
+│   ├── cache/       # 内存索引 + 磁盘 batch 文件分块缓存
 │   ├── config/      # TOML 配置加载 (多路径搜索)
 │   ├── crypt/       # rclone 兼容的 EME-AES / NaCl Secretbox 加解密
 │   ├── fs/          # FUSE 文件系统实现 (cgofuse)

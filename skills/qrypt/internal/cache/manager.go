@@ -649,7 +649,7 @@ func (m *CacheManager) CleanupStagingMetas(abandonedMaxAge time.Duration) error 
 	return nil
 }
 
-// --- Batch operations (removed SQLite, replaced with simple iterations) ---
+// --- Batch operations (in-memory iteration, no SQLite) ---
 
 func (m *CacheManager) BatchDeleteNodeState(fids []string, paths []string) error {
 	m.mu.Lock()

@@ -5,7 +5,7 @@ schema: spec-driven
 context: |
   Tech stack: Go, cgofuse (FUSE), cobra (CLI)
   Tech stack: rclone crypt (scrypt / EME-AES / NaCl Secretbox)
-  Tech stack: SQLite (chunk cache), TOML config
+  Tech stack: in-memory index + batch file chunk cache, TOML config
   Platform: macOS (macFUSE 4.0+) | Linux (libfuse)
   Conventions: Chinese CLI output, rust_decimal-style typed sizes
   Domain: cloud drive FUSE mount with encryption
