@@ -58,6 +58,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 				break
 			}
 			if moveErr != nil {
+				log.L.Errorf("Rename: move API call failed for %s -> %s: %v\n", oldPath, newPath, moveErr)
 				return -fuse.EIO
 			}
 		}
@@ -85,6 +86,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 				break
 			}
 			if renameErr != nil {
+				log.L.Errorf("Rename: API call failed for %s -> %s: %v\n", oldPath, newPath, renameErr)
 				return -fuse.EIO
 			}
 		}

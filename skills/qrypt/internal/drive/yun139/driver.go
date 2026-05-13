@@ -247,6 +247,7 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 			return drive.Entry{}, fmt.Errorf("139 upload part %d: %w", partNum, err)
 		}
 		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("Authorization", d.cl.getAuthorization())
 		resp, err := d.cl.httpClient.Do(req)
 		if err != nil {
 			return drive.Entry{}, fmt.Errorf("139 upload part %d: %w", partNum, err)

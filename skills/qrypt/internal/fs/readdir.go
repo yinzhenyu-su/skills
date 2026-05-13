@@ -145,7 +145,6 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 	remoteMap := make(map[string]drive.Entry)
 	remoteFids := make(map[string]bool)
 
-	var decName string
 	for _, f := range remoteFiles {
 		if f.ID == parentFid {
 			continue
@@ -153,6 +152,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		seenFids[f.ID] = true
 		remoteFids[f.ID] = true
 
+		decName := ""
 		if v, ok := fs.fidNodes.Load(f.ID); ok {
 			pn := v.(*Node)
 			pn.mu.RLock()
@@ -257,7 +257,12 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 
 		if !strings.HasPrefix(fid, "local_") {
 			if rf.ID != fid {
-				// FID changed
+				if !isDirty {
+					n.mu.Lock()
+					n.fid = rf.ID
+					n.source = "remote"
+					n.mu.Unlock()
+				}
 			}
 
 			remoteMtime := rf.ModTime.UnixMilli()

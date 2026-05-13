@@ -198,6 +198,9 @@ func (c *client) doRequest(method, baseURL, path string, query map[string]string
 		req.Header.Set("Referer", referer)
 		req.Header.Set("User-Agent", userAgent)
 		req.Header.Set("Accept", "application/json, text/plain, */*")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {

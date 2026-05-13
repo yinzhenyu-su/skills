@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -128,12 +129,11 @@ func runMount(cmd *cobra.Command, args []string) {
 	}
 
 	rootFid := "0"
-	// Resolve root path for Quark driver (which has path-based root resolution).
-	if resolver, ok := drv.(interface{ ResolvePath(ctx interface{}, path string) (string, error) }); ok {
+	if resolver, ok := drv.(interface{ ResolvePath(ctx context.Context, path string) (string, error) }); ok {
 		rootPath := cfg.Quark.RootPath
 		if rootPath != "" && rootPath != "/" {
 			fmt.Printf("解析路径: %s...\n", rootPath)
-			fid, err := resolver.ResolvePath(nil, rootPath)
+			fid, err := resolver.ResolvePath(context.Background(), rootPath)
 			if err != nil {
 				fmt.Printf("解析路径失败: %v\n", err)
 				os.Exit(1)

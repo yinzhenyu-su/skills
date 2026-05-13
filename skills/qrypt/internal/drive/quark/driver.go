@@ -415,6 +415,8 @@ func (d *QuarkDriver) uploadPart(pre *upPreResp, partNumber int, data []byte) er
 		req.Header.Set("Authorization", authResp.Data.AuthKey)
 		req.Header.Set("Content-Type", "application/octet-stream")
 		req.Header.Set("x-oss-date", dateStr)
+		req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
+		req.Header.Set("Referer", "https://pan.quark.cn")
 
 		resp, err := d.cl.httpClient.Do(req)
 		if err != nil {

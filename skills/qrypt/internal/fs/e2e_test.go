@@ -296,6 +296,73 @@ func TestE2E_RenameDir(t *testing.T) {
 	}
 }
 
+func TestE2E_RenameCrossDir(t *testing.T) {
+	s := newE2E(t)
+	s.mustMkdir("/dir1")
+	s.mustMkdir("/dir2")
+	s.writeFile("/dir1/file.txt", []byte("cross-dir move"))
+
+	errc := s.fs.Rename("/dir1/file.txt", "/dir2/moved.txt")
+	if errc != 0 {
+		t.Fatalf("Rename cross-dir: errc=%d", errc)
+	}
+
+	if _, ok := s.fs.nodes.Load("/dir1/file.txt"); ok {
+		t.Error("old path should not exist after cross-dir move")
+	}
+	got := s.mustRead("/dir2/moved.txt", 20, 0)
+	if string(got) != "cross-dir move" {
+		t.Errorf("got %q, want %q", string(got), "cross-dir move")
+	}
+}
+
+func TestE2E_ChineseFilename(t *testing.T) {
+	s := newE2E(t)
+
+	// Create file with Chinese name
+	s.writeFile("/中文文件.txt", []byte("chinese filename content"))
+	got := s.mustRead("/中文文件.txt", 30, 0)
+	if string(got) != "chinese filename content" {
+		t.Errorf("got %q, want %q", string(got), "chinese filename content")
+	}
+
+	errc := s.fs.Rename("/中文文件.txt", "/重命名文件.txt")
+	if errc != 0 {
+		t.Fatalf("Rename Chinese: errc=%d", errc)
+	}
+	if _, ok := s.fs.nodes.Load("/中文文件.txt"); ok {
+		t.Error("old Chinese name should not exist after rename")
+	}
+	got2 := s.mustRead("/重命名文件.txt", 30, 0)
+	if string(got2) != "chinese filename content" {
+		t.Errorf("got %q, want %q", string(got2), "chinese filename content")
+	}
+}
+
+func TestE2E_UnlinkFile(t *testing.T) {
+	s := newE2E(t)
+	s.writeFile("/delete-me.txt", []byte("will be deleted"))
+
+	errc := s.fs.Unlink("/delete-me.txt")
+	if errc != 0 {
+		t.Fatalf("Unlink: errc=%d", errc)
+	}
+	if _, ok := s.fs.nodes.Load("/delete-me.txt"); ok {
+		t.Error("node should not exist after unlink")
+	}
+	// Readdir on root should not include the deleted file
+	found := false
+	s.fs.Readdir("/", func(name string, st *fuse.Stat_t, ofst int64) bool {
+		if name == "delete-me.txt" {
+			found = true
+		}
+		return true
+	}, 0, 0)
+	if found {
+		t.Error("deleted file should not appear in readdir")
+	}
+}
+
 func TestE2E_Truncate(t *testing.T) {
 	s := newE2E(t)
 	s.writeFile("/trunc.txt", []byte("hello world truncate"))
