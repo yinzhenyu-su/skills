@@ -7,27 +7,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var rootCmd = &cobra.Command{
+	Use:   "qrypt",
+	Short: "Qrypt - Quark Drive Rclone-Compatible Crypt Mount Tool",
+}
+
 func main() {
-	var rootCmd = &cobra.Command{
-		Use:   "qrypt",
-		Short: "Qrypt - Quark Drive Rclone-Compatible Crypt Mount Tool",
-	}
-
-	var mountCmd = &cobra.Command{
-		Use:   "mount",
-		Short: "Mount cloud drive to a local directory",
-		Run:   runMount,
-	}
-	mountCmd.Flags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
-	mountCmd.Flags().String("drive-type", "", "驱动类型: quark, yun139 (默认: 配置文件 drive.type)")
-	mountCmd.Flags().StringP("cookie", "c", "", "Quark Drive Cookie")
-	mountCmd.Flags().StringP("cache", "a", "", "本地缓存目录")
-	mountCmd.Flags().StringP("mount", "m", "", "本地挂载点")
-	mountCmd.Flags().StringP("password", "p", "", "Rclone 密码")
-	mountCmd.Flags().StringP("salt", "s", "", "Rclone salt (可选)")
-	mountCmd.Flags().StringP("root-path", "r", "", "网盘挂载路径")
-	mountCmd.Flags().String("log-level", "", "日志级别: debug, info, warn, error")
-
 	var initCmd = &cobra.Command{
 		Use:   "init",
 		Short: "生成示例配置文件",
@@ -139,7 +124,7 @@ func main() {
 	pushCmd.Flags().Int("transfers", 4, "并发传输文件数量")
 	pushCmd.Flags().Bool("dry-run", false, "只打印将要上传的文件列表，不执行真实上传")
 
-	rootCmd.AddCommand(mountCmd, initCmd, lsCmd, catCmd, configCmd, statusCmd, rmCmd, mvCmd, findCmd, pullCmd, pushCmd)
+	rootCmd.AddCommand(initCmd, lsCmd, catCmd, configCmd, statusCmd, rmCmd, mvCmd, findCmd, pullCmd, pushCmd)
 
 	var toolCmd = &cobra.Command{
 		Use:   "tool",
