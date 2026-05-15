@@ -7,12 +7,47 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 	syncpkg "github.com/yinzhenyu/skills/qrypt/internal/sync"
 )
+
+// collectAncestorPaths returns ancestor directory paths for a node,
+// starting from its parent up to the root.
+func collectAncestorPaths(n *Node) []string {
+	dir := filepath.Dir(n.currentPath)
+	var paths []string
+	for {
+		paths = append(paths, dir)
+		if dir == "/" {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	return paths
+}
+
+// incParentUploadCounts increments uploadingChildren on every ancestor
+// of n, preventing Rmdir on parent directories during upload.
+func (fs *QryptFS) incParentUploadCounts(n *Node) {
+	for _, p := range collectAncestorPaths(n) {
+		if v, ok := fs.nodes.Load(p); ok {
+			atomic.AddInt32(&v.(*Node).uploadingChildren, 1)
+		}
+	}
+}
+
+// decParentUploadCounts decrements uploadingChildren on every ancestor.
+func (fs *QryptFS) decParentUploadCounts(n *Node) {
+	for _, p := range collectAncestorPaths(n) {
+		if v, ok := fs.nodes.Load(p); ok {
+			atomic.AddInt32(&v.(*Node).uploadingChildren, -1)
+		}
+	}
+}
 
 func (fs *QryptFS) enqueueSync(n *Node) {
 	fs.enqueueSyncDelay(n, 0)
@@ -79,6 +114,29 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		n.mu.Unlock()
 		return nil
 	}
+
+	// ── Edit-protection lock ──────────────────────────────────────
+	// All early-exit checks passed. Set uploading = 1 so concurrent
+	// Write / Truncate / Unlink / Rename return EBUSY.
+	// Also increment uploadingChildren on ancestors to prevent Rmdir.
+	atomic.StoreInt32(&n.uploading, 1)
+	ancestorPaths := collectAncestorPaths(n)
+	for _, p := range ancestorPaths {
+		if v, ok := fs.nodes.Load(p); ok {
+			atomic.AddInt32(&v.(*Node).uploadingChildren, 1)
+		}
+	}
+	needsUnlock := true
+	defer func() {
+		if needsUnlock {
+			for _, p := range ancestorPaths {
+				if v, ok := fs.nodes.Load(p); ok {
+					atomic.AddInt32(&v.(*Node).uploadingChildren, -1)
+				}
+			}
+			atomic.StoreInt32(&n.uploading, 0)
+		}
+	}()
 
 	// ┌──────────────────────────────────────────────────────────────┐
 	// │ WARNING: syncQueued lifecycle — concurrent-worker dupe guard │

@@ -3,6 +3,7 @@ package fs
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
@@ -27,6 +28,10 @@ func (fs *QryptFS) Unlink(path string) (errc int) {
 	}
 	if n.isFolder {
 		return -fuse.EISDIR
+	}
+
+	if atomic.LoadInt32(&n.uploading) == 1 {
+		return -fuse.EBUSY
 	}
 
 	n.mu.Lock()
@@ -161,6 +166,10 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 	}
 	if !n.isFolder {
 		return -fuse.ENOTDIR
+	}
+
+	if atomic.LoadInt32(&n.uploadingChildren) > 0 {
+		return -fuse.ENOTEMPTY
 	}
 
 	n.mu.Lock()

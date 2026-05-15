@@ -47,8 +47,6 @@ func TestNodeCancelViaMethod(t *testing.T) {
 
 func TestNodeCancel_Atomic(t *testing.T) {
 	n := newNode("fid_atomic", "p", "a.txt", "/a.txt", false)
-
-	// Verify cancelled uses atomic store/load
 	n.Cancel()
 	if atomic.LoadInt32(&n.cancelled) != 1 {
 		t.Error("cancelled should be 1 after Cancel()")
@@ -60,11 +58,9 @@ func TestNodeChildrenEmpty_DirNode(t *testing.T) {
 	if !n.isChildrenEmpty() {
 		t.Error("new directory node should have empty children")
 	}
-
 	n.mu.Lock()
 	n.children = map[string]*Node{"child": newNode("fc", "fid_ce", "child", "/dir/child", false)}
 	n.mu.Unlock()
-
 	if n.isChildrenEmpty() {
 		t.Error("should not be empty after adding child")
 	}
@@ -72,7 +68,6 @@ func TestNodeChildrenEmpty_DirNode(t *testing.T) {
 
 func TestNodeChildrenEmpty_NonDir(t *testing.T) {
 	n := newNode("f", "p", "f.txt", "/f.txt", false)
-	// Non-directory nodes have nil children, accessor should handle it
 	if !n.isChildrenEmpty() {
 		t.Error("nil children should be considered empty")
 	}
@@ -81,7 +76,7 @@ func TestNodeChildrenEmpty_NonDir(t *testing.T) {
 func TestNodeCancel_Twice(t *testing.T) {
 	n := newNode("fid_2c", "p", "2c.txt", "/2c.txt", false)
 	n.Cancel()
-	n.Cancel() // should not panic
+	n.Cancel()
 	if !n.IsCancelled() {
 		t.Error("should remain cancelled")
 	}
@@ -89,8 +84,6 @@ func TestNodeCancel_Twice(t *testing.T) {
 
 func TestNodeFields(t *testing.T) {
 	n := newNode("fid_fields", "parent_fields", "fields.txt", "/fields.txt", false)
-
-	// Set sync state
 	n.mu.Lock()
 	n.isDirty = true
 	n.syncQueued = true
@@ -99,7 +92,6 @@ func TestNodeFields(t *testing.T) {
 	n.uploadID = "upload_123"
 	n.lastPart = 3
 	n.mu.Unlock()
-
 	n.mu.RLock()
 	if !n.isDirty {
 		t.Error("expected isDirty")
@@ -120,4 +112,59 @@ func TestNodeFields(t *testing.T) {
 		t.Errorf("unexpected lastPart: %d", n.lastPart)
 	}
 	n.mu.RUnlock()
+}
+
+func TestNodeUploading_Default(t *testing.T) {
+	n := newNode("fid_u1", "p", "u1.txt", "/u1.txt", false)
+	if atomic.LoadInt32(&n.uploading) != 0 {
+		t.Error("uploading should be 0 initially")
+	}
+}
+
+func TestNodeUploadingChildren_Default(t *testing.T) {
+	n := newNode("fid_uc1", "p", "dir", "/dir", true)
+	if atomic.LoadInt32(&n.uploadingChildren) != 0 {
+		t.Error("uploadingChildren should be 0 initially")
+	}
+}
+
+func TestNodeUploading_SetAndClear(t *testing.T) {
+	n := newNode("fid_us", "p", "us.txt", "/us.txt", false)
+	atomic.StoreInt32(&n.uploading, 1)
+	if atomic.LoadInt32(&n.uploading) != 1 {
+		t.Error("uploading should be 1 after Store")
+	}
+	atomic.StoreInt32(&n.uploading, 0)
+	if atomic.LoadInt32(&n.uploading) != 0 {
+		t.Error("uploading should be 0 after clear")
+	}
+}
+
+func TestNodeUploadingChildren_IncrementDecrement(t *testing.T) {
+	n := newNode("fid_uc2", "p", "dir", "/dir", true)
+	atomic.AddInt32(&n.uploadingChildren, 1)
+	if atomic.LoadInt32(&n.uploadingChildren) != 1 {
+		t.Error("uploadingChildren should be 1 after increment")
+	}
+	atomic.AddInt32(&n.uploadingChildren, 2)
+	if atomic.LoadInt32(&n.uploadingChildren) != 3 {
+		t.Errorf("uploadingChildren should be 3, got %d", atomic.LoadInt32(&n.uploadingChildren))
+	}
+	atomic.AddInt32(&n.uploadingChildren, -3)
+	if atomic.LoadInt32(&n.uploadingChildren) != 0 {
+		t.Error("uploadingChildren should be 0 after decrement")
+	}
+}
+
+func TestNodeUploadingChildren_MultipleChildren(t *testing.T) {
+	parent := newNode("fid_par", "0", "parent", "/parent", true)
+	c1 := newNode("fid_c1", "fid_par", "c1.txt", "/parent/c1.txt", false)
+	c2 := newNode("fid_c2", "fid_par", "c2.txt", "/parent/c2.txt", false)
+	atomic.AddInt32(&parent.uploadingChildren, 1)
+	atomic.AddInt32(&parent.uploadingChildren, 1)
+	if atomic.LoadInt32(&parent.uploadingChildren) != 2 {
+		t.Errorf("two children uploading should give 2, got %d", atomic.LoadInt32(&parent.uploadingChildren))
+	}
+	_ = c1
+	_ = c2
 }

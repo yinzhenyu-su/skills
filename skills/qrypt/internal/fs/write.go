@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -93,7 +94,16 @@ func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int
 		return 0
 	}
 
+	if atomic.LoadInt32(&node.uploading) == 1 {
+		log.L.Warnf("Write denied for %s: upload in progress\n", path)
+		return 0
+	}
+
 	node.mu.Lock()
+	if atomic.LoadInt32(&node.uploading) == 1 {
+		node.mu.Unlock()
+		return 0
+	}
 	if fs.staging == nil {
 		node.mu.Unlock()
 		return 0
@@ -143,6 +153,10 @@ func (fs *QryptFS) Truncate(path string, size int64, fh uint64) (errc int) {
 	}
 	if size < 0 {
 		return -fuse.EINVAL
+	}
+
+	if atomic.LoadInt32(&n.uploading) == 1 {
+		return -fuse.EBUSY
 	}
 
 	n.mu.Lock()
@@ -253,6 +267,10 @@ func (fs *QryptFS) Open(path string, flags int) (errc int, fh uint64) {
 	n, errc := fs.lookup(path)
 	if errc != 0 {
 		return errc, 0
+	}
+	// Reject write/open-for-write when the file is being uploaded.
+	if (flags&3) != 0 && atomic.LoadInt32(&n.uploading) == 1 {
+		return -fuse.EBUSY, 0
 	}
 	return 0, uint64(uintptr(unsafe.Pointer(n)))
 }
