@@ -6,6 +6,7 @@ import (
 
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive/localfs"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive/quark"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive/yun139"
 )
@@ -23,7 +24,12 @@ func NewDriverFromConfig(cfg config.DriveConfig) (drive.Driver, error) {
 			return nil, fmt.Errorf("missing yun139 config")
 		}
 		return yun139.NewDriver(cfg.Yun139.Authorization, cfg.Yun139.RootID), nil
+	case "localfs":
+		if cfg.LocalFS == nil {
+			return nil, fmt.Errorf("missing localfs config")
+		}
+		return localfs.NewDriver(cfg.LocalFS.RootPath), nil
 	default:
-		return nil, fmt.Errorf("unknown driver type: %q (supported: quark, yun139)", cfg.Type)
+		return nil, fmt.Errorf("unknown driver type: %q (supported: quark, yun139, localfs)", cfg.Type)
 	}
 }
