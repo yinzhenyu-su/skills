@@ -760,9 +760,11 @@ func (m *CacheManager) LoadPendingJournal() (map[string]*PendingNode, error) {
 			Size:      s.entry.Size,
 			IsFolder:  s.entry.IsFolder,
 			Nonce:     s.entry.Nonce,
+			UploadID:  s.entry.UploadID,
+			LastPart:  s.entry.LastPart,
 		}
 
-		// Merge update fields if present.
+		// Merge update fields if present (may override values from compacted dirty entry).
 		if s.update != nil {
 			if s.update.Size > 0 {
 				pn.Size = s.update.Size
