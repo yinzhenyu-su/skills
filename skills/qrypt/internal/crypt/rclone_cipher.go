@@ -153,6 +153,9 @@ func (c *RcloneCipher) decryptSegment(encrypted string) (string, error) {
 		return "", err
 	}
 
+	if len(rawCiphertext) == 0 {
+		return "", errors.New("empty ciphertext")
+	}
 	if len(rawCiphertext)%16 != 0 {
 		return "", errors.New("ciphertext length is not a multiple of 16")
 	}
