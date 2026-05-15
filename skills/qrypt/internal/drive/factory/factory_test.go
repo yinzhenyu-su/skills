@@ -64,6 +64,30 @@ func TestNewDriverFromConfig_Yun139Success(t *testing.T) {
 	}
 }
 
+func TestNewDriverFromConfig_LocalFSSuccess(t *testing.T) {
+	cfg := config.DriveConfig{
+		Type: "localfs",
+		LocalFS: &config.LocalFSOptions{
+			RootPath: t.TempDir(),
+		},
+	}
+	drv, err := NewDriverFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if drv == nil {
+		t.Fatal("expected non-nil driver")
+	}
+}
+
+func TestNewDriverFromConfig_MissingLocalFSConfig(t *testing.T) {
+	cfg := config.DriveConfig{Type: "localfs"}
+	_, err := NewDriverFromConfig(cfg)
+	if err == nil {
+		t.Fatal("expected error for missing localfs config")
+	}
+}
+
 func TestNewDriverFromConfig_EmptyType(t *testing.T) {
 	cfg := config.DriveConfig{}
 	_, err := NewDriverFromConfig(cfg)

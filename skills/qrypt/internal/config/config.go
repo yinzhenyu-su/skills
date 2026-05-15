@@ -27,11 +27,17 @@ type QuarkConfig struct {
 	RootPath string `toml:"root_path"`
 }
 
+// LocalFSOptions holds configuration for the local filesystem drive backend.
+type LocalFSOptions struct {
+	RootPath string `toml:"root_path"`
+}
+
 // DriveConfig selects the storage backend and holds driver-specific options.
 type DriveConfig struct {
-	Type   string          `toml:"type"` // "quark" | "yun139"
+	Type   string          `toml:"type"` // "quark" | "yun139" | "localfs"
 	Quark  *QuarkOptions   `toml:"quark"`
 	Yun139 *Yun139Options  `toml:"yun139"`
+	LocalFS *LocalFSOptions `toml:"localfs"`
 }
 
 // QuarkOptions holds configuration for the Quark drive backend.
@@ -185,6 +191,10 @@ func (c *Config) RootPath() string {
 	case "yun139":
 		if c.Drive.Yun139 != nil {
 			return c.Drive.Yun139.RootID
+		}
+	case "localfs":
+		if c.Drive.LocalFS != nil {
+			return c.Drive.LocalFS.RootPath
 		}
 	}
 	return "/"
