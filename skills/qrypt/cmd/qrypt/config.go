@@ -10,7 +10,7 @@ func runConfig(cmd *cobra.Command, args []string) {
 	cfg, _ := loadToolCfg(cmd)
 	fmt.Println("=== Qrypt 配置 ===")
 	fmt.Printf("驱动类型:     %s\n", cfg.Drive.Type)
-	fmt.Printf("Quark 根路径: %s\n", cfg.Quark.RootPath)
+	fmt.Printf("根路径: %s\n", cfg.RootPath())
 	fmt.Printf("缓存目录:     %s\n", cfg.Cache.Dir)
 	fmt.Printf("挂载点:       %s\n", cfg.Mount.Point)
 	fmt.Printf("加密密码:     %s\n", maskStr(cfg.Encryption.Password))

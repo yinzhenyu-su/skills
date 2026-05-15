@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -48,12 +49,12 @@ func runPush(cmd *cobra.Command, args []string) {
 		remoteFileName = filepath.Base(remotePath)
 	}
 
-	fullRemotePath := resolveFullPath(cfg.Quark.RootPath, remotePath)
+	fullRemotePath := resolveFullPath(cfg.RootPath(), remotePath)
 	var parentFid string
 
 	stat, err := os.Stat(remotePath)
 	if remotePath != "" && err == nil && stat.IsDir() {
-		parentFid, err = resolver.ResolvePath(nil, fullRemotePath)
+		parentFid, err = resolver.ResolvePath(context.Background(), fullRemotePath)
 		if err != nil {
 			fmt.Printf("无法解析目标路径: %v\n", err)
 			os.Exit(1)
@@ -62,7 +63,7 @@ func runPush(cmd *cobra.Command, args []string) {
 	} else {
 		remoteParentPath := filepath.Dir(fullRemotePath)
 		remoteFileName = filepath.Base(fullRemotePath)
-		parentFid, err = resolver.ResolvePath(nil, remoteParentPath)
+		parentFid, err = resolver.ResolvePath(context.Background(), remoteParentPath)
 		if err != nil {
 			fmt.Printf("无法解析目标路径: %v\n", err)
 			os.Exit(1)

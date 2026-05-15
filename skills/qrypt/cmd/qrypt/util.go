@@ -65,7 +65,7 @@ func loadToolDriver(cfg *config.Config, cipher *crypt.RcloneCipher) drive.Driver
 		fmt.Printf("创建驱动失败: %v\n", err)
 		os.Exit(1)
 	}
-	if err := drv.Init(nil); err != nil {
+	if err := drv.Init(context.Background()); err != nil {
 		fmt.Printf("认证失败: %v\n", err)
 		os.Exit(1)
 	}

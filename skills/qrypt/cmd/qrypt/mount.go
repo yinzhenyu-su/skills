@@ -34,7 +34,6 @@ func runMount(cmd *cobra.Command, args []string) {
 		cfg.Drive.Type = driveType
 	}
 	if cookie, _ := cmd.Flags().GetString("cookie"); cookie != "" {
-		cfg.Quark.Cookie = cookie
 		if cfg.Drive.Quark == nil {
 			cfg.Drive.Quark = &config.QuarkOptions{}
 		}
@@ -53,7 +52,6 @@ func runMount(cmd *cobra.Command, args []string) {
 		cfg.Mount.Point = config.ExpandHome(mountPoint)
 	}
 	if rootPath, _ := cmd.Flags().GetString("root-path"); rootPath != "" {
-		cfg.Quark.RootPath = rootPath
 		if cfg.Drive.Quark == nil {
 			cfg.Drive.Quark = &config.QuarkOptions{}
 		}
@@ -122,14 +120,14 @@ func runMount(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	if err := drv.Init(nil); err != nil {
+	if err := drv.Init(context.Background()); err != nil {
 		fmt.Printf("认证失败: %v\n", err)
 		os.Exit(1)
 	}
 
 	rootFid := "0"
 	if resolver, ok := drv.(interface{ ResolvePath(ctx context.Context, path string) (string, error) }); ok {
-		rootPath := cfg.Quark.RootPath
+		rootPath := cfg.RootPath()
 		if rootPath != "" && rootPath != "/" {
 			fmt.Printf("解析路径: %s...\n", rootPath)
 			fid, err := resolver.ResolvePath(context.Background(), rootPath)

@@ -173,6 +173,23 @@ func FindConfigFile() string {
 	return ""
 }
 
+// RootPath returns the root path/ID for the currently configured driver type.
+// This is used by CLI tools (ls/cat/rm/mv/push/pull/find) to resolve user-provided
+// paths relative to the configured root. Returns "/" when nothing is configured.
+func (c *Config) RootPath() string {
+	switch c.Drive.Type {
+	case "quark":
+		if c.Drive.Quark != nil {
+			return c.Drive.Quark.RootPath
+		}
+	case "yun139":
+		if c.Drive.Yun139 != nil {
+			return c.Drive.Yun139.RootID
+		}
+	}
+	return "/"
+}
+
 func ParseSize(s string) (int64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("empty size string")

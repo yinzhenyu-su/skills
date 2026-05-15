@@ -22,7 +22,7 @@ func runPull(cmd *cobra.Command, args []string) {
 		localPath = args[1]
 	}
 
-	fullRemotePath := resolveFullPath(cfg.Quark.RootPath, remotePath)
+	fullRemotePath := resolveFullPath(cfg.RootPath(), remotePath)
 	parentPath := filepath.Dir(fullRemotePath)
 	baseName := filepath.Base(fullRemotePath)
 
@@ -32,13 +32,13 @@ func runPull(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	parentFid, err := resolver.ResolvePath(nil, parentPath)
+	parentFid, err := resolver.ResolvePath(context.Background(), parentPath)
 	if err != nil {
 		fmt.Printf("无法解析路径: %v\n", err)
 		os.Exit(1)
 	}
 
-	entries, err := drv.List(nil, parentFid)
+	entries, err := drv.List(context.Background(), parentFid)
 	if err != nil {
 		fmt.Printf("无法列出目录内容: %v\n", err)
 		os.Exit(1)
