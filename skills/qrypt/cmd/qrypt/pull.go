@@ -53,10 +53,12 @@ func runPull(cmd *cobra.Command, args []string) {
 			pool.Start(context.Background())
 
 			fmt.Printf("开始递归下载目录: %s\n", remotePath)
-			if err := sync.ScanRemoteForDownload(context.Background(), targetFid, localPath, drv, cipher, pool); err != nil {
-				fmt.Printf("扫描远端目录失败: %v\n", err)
-			}
+			scanErr := sync.ScanRemoteForDownload(context.Background(), targetFid, localPath, drv, cipher, pool)
 			pool.Wait()
+			if scanErr != nil {
+				fmt.Printf("扫描远端目录失败: %v\n", scanErr)
+				return
+			}
 			fmt.Printf("批量任务处理完毕\n")
 			return
 		}
