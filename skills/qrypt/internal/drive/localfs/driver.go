@@ -9,13 +9,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 )
 
 type LocalDriver struct {
 	root    string
 	rootDir string
+	cipher  *crypt.RcloneCipher
 }
+
+func (d *LocalDriver) SetCipher(c *crypt.RcloneCipher) { d.cipher = c }
 
 var (
 	_ drive.Driver   = (*LocalDriver)(nil)
@@ -135,13 +139,44 @@ func (d *LocalDriver) Put(ctx context.Context, parentID, name string, size int64
 }
 
 func (d *LocalDriver) ResolvePath(ctx context.Context, path string) (string, error) {
-	abs := filepath.Join(d.root, path)
+	cleanPath := filepath.Clean(path)
+
+	// Check if path is already under root (CLI prepends cfg.RootPath()).
+	rel, err := filepath.Rel(d.root, cleanPath)
+	if err == nil && !strings.HasPrefix(rel, "..") {
+		if d.cipher != nil && rel != "." {
+			return d.encryptRel(rel), nil
+		}
+		return cleanPath, nil
+	}
+
+	// Path is outside root — treat as relative virtual path.
+	if d.cipher != nil {
+		return d.encryptRel(path), nil
+	}
+
+	abs := filepath.Join(d.root, cleanPath)
 	abs = filepath.Clean(abs)
-	rel, err := filepath.Rel(d.root, abs)
+	rel, err = filepath.Rel(d.root, abs)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("path %s escapes root", path)
 	}
 	return abs, nil
+}
+
+// encryptRel encrypts each path segment and joins onto d.root.
+// Example: "docs/file.txt" → d.root + "/" + E("docs") + "/" + E("file.txt")
+func (d *LocalDriver) encryptRel(rel string) string {
+	segs := strings.Split(filepath.ToSlash(rel), "/")
+	parts := make([]string, 0, len(segs)+1)
+	parts = append(parts, d.root)
+	for _, s := range segs {
+		if s == "" || s == "." {
+			continue
+		}
+		parts = append(parts, d.cipher.EncryptSegment(s))
+	}
+	return filepath.Join(parts...)
 }
 
 func (d *LocalDriver) resolve(id string) string {

@@ -3,7 +3,11 @@
 
 [drive]
 # 存储后端类型: quark | yun139 | localfs
-type = "quark"
+type = "localfs"
+
+[drive.localfs]
+# 本地文件系统根目录（必填）
+root_path = "/tmp/qrypt-data"
 
 [drive.quark]
 # 夸克网盘 Cookie（必填）

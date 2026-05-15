@@ -11,6 +11,7 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	factory "github.com/yinzhenyu/skills/qrypt/internal/drive/factory"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive/localfs"
 	quark "github.com/yinzhenyu/skills/qrypt/internal/drive/quark"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 )
@@ -69,8 +70,15 @@ func loadToolDriver(cfg *config.Config, cipher *crypt.RcloneCipher) drive.Driver
 		fmt.Printf("认证失败: %v\n", err)
 		os.Exit(1)
 	}
-	if qd, ok := drv.(*quark.QuarkDriver); ok && cipher != nil {
-		qd.SetCipher(cipher)
+	switch d := drv.(type) {
+	case *quark.QuarkDriver:
+		if cipher != nil {
+			d.SetCipher(cipher)
+		}
+	case *localfs.LocalDriver:
+		if cipher != nil {
+			d.SetCipher(cipher)
+		}
 	}
 	return drv
 }
