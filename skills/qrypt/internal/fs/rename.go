@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
@@ -28,6 +29,20 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 	oldNode, errc := fs.lookup(oldPath)
 	if errc != 0 {
 		return errc
+	}
+
+	if atomic.LoadInt32(&oldNode.uploading) == 1 {
+		return -fuse.EBUSY
+	}
+	if oldNode.isFolder && atomic.LoadInt32(&oldNode.uploadingChildren) > 0 {
+		return -fuse.EBUSY
+	}
+
+	// If the destination path already exists and is uploading, refuse.
+	if dstNode, dstErr := fs.lookup(newPath); dstErr == 0 {
+		if atomic.LoadInt32(&dstNode.uploading) == 1 {
+			return -fuse.EBUSY
+		}
 	}
 
 	oldParent := filepath.Dir(oldPath)

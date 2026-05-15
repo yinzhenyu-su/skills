@@ -56,6 +56,12 @@ type Node struct {
 	// Cancellation flag (atomic)
 	cancelled int32
 
+	// Edit-protection flags (atomic, used without mu)
+	// uploading = 1 when this file is being uploaded.
+	// uploadingChildren = N when this directory has N descendants uploading.
+	uploading         int32
+	uploadingChildren int32
+
 	// Children cache (directories only)
 	children map[string]*Node
 }
