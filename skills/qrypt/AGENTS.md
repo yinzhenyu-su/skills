@@ -13,9 +13,9 @@ qrypt/
 │   ├── cache/       # 内存索引 + 磁盘 batch 文件分块缓存
 │   ├── config/      # TOML 配置加载 (多路径搜索)
 │   ├── crypt/       # rclone 兼容的 EME-AES / NaCl Secretbox 加解密
+│   ├── drive/       # 存储后端抽象接口 + 驱动实现 (quark, yun139, localfs)
 │   ├── fs/          # FUSE 文件系统实现 (cgofuse)
 │   ├── log/         # lumberjack 日志轮转
-│   ├── quark/       # 夸克网盘 HTTP API 客户端
 │   ├── staging/     # 写入暂存区 (release-before-write)
 │   └── sync/        # 异步并发上传 sync loop
 ├── docs/            # 开发文档 + bug fix 记录
@@ -30,7 +30,9 @@ qrypt/
 | FUSE ops | `internal/fs/` | getattr/readdir/mkdir/write/rename/delete |
 | Encryption | `internal/crypt/` | NaCl + EME-AES, rclone compat |
 | Upload sync | `internal/sync/uploader.go` | debounce + retry for write-back |
-| Quark API | `internal/quark/` | file/upload/manage API endpoints |
+| Quark API | `internal/drive/quark/` | drive.Driver 实现: file/upload/manage API endpoints |
+| Drive Factory | `internal/drive/factory/` | 从配置创建 drive.Driver |
+| Drive interfaces | `internal/drive/driver.go` | Meta/Reader/Writer/Uploader 接口定义 |
 | Staging | `internal/staging/store.go` | release-before-write pattern |
 | Build | `go build -o qrypt ./cmd/qrypt` | single binary output |
 
