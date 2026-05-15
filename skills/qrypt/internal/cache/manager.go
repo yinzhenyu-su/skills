@@ -531,14 +531,14 @@ func (m *CacheManager) AppendOpsLog(entry *OpsLogEntry) error {
 	if err != nil {
 		return err
 	}
+	data = append(data, '\n')
 	f, err := os.OpenFile(m.opsLogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	f.Write(data)
-	f.Write([]byte("\n"))
-	return nil
+	_, err = f.Write(data)
+	return err
 }
 
 func (m *CacheManager) LoadOpsLog() ([]OpsLogEntry, error) {
@@ -652,14 +652,19 @@ func (m *CacheManager) appendPendingJournal(entry *PendingJournalEntry) error {
 	if err != nil {
 		return err
 	}
+
+	// Combine JSON + newline into a single write to prevent interleaving
+	// between concurrent goroutines (SavePendingNode / RemovePendingNode
+	// release mu before calling this).
+	data = append(data, '\n')
+
 	f, err := os.OpenFile(m.pendingJournalPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	f.Write(data)
-	f.Write([]byte("\n"))
-	return nil
+	_, err = f.Write(data)
+	return err
 }
 
 // LoadPendingJournal reads pending.journal and returns the latest non-clean
