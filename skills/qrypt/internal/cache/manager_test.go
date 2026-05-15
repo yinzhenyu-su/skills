@@ -481,3 +481,26 @@ func TestBatchDeleteNodeState_NoJournalClean(t *testing.T) {
 	}
 	_ = pn
 }
+
+func TestCacheManager_CloseCompactsJournal(t *testing.T) {
+	m := newTestManager(t)
+	m.SavePendingNode("/close_a.txt", "fa", "0", "close_a.txt", "", 1, false, nil, 0, 0, "", 0)
+	m.SavePendingNode("/close_b.txt", "fb", "0", "close_b.txt", "", 2, false, nil, 0, 0, "", 0)
+	m.RemovePendingNode("/close_b.txt")
+
+	// Close should compact the journal.
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := m.LoadPendingJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 1 {
+		t.Errorf("expected 1 entry after Close, got %d", len(recovered))
+	}
+	if _, ok := recovered["/close_a.txt"]; !ok {
+		t.Error("expected /close_a.txt to survive Close")
+	}
+}

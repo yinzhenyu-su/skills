@@ -181,7 +181,35 @@ func (fs *QryptFS) IsShuttingDown() bool {
 }
 
 func (fs *QryptFS) Shutdown() {
+	log.L.Infof("Shutdown: starting graceful shutdown...\n")
 	atomic.StoreInt32(&fs.shuttingDown, 1)
+
+	// Flush all pending staging page buffers to disk so no data is lost
+	// on restart. Do this before closing channels — workers may still be
+	// running and can safely operate on the staging store.
+	if fs.staging != nil {
+		fs.nodes.Range(func(key, value interface{}) bool {
+			n := value.(*Node)
+			n.mu.RLock()
+			localPath := n.localPath
+			n.mu.RUnlock()
+			if localPath != "" {
+				if err := fs.staging.Sync(localPath); err != nil {
+					log.L.Warnf("Shutdown: staging.Sync %s: %v\n", localPath, err)
+				}
+			}
+			return true
+		})
+	}
+
+	// Compact pending journal so restart has clean state.
+	if fs.cacheMgr != nil {
+		if err := fs.cacheMgr.Close(); err != nil {
+			log.L.Warnf("Shutdown: cacheMgr.Close: %v\n", err)
+		}
+	}
+
+	// Signal workers to drain remaining tasks.
 	close(fs.lruStop)
 	close(fs.uploadChan)
 	close(fs.metadataOpChan)
@@ -193,6 +221,8 @@ func (fs *QryptFS) Shutdown() {
 	}()
 	select {
 	case <-done:
+		log.L.Infof("Shutdown: all workers finished\n")
 	case <-time.After(30 * time.Second):
+		log.L.Warnf("Shutdown: workers did not finish within 30s\n")
 	}
 }
