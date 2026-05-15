@@ -124,7 +124,16 @@ func main() {
 	pushCmd.Flags().Int("transfers", 4, "并发传输文件数量")
 	pushCmd.Flags().Bool("dry-run", false, "只打印将要上传的文件列表，不执行真实上传")
 
-	rootCmd.AddCommand(initCmd, lsCmd, catCmd, configCmd, statusCmd, rmCmd, mvCmd, findCmd, pullCmd, pushCmd)
+	var mkdirCmd = &cobra.Command{
+		Use:   "mkdir <path>...",
+		Short: "创建目录",
+		Args:  cobra.MinimumNArgs(1),
+		Run:   runMkdir,
+	}
+	mkdirCmd.Flags().StringP("config", "f", "", "配置文件路径")
+	mkdirCmd.Flags().BoolP("parents", "p", false, "需要时创建目标目录的上层目录，但即使这些目录已存在也不报错")
+
+	rootCmd.AddCommand(initCmd, lsCmd, catCmd, configCmd, statusCmd, rmCmd, mvCmd, findCmd, pullCmd, pushCmd, mkdirCmd)
 
 	var toolCmd = &cobra.Command{
 		Use:   "tool",
