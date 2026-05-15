@@ -55,7 +55,7 @@ func (s *e2eSuite) lookup(path string) *Node {
 
 func (s *e2eSuite) mustMkdir(path string) {
 	if errc := s.fs.Mkdir(path, 0o755); errc != 0 {
-		s.t.Skipf("Mkdir(%s) returned %d — API mock may not support /file POST", path, errc)
+		s.t.Fatalf("Mkdir(%s) returned %d", path, errc)
 	}
 }
 

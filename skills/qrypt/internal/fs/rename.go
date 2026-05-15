@@ -111,12 +111,8 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 	oldNode.name = newName
 	oldNode.mu.Unlock()
 
-	fs.replaceNodePath(oldPath, newPath, oldNode)
+	fs.recursiveRename(oldPath, newPath, oldNode)
 	fs.persistPendingPath(oldPath, newPath, oldNode)
-
-	if oldNode.isFolder {
-		fs.renameSubtreePaths(oldPath, newPath)
-	}
 
 	return 0
 }
