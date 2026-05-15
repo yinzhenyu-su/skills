@@ -17,20 +17,57 @@ Qrypt 是一个跨平台的 Quark Drive 挂载工具，支持 macOS 和 Linux。
 ## 环境要求
 
 ### macOS
+
 - 安装 macFUSE：<https://macfuse.github.io/>
 - Go 1.22+
 
 ### Linux
+
 - 安装 libfuse：`sudo apt install fuse` (Debian/Ubuntu) 或 `sudo yum install fuse` (CentOS/RHEL)
 - Go 1.22+
 - 用户需要在 fuse 组：`sudo usermod -a -G fuse $USER`
 
 ## 构建
 
+### macOS（原生）
+
+需要先安装 [macFUSE](https://macfuse.github.io/)，然后：
+
 ```bash
 cd skills/qrypt
-go build -o qrypt ./cmd/qrypt
+go build -o qrypt ./cmd/qrypt    # CGO_ENABLED=1（默认）
 ```
+
+编译产物包含全部命令（`mount` 需要 CGo/macFUSE）。
+
+### Linux（原生）
+
+```bash
+sudo apt install libfuse-dev fuse  # Debian/Ubuntu
+# 或 sudo yum install fuse-devel fuse  # CentOS/RHEL
+go build -o qrypt ./cmd/qrypt      # CGO_ENABLED=1（默认）
+```
+
+编译产物包含全部命令。
+
+### 跨平台编译（macOS → Linux）
+
+如果目标机器没有 FUSE 环境，或者只需要 CLI 工具（不含 `mount` 命令）：
+
+```bash
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o qrypt-linux ./cmd/qrypt
+```
+
+`mount` 命令通过 `cgofuse` 依赖 CGo + FUSE C 库，跨平台编译时自动排除。
+
+### 构建变体对比
+
+| 场景 | mount 命令 | 其他命令 | 依赖 |
+|------|-----------|---------|------|
+| macOS 原生 | ✅ | ✅ | macFUSE |
+| Linux 原生 | ✅ | ✅ | libfuse-dev + fuse |
+| macOS→Linux 跨平台 | ❌ | ✅ | 无 |
+| macOS→Linux 跨平台 + mount | ✅（需交叉编译器） | ✅ | libfuse-dev + x86_64-linux-gnu-gcc |
 
 ## 快速开始
 
