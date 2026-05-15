@@ -107,7 +107,6 @@ func (s *e2eSuite) mustUnlink(path string) {
 }
 
 func (s *e2eSuite) writeFile(path string, data []byte) {
-	s.fs.staging.Create(path)
 	s.mustCreate(path)
 	s.mustWrite(path, data, 0)
 	s.fs.Release(path, 0)
