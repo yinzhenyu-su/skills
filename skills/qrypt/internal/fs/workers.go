@@ -242,15 +242,20 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 
 	if validTasks[0].opType == "LOCAL_CLEANUP" || validTasks[0].opType == "LOCAL_CLEANUP_DIR" {
 		log.L.Debugf("processBatchMetadataTasks: local cleanup for %d tasks\n", len(validTasks))
-		if fs.cacheMgr != nil {
-			fs.cacheMgr.BatchDeleteNodeState(finalFids, finalPaths)
-		}
+		// Remove staging files FIRST, then clean up pending-node memory.
+		// This ordering is critical for crash recovery with pending.journal:
+		// if we crash after BatchDeleteNodeState but before staging.Remove,
+		// the journal would still have a dirty entry whose staging file
+		// still exists → crash recovery would re-upload a deleted file.
 		if fs.staging != nil {
 			for _, t := range validTasks {
 				if t.node != nil && t.node.localPath != "" {
 					fs.staging.Remove(t.node.localPath)
 				}
 			}
+		}
+		if fs.cacheMgr != nil {
+			fs.cacheMgr.BatchDeleteNodeState(finalFids, finalPaths)
 		}
 		fs.markOpsDone(tasks)
 		log.L.Debugf("processBatchMetadataTasks: local cleanup done (took %v)\n", time.Since(start))
@@ -411,17 +416,18 @@ func (fs *QryptFS) asyncDelete(deleteFids, finalFids, finalPaths []string, valid
 			}
 		}
 
-		if fs.cacheMgr != nil {
-			fs.cacheMgr.BatchDeleteNodeState(finalFids, finalPaths)
-			log.L.Debugf("asyncDelete: state cleaned up for %d FIDs\n", len(finalFids))
-		}
-
+		// Remove staging files before deleting pending-node state.
+		// See LOCAL_CLEANUP above for crash-recovery ordering rationale.
 		if fs.staging != nil {
 			for _, t := range validTasks {
 				if t.node != nil && t.node.localPath != "" {
 					fs.staging.Remove(t.node.localPath)
 				}
 			}
+		}
+		if fs.cacheMgr != nil {
+			fs.cacheMgr.BatchDeleteNodeState(finalFids, finalPaths)
+			log.L.Debugf("asyncDelete: state cleaned up for %d FIDs\n", len(finalFids))
 		}
 	}
 	if err != nil {

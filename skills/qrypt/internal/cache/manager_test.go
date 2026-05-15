@@ -252,3 +252,161 @@ func TestCleanupStagingMetas(t *testing.T) {
 		t.Error("expected orphan meta to be cleaned")
 	}
 }
+
+func TestPendingJournal_DirtyThenLoad(t *testing.T) {
+	m := newTestManager(t)
+	stgPath := filepath.Join(m.StagingDir(), "stub.staging")
+	os.WriteFile(stgPath, []byte("data"), 0o644)
+	m.SavePendingNode("/a.txt", "fid_a", "p", "a.txt", stgPath, 100, false, nil, 0, 0, "", 0)
+
+	recovered, err := m.LoadPendingJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pn, ok := recovered["/a.txt"]
+	if !ok {
+		t.Fatal("expected /a.txt to be recovered")
+	}
+	if pn.Fid != "fid_a" || pn.Size != 100 {
+		t.Errorf("unexpected pending node: fid=%s size=%d", pn.Fid, pn.Size)
+	}
+}
+
+func TestPendingJournal_DirtyThenClean(t *testing.T) {
+	m := newTestManager(t)
+	m.SavePendingNode("/b.txt", "fid_b", "p", "b.txt", "", 50, false, nil, 0, 0, "", 0)
+	m.RemovePendingNode("/b.txt")
+
+	recovered, err := m.LoadPendingJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := recovered["/b.txt"]; ok {
+		t.Error("expected /b.txt to NOT be recovered after clean")
+	}
+}
+
+func TestPendingJournal_DirtyThenUpdate(t *testing.T) {
+	m := newTestManager(t)
+	m.SavePendingNode("/c.txt", "fid_c", "p", "c.txt", "", 10, false, nil, 0, 0, "", 0)
+	m.UpdatePendingNodeUpload("/c.txt", "up_42")
+	m.UpdatePendingNodeLastPart("/c.txt", 7)
+
+	recovered, err := m.LoadPendingJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pn, ok := recovered["/c.txt"]
+	if !ok {
+		t.Fatal("expected /c.txt to be recovered")
+	}
+	if pn.UploadID != "up_42" {
+		t.Errorf("expected upload_id up_42, got %s", pn.UploadID)
+	}
+	if pn.LastPart != 7 {
+		t.Errorf("expected last_part 7, got %d", pn.LastPart)
+	}
+}
+
+func TestPendingJournal_RecoveryMissingStagingFile(t *testing.T) {
+	m := newTestManager(t)
+	stagingFile := filepath.Join(m.CacheDir(), "staging", "missing.staging")
+	m.SavePendingNode("/missing.txt", "fid_m", "p", "missing.txt", stagingFile, 100, false, nil, 0, 0, "", 0)
+
+	// Don't create the staging file → recovery should drop this entry.
+	recovered, err := m.LoadPendingJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := recovered["/missing.txt"]; ok {
+		t.Error("expected /missing.txt to be dropped when staging file is missing")
+	}
+}
+
+func TestPendingJournal_CrossSessionPersistence(t *testing.T) {
+	dir := t.TempDir()
+
+	// Session 1: create and save a pending node
+	{
+		m1, err := NewCacheManager(dir, 100*1024*1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m1.SavePendingNode("/persist.txt", "fid_p", "0", "persist.txt",
+			filepath.Join(dir, "staging", "persist.staging"), 200, false, nil, 0, 0, "", 0)
+		// Create the staging file so recovery succeeds
+		os.WriteFile(filepath.Join(dir, "staging", "persist.staging"), []byte("data"), 0o644)
+		_ = m1
+	}
+
+	// Session 2: new CacheManager should recover the pending node from journal
+	{
+		m2, err := NewCacheManager(dir, 100*1024*1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes := m2.GetPendingNodes()
+		if len(nodes) != 1 {
+			t.Fatalf("expected 1 recovered pending node, got %d", len(nodes))
+		}
+		if nodes[0].Path != "/persist.txt" {
+			t.Errorf("expected /persist.txt, got %s", nodes[0].Path)
+		}
+		if nodes[0].Size != 200 {
+			t.Errorf("expected size 200, got %d", nodes[0].Size)
+		}
+	}
+}
+
+func TestPendingJournal_CrossSessionCleanAfterUpload(t *testing.T) {
+	dir := t.TempDir()
+
+	// Session 1: create, then remove (simulates completed upload)
+	{
+		m1, err := NewCacheManager(dir, 100*1024*1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m1.SavePendingNode("/done.txt", "fid_d", "0", "done.txt",
+			filepath.Join(dir, "staging", "done.staging"), 50, false, nil, 0, 0, "", 0)
+		m1.RemovePendingNode("/done.txt")
+		_ = m1
+	}
+
+	// Session 2: should have no pending nodes
+	{
+		m2, err := NewCacheManager(dir, 100*1024*1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes := m2.GetPendingNodes()
+		if len(nodes) != 0 {
+			t.Errorf("expected 0 pending nodes after clean, got %d", len(nodes))
+		}
+	}
+}
+
+func TestPendingJournal_Compact(t *testing.T) {
+	m := newTestManager(t)
+
+	m.SavePendingNode("/compact_a.txt", "fid_ca", "0", "compact_a.txt", "", 10, false, nil, 0, 0, "", 0)
+	m.SavePendingNode("/compact_b.txt", "fid_cb", "0", "compact_b.txt", "", 20, false, nil, 0, 0, "", 0)
+	m.RemovePendingNode("/compact_b.txt")
+
+	// Before compact: 4 entries (2 dirty + 2 clean)
+	// After compact: 1 entry (only /compact_a.txt)
+	if err := m.compactPendingJournal(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := m.LoadPendingJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 1 {
+		t.Errorf("expected 1 entry after compact, got %d", len(recovered))
+	}
+	if _, ok := recovered["/compact_b.txt"]; ok {
+		t.Error("/compact_b.txt should not exist after clean")
+	}
+}
