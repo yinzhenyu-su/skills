@@ -255,9 +255,17 @@ func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 
 	node.mu.RLock()
 	dirty := node.isDirty
+	localPath := node.localPath
 	node.mu.RUnlock()
 
 	if dirty {
+		// Flush staging page buffer to disk before queuing the upload,
+		// so the staging file on disk reflects all data written so far.
+		// This ensures crash recovery via pending.journal sees a complete
+		// file rather than a buffer that was only in memory.
+		if localPath != "" && fs.staging != nil {
+			fs.staging.Sync(localPath)
+		}
 		fs.enqueueSyncDelay(node, 200*time.Millisecond)
 	}
 	return 0
