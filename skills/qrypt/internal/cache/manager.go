@@ -13,12 +13,45 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/staging"
 )
 
+// OpsLogEntry is retained for compatibility with external callers
+// (fs/workers.go logOpsBatch / replayOpsLog). Internally all journal
+// entries are stored as JournalEntry in a single pending.jsonl file.
 type OpsLogEntry struct {
 	OpType    string `json:"op"`
 	Path      string `json:"path"`
 	Fid       string `json:"fid,omitempty"`
 	Timestamp int64  `json:"ts"`
 	Done      bool   `json:"done"`
+}
+
+// JournalOp values
+const (
+	JOpDelete    = "delete"
+	JOpDeleteDone = "delete_done"
+	JOpDirty    = "dirty"
+	JOpUpdate   = "update"
+	JOpClean    = "clean"
+)
+
+// JournalEntry is the unified log entry for pending.jsonl.
+// It covers both remote operations (delete) and local dirty-file state
+// (dirty, update, clean).
+type JournalEntry struct {
+	Op        string `json:"op"`
+	Path      string `json:"path,omitempty"`
+	Fid       string `json:"fid,omitempty"`
+	Timestamp int64  `json:"ts,omitempty"`
+	// Dirty-file fields (dirty / update / clean)
+	ParentFid string `json:"parent_fid,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Stg       string `json:"stg,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	IsFolder  bool   `json:"is_folder,omitempty"`
+	Nonce     []byte `json:"nonce,omitempty"`
+	BaseMtime int64  `json:"base_mtime,omitempty"`
+	BaseSize  int64  `json:"base_size,omitempty"`
+	UploadID  string `json:"upload_id,omitempty"`
+	LastPart  int    `json:"last_part,omitempty"`
 }
 
 const CacheBatchBlocks = 16
@@ -112,15 +145,19 @@ func NewCacheManager(cacheDir string, maxSize int64) (*CacheManager, error) {
 		chunkIndex:   make(map[string]*fileChunkCache),
 	}
 
-	// Recover dirty-file state from journal before cleaning up, so
-	// staging files referenced by journal entries are not treated as orphans.
-	recovered, err := m.LoadPendingJournal()
+	// Remove old journal formats after migration to unified pending.jsonl.
+	os.Remove(filepath.Join(cacheDir, "ops.jsonl"))
+	os.Remove(filepath.Join(cacheDir, "pending.journal"))
+
+	// Recover state from unified journal before cleaning up.
+	deleteOps, recovered, err := m.loadJournal()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "LoadPendingJournal: %v (proceeding with empty state)\n", err)
-	} else if len(recovered) > 0 {
+		fmt.Fprintf(os.Stderr, "loadJournal: %v (proceeding with empty state)\n", err)
+	} else {
 		for path, pn := range recovered {
 			m.pendingNodes[path] = pn
 		}
+		_ = deleteOps
 	}
 
 	m.cleanupOrphanedStagingFiles()
@@ -345,8 +382,8 @@ func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath str
 	}
 	m.mu.Unlock()
 
-	m.appendPendingJournal(&PendingJournalEntry{
-		Op:        PJOpDirty,
+	m.appendJournal(&JournalEntry{
+		Op:        JOpDirty,
 		Path:      path,
 		Fid:       fid,
 		ParentFid: parentFid,
@@ -368,10 +405,7 @@ func (m *CacheManager) RemovePendingNode(path string) error {
 	delete(m.pendingNodes, path)
 	m.mu.Unlock()
 
-	m.appendPendingJournal(&PendingJournalEntry{
-		Op:   PJOpClean,
-		Path: path,
-	})
+	m.appendJournal(&JournalEntry{Op: JOpClean, Path: path})
 	return nil
 }
 
@@ -382,11 +416,7 @@ func (m *CacheManager) UpdatePendingNodeUpload(path, uploadID string) error {
 	}
 	m.mu.Unlock()
 
-	m.appendPendingJournal(&PendingJournalEntry{
-		Op:       PJOpUpdate,
-		Path:     path,
-		UploadID: uploadID,
-	})
+	m.appendJournal(&JournalEntry{Op: JOpUpdate, Path: path, UploadID: uploadID})
 	return nil
 }
 
@@ -397,11 +427,7 @@ func (m *CacheManager) UpdatePendingNodeLastPart(path string, lastPart int) erro
 	}
 	m.mu.Unlock()
 
-	m.appendPendingJournal(&PendingJournalEntry{
-		Op:       PJOpUpdate,
-		Path:     path,
-		LastPart: lastPart,
-	})
+	m.appendJournal(&JournalEntry{Op: JOpUpdate, Path: path, LastPart: lastPart})
 	return nil
 }
 
@@ -519,20 +545,20 @@ func sortByAccessTime(chunks []struct {
 
 const maintenanceInterval = 10 * time.Minute
 
-// --- Ops Log (Journaling) ---
+// --- Unified Journal (pending.jsonl) ---
 
-func (m *CacheManager) opsLogPath() string {
-	return filepath.Join(m.cacheDir, "ops.jsonl")
+func (m *CacheManager) journalPath() string {
+	return filepath.Join(m.cacheDir, "pending.jsonl")
 }
 
-func (m *CacheManager) AppendOpsLog(entry *OpsLogEntry) error {
+func (m *CacheManager) appendJournal(entry *JournalEntry) error {
 	entry.Timestamp = time.Now().UnixNano()
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	f, err := os.OpenFile(m.opsLogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(m.journalPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -541,152 +567,26 @@ func (m *CacheManager) AppendOpsLog(entry *OpsLogEntry) error {
 	return err
 }
 
-func (m *CacheManager) LoadOpsLog() ([]OpsLogEntry, error) {
-	f, err := os.Open(m.opsLogPath())
+// loadJournal reads pending.jsonl and returns:
+//   - deleteOps: pending delete entries (those not yet completed via delete_done)
+//   - pending:   dirty-file nodes (path → PendingNode, cross-checked against staging)
+func (m *CacheManager) loadJournal() (deleteOps []OpsLogEntry, pending map[string]*PendingNode, err error) {
+	f, err := os.Open(m.journalPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
 
-	var entries []OpsLogEntry
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var entry OpsLogEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			continue
-		}
-		entries = append(entries, entry)
+	type dirtyState struct {
+		entry  *JournalEntry
+		update *JournalEntry
+		cleaned bool
 	}
-	return entries, scanner.Err()
-}
-
-func (m *CacheManager) MarkOpsLogDone(path string) error {
-	entries, err := m.LoadOpsLog()
-	if err != nil {
-		return err
-	}
-	for i := range entries {
-		if entries[i].Path == path && !entries[i].Done {
-			entries[i].Done = true
-		}
-	}
-	return m.rewriteOpsLog(entries)
-}
-
-func (m *CacheManager) PurgeOpsLog(olderThan time.Duration) error {
-	entries, err := m.LoadOpsLog()
-	if err != nil {
-		return err
-	}
-	cutoff := time.Now().Add(-olderThan)
-	var kept []OpsLogEntry
-	for _, e := range entries {
-		ts := time.Unix(0, e.Timestamp)
-		if e.Done && ts.Before(cutoff) {
-			continue
-		}
-		kept = append(kept, e)
-	}
-	return m.rewriteOpsLog(kept)
-}
-
-func (m *CacheManager) rewriteOpsLog(entries []OpsLogEntry) error {
-	if len(entries) == 0 {
-		os.Remove(m.opsLogPath())
-		return nil
-	}
-	f, err := os.Create(m.opsLogPath())
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	for _, e := range entries {
-		data, _ := json.Marshal(e)
-		f.Write(data)
-		f.Write([]byte("\n"))
-	}
-	return nil
-}
-
-// --- Pending Journal (crash-recovery for dirty files) ---
-
-type PendingJournalOp string
-
-const (
-	PJOpDirty  PendingJournalOp = "dirty"
-	PJOpUpdate PendingJournalOp = "update"
-	PJOpClean  PendingJournalOp = "clean"
-)
-
-type PendingJournalEntry struct {
-	Op        PendingJournalOp `json:"op"`
-	Path      string           `json:"path"`
-	Fid       string           `json:"fid,omitempty"`
-	ParentFid string           `json:"parent_fid,omitempty"`
-	Name      string           `json:"name,omitempty"`
-	Stg       string           `json:"stg,omitempty"`
-	Size      int64            `json:"size,omitempty"`
-	IsFolder  bool             `json:"is_folder,omitempty"`
-	Nonce     []byte           `json:"nonce,omitempty"`
-	BaseMtime int64            `json:"base_mtime,omitempty"`
-	BaseSize  int64            `json:"base_size,omitempty"`
-	UploadID  string           `json:"upload_id,omitempty"`
-	LastPart  int              `json:"last_part,omitempty"`
-	Mtime     int64            `json:"ts"`
-}
-
-func (m *CacheManager) pendingJournalPath() string {
-	return filepath.Join(m.cacheDir, "pending.journal")
-}
-
-func (m *CacheManager) appendPendingJournal(entry *PendingJournalEntry) error {
-	entry.Mtime = time.Now().UnixNano()
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-
-	// Combine JSON + newline into a single write to prevent interleaving
-	// between concurrent goroutines (SavePendingNode / RemovePendingNode
-	// release mu before calling this).
-	data = append(data, '\n')
-
-	f, err := os.OpenFile(m.pendingJournalPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.Write(data)
-	return err
-}
-
-// LoadPendingJournal reads pending.journal and returns the latest non-clean
-// state for each path. The staging file is cross-checked: entries whose
-// staging file no longer exists are dropped and a 'clean' entry is written.
-func (m *CacheManager) LoadPendingJournal() (map[string]*PendingNode, error) {
-	f, err := os.Open(m.pendingJournalPath())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer f.Close()
-
-	type state struct {
-		entry  *PendingJournalEntry // latest dirty
-		update *PendingJournalEntry // latest update after dirty
-		cleaned bool                // true if a clean follows dirty
-	}
-	byPath := make(map[string]*state)
-	order := make([]string, 0) // to preserve ordering for stable results
+	dirtyByPath := make(map[string]*dirtyState)
+	order := make([]string, 0)
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -694,25 +594,39 @@ func (m *CacheManager) LoadPendingJournal() (map[string]*PendingNode, error) {
 		if len(line) == 0 {
 			continue
 		}
-		var entry PendingJournalEntry
+		var entry JournalEntry
 		if err := json.Unmarshal(line, &entry); err != nil {
 			continue
 		}
 
 		switch entry.Op {
-		case PJOpDirty:
-			if _, ok := byPath[entry.Path]; !ok {
+		case JOpDelete:
+			deleteOps = append(deleteOps, OpsLogEntry{
+				OpType:    "DELETE",
+				Path:      entry.Path,
+				Fid:       entry.Fid,
+				Timestamp: entry.Timestamp,
+				Done:      false,
+			})
+		case JOpDeleteDone:
+			for i := range deleteOps {
+				if deleteOps[i].Path == entry.Path {
+					deleteOps[i].Done = true
+				}
+			}
+		case JOpDirty:
+			if _, ok := dirtyByPath[entry.Path]; !ok {
 				order = append(order, entry.Path)
 			}
-			byPath[entry.Path] = &state{
+			dirtyByPath[entry.Path] = &dirtyState{
 				entry:  &entry,
 				update: nil,
 				cleaned: false,
 			}
-		case PJOpUpdate:
-			if s, ok := byPath[entry.Path]; ok && !s.cleaned {
+		case JOpUpdate:
+			if s, ok := dirtyByPath[entry.Path]; ok && !s.cleaned {
 				if s.update == nil {
-					s.update = &PendingJournalEntry{}
+					s.update = &JournalEntry{}
 				}
 				if entry.UploadID != "" {
 					s.update.UploadID = entry.UploadID
@@ -724,33 +638,29 @@ func (m *CacheManager) LoadPendingJournal() (map[string]*PendingNode, error) {
 					s.update.Size = entry.Size
 				}
 			}
-		case PJOpClean:
-			if _, ok := byPath[entry.Path]; ok {
-				byPath[entry.Path] = &state{cleaned: true}
+		case JOpClean:
+			if _, ok := dirtyByPath[entry.Path]; ok {
+				dirtyByPath[entry.Path] = &dirtyState{cleaned: true}
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	result := make(map[string]*PendingNode)
+	pending = make(map[string]*PendingNode)
 	var toClean []string
-
 	for _, path := range order {
-		s := byPath[path]
+		s := dirtyByPath[path]
 		if s == nil || s.cleaned || s.entry == nil {
 			continue
 		}
-
-		// Cross-check: staging file must exist on disk.
 		if s.entry.Stg != "" {
 			if _, statErr := os.Stat(s.entry.Stg); os.IsNotExist(statErr) {
 				toClean = append(toClean, path)
 				continue
 			}
 		}
-
 		pn := &PendingNode{
 			Path:      path,
 			Fid:       s.entry.Fid,
@@ -763,8 +673,6 @@ func (m *CacheManager) LoadPendingJournal() (map[string]*PendingNode, error) {
 			UploadID:  s.entry.UploadID,
 			LastPart:  s.entry.LastPart,
 		}
-
-		// Merge update fields if present (may override values from compacted dirty entry).
 		if s.update != nil {
 			if s.update.Size > 0 {
 				pn.Size = s.update.Size
@@ -776,73 +684,117 @@ func (m *CacheManager) LoadPendingJournal() (map[string]*PendingNode, error) {
 				pn.LastPart = s.update.LastPart
 			}
 		}
-
-		result[path] = pn
+		pending[path] = pn
 	}
 
-	// Clean up dangling journal entries (staging file missing).
 	for _, path := range toClean {
-		m.appendPendingJournal(&PendingJournalEntry{Op: PJOpClean, Path: path})
+		m.appendJournal(&JournalEntry{Op: JOpClean, Path: path})
 	}
 
-	return result, nil
+	return deleteOps, pending, nil
 }
 
-// rewritePendingJournal atomically rewrites the journal file for the currently
-// active pending nodes, removing stale entries.
-func (m *CacheManager) rewritePendingJournal() error {
-	m.mu.RLock()
-	nodes := make([]*PendingNode, 0, len(m.pendingNodes))
-	for _, n := range m.pendingNodes {
-		nodes = append(nodes, n)
+// compactJournal rewrites the unified file removing completed entries:
+//   - delete + delete_done pairs are removed (the delete is done)
+//   - dirty + clean pairs are removed (the upload is done)
+//   - remaining entries are written to a new file atomically
+func (m *CacheManager) compactJournal() error {
+	deleteOps, pending, err := m.loadJournal()
+	if err != nil {
+		return err
 	}
-	m.mu.RUnlock()
 
-	if len(nodes) == 0 {
-		os.Remove(m.pendingJournalPath())
+	// Count active (not done) delete entries.
+	activeDeletes := 0
+	for _, e := range deleteOps {
+		if !e.Done {
+			activeDeletes++
+		}
+	}
+
+	if len(pending) == 0 && activeDeletes == 0 {
+		os.Remove(m.journalPath())
 		return nil
 	}
 
-	tmpPath := m.pendingJournalPath() + ".tmp"
+	tmpPath := m.journalPath() + ".tmp"
 	f, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	for _, n := range nodes {
-		entry := &PendingJournalEntry{
-			Op:        PJOpDirty,
-			Path:      n.Path,
-			Fid:       n.Fid,
-			ParentFid: n.ParentFid,
-			Name:      n.Name,
-			Stg:       n.LocalPath,
-			Size:      n.Size,
-			IsFolder:  n.IsFolder,
-			Nonce:     n.Nonce,
-			BaseMtime: n.BaseServerMtime,
-			BaseSize:  n.BaseServerSize,
-			UploadID:  n.UploadID,
-			LastPart:  n.LastPart,
+	// Write active (not done) delete entries.
+	for _, e := range deleteOps {
+		if e.Done {
+			continue
+		}
+		entry := &JournalEntry{
+			Op:   JOpDelete,
+			Path: e.Path,
+			Fid:  e.Fid,
 		}
 		data, _ := json.Marshal(entry)
 		f.Write(data)
 		f.Write([]byte("\n"))
 	}
+
+	// Write active dirty-file entries.
+	for _, pn := range pending {
+		entry := &JournalEntry{
+			Op:        JOpDirty,
+			Path:      pn.Path,
+			Fid:       pn.Fid,
+			ParentFid: pn.ParentFid,
+			Name:      pn.Name,
+			Stg:       pn.LocalPath,
+			Size:      pn.Size,
+			IsFolder:  pn.IsFolder,
+			Nonce:     pn.Nonce,
+			UploadID:  pn.UploadID,
+			LastPart:  pn.LastPart,
+		}
+		data, _ := json.Marshal(entry)
+		f.Write(data)
+		f.Write([]byte("\n"))
+	}
+
 	f.Close()
-	return os.Rename(tmpPath, m.pendingJournalPath())
+	return os.Rename(tmpPath, m.journalPath())
 }
 
-func (m *CacheManager) compactPendingJournal() error {
-	return m.rewritePendingJournal()
+// --- Compatibility wrappers (callers in fs/ use these types) ---
+
+func (m *CacheManager) AppendOpsLog(entry *OpsLogEntry) error {
+	return m.appendJournal(&JournalEntry{
+		Op:   JOpDelete,
+		Path: entry.Path,
+		Fid:  entry.Fid,
+	})
+}
+
+func (m *CacheManager) LoadOpsLog() ([]OpsLogEntry, error) {
+	deleteOps, _, err := m.loadJournal()
+	return deleteOps, err
+}
+
+// MarkOpsLogDone appends a delete_done marker instead of rewriting the file.
+// Compaction will remove the original delete + this marker as a pair.
+func (m *CacheManager) MarkOpsLogDone(path string) error {
+	return m.appendJournal(&JournalEntry{
+		Op:   JOpDeleteDone,
+		Path: path,
+	})
+}
+
+func (m *CacheManager) PurgeOpsLog(_ time.Duration) error {
+	return m.compactJournal()
 }
 
 func (m *CacheManager) Maintenance() error {
 	m.EvictIfNeeded(m.maxSize * 7 / 10)
 	m.CleanupStagingMetas(24 * time.Hour)
-	m.PurgeOpsLog(72 * time.Hour)
-	m.compactPendingJournal()
+	m.compactJournal()
 	m.reportStaleUploadIDs()
 	return nil
 }
@@ -878,7 +830,7 @@ func (m *CacheManager) MaintenanceStart() {
 }
 
 func (m *CacheManager) Close() error {
-	return m.compactPendingJournal()
+	return m.compactJournal()
 }
 
 // --- Staging Cleanup (kept for compatibility) ---
