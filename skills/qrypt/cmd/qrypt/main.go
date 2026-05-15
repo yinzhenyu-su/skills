@@ -44,6 +44,11 @@ func main() {
 	lsCmd.Flags().StringP("config", "f", "", "配置文件路径")
 	lsCmd.Flags().BoolP("long", "l", false, "长格式显示")
 	lsCmd.Flags().BoolP("encrypted", "e", false, "同时显示加密文件名")
+	lsCmd.Flags().BoolP("recursive", "R", false, "递归列出所有子目录")
+	lsCmd.Flags().BoolP("human-readable", "h", false, "以可读格式显示大小 (与 -l 一起使用)")
+	lsCmd.Flags().BoolP("sort-time", "t", false, "按修改时间排序 (最新在前)")
+	lsCmd.Flags().BoolP("sort-size", "S", false, "按文件大小排序 (最大在前)")
+	lsCmd.Flags().Bool("json", false, "以 JSON 格式输出")
 
 	var catCmd = &cobra.Command{
 		Use:   "cat <path>",
@@ -74,6 +79,11 @@ func main() {
 		Run:   runRm,
 	}
 	rmCmd.Flags().StringP("config", "f", "", "配置文件路径")
+	rmCmd.Flags().BoolP("recursive", "r", false, "递归删除目录及其内容")
+	rmCmd.Flags().BoolP("recursive-upper", "R", false, "等同于 -r")
+	rmCmd.Flags().BoolP("force", "F", false, "强制删除，忽略不存在的文件，不提示") // Note: using F as shorthand since 'f' is config
+	rmCmd.Flags().BoolP("interactive", "i", false, "每次删除前进行交互式确认")
+	rmCmd.Flags().Bool("dry-run", false, "只打印将要删除的文件列表，不执行真实删除")
 
 	var mvCmd = &cobra.Command{
 		Use:   "mv <src> <dst>",
@@ -82,6 +92,8 @@ func main() {
 		Run:   runMv,
 	}
 	mvCmd.Flags().StringP("config", "f", "", "配置文件路径")
+	mvCmd.Flags().BoolP("interactive", "i", false, "覆盖目标文件前提示")
+	mvCmd.Flags().BoolP("no-clobber", "n", false, "不覆盖已存在的文件")
 
 	var findCmd = &cobra.Command{
 		Use:   "find [path] <pattern>",
@@ -109,6 +121,9 @@ func main() {
 		Run:   runPull,
 	}
 	pullCmd.Flags().StringP("config", "f", "", "配置文件路径")
+	pullCmd.Flags().BoolP("update", "u", false, "增量同步：跳过目标已存在且更新的文件")
+	pullCmd.Flags().Int("transfers", 4, "并发传输文件数量")
+	pullCmd.Flags().Bool("dry-run", false, "只打印将要下载的文件列表，不执行真实下载")
 
 	var pushCmd = &cobra.Command{
 		Use:   "push <local> [remote]",
@@ -117,6 +132,9 @@ func main() {
 		Run:   runPush,
 	}
 	pushCmd.Flags().StringP("config", "f", "", "配置文件路径")
+	pushCmd.Flags().BoolP("update", "u", false, "跳过目标端大小一致的已存在文件")
+	pushCmd.Flags().Int("transfers", 4, "并发传输文件数量")
+	pushCmd.Flags().Bool("dry-run", false, "只打印将要上传的文件列表，不执行真实上传")
 
 	rootCmd.AddCommand(mountCmd, initCmd, lsCmd, catCmd, configCmd, statusCmd, rmCmd, mvCmd, findCmd, pullCmd, pushCmd)
 

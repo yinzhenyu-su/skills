@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -27,6 +28,9 @@ func runMv(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	interactive, _ := cmd.Flags().GetBool("interactive")
+	noClobber, _ := cmd.Flags().GetBool("no-clobber")
+
 	srcPath := args[0]
 	dstArg := args[1]
 	fullSrcPath := resolveFullPath(cfg.RootPath(), srcPath)
@@ -37,10 +41,33 @@ func runMv(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	moveIntoDir := strings.HasSuffix(dstArg, "/") || strings.HasSuffix(dstArg, "/ ")
+	moveIntoDir := strings.HasSuffix(dstArg, "/")
 
 	var dstName string
 	var dstParentFid string
+
+	// Helper function to resolve the target name from the source FID
+	resolveTargetNameFromSource := func() string {
+		srcParentPath := filepath.Dir(fullSrcPath)
+		srcParentFid, err := resolver.ResolvePath(context.Background(), srcParentPath)
+		if err != nil {
+			return ""
+		}
+		entries, err := drv.List(context.Background(), srcParentFid)
+		if err != nil {
+			return ""
+		}
+		for _, e := range entries {
+			if e.ID == srcFid {
+				decName, decErr := cipher.DecryptSegment(e.Name)
+				if decErr == nil {
+					return cipher.EncryptSegment(decName)
+				}
+				return e.Name
+			}
+		}
+		return ""
+	}
 
 	if moveIntoDir {
 		fullDstDir := resolveFullPath(cfg.RootPath(), dstArg)
@@ -49,29 +76,7 @@ func runMv(cmd *cobra.Command, args []string) {
 			fmt.Printf("无法解析目标目录: %v\n", err)
 			os.Exit(1)
 		}
-
-		srcParentPath := filepath.Dir(fullSrcPath)
-		srcParentFid, err := resolver.ResolvePath(context.Background(), srcParentPath)
-		if err != nil {
-			fmt.Printf("无法解析源目录: %v\n", err)
-			os.Exit(1)
-		}
-		entries, err := drv.List(context.Background(), srcParentFid)
-		if err != nil {
-			fmt.Printf("无法列出文件: %v\n", err)
-			os.Exit(1)
-		}
-		for _, e := range entries {
-			if e.ID == srcFid {
-				decName, decErr := cipher.DecryptSegment(e.Name)
-				if decErr == nil {
-					dstName = cipher.EncryptSegment(decName)
-				} else {
-					dstName = e.Name
-				}
-				break
-			}
-		}
+		dstName = resolveTargetNameFromSource()
 		if dstName == "" {
 			fmt.Printf("无法确定文件名\n")
 			os.Exit(1)
@@ -96,7 +101,6 @@ func runMv(cmd *cobra.Command, args []string) {
 				decName, decErr := cipher.DecryptSegment(e.Name)
 				if decErr == nil && decName == dstNameArg && e.IsDir {
 					dstParentFid = e.ID
-					dstName = ""
 					moveIntoDir = true
 					break
 				}
@@ -105,10 +109,42 @@ func runMv(cmd *cobra.Command, args []string) {
 
 		if !moveIntoDir {
 			dstName = cipher.EncryptSegment(dstNameArg)
+		} else {
+			dstName = resolveTargetNameFromSource()
+			if dstName == "" {
+				fmt.Printf("无法确定文件名\n")
+				os.Exit(1)
+			}
 		}
 	}
 
 	ctx := context.Background()
+
+	// Check collision
+	existingEntries, err := drv.List(ctx, dstParentFid)
+	if err == nil {
+		for _, e := range existingEntries {
+			if e.Name == dstName && e.ID != srcFid {
+				if noClobber {
+					fmt.Printf("跳过: 目标已存在 (-n/--no-clobber)\n")
+					return
+				}
+				if interactive {
+					fmt.Printf("覆盖目标 %s? (y/N): ", dstArg)
+					reader := bufio.NewReader(os.Stdin)
+					response, _ := reader.ReadString('\n')
+					response = strings.TrimSpace(strings.ToLower(response))
+					if response != "y" && response != "yes" {
+						fmt.Printf("已取消移动: %s\n", srcPath)
+						return
+					}
+				}
+				// Remove existing to simulate overwrite and prevent duplicates
+				_ = w.Remove(ctx, e)
+				break
+			}
+		}
+	}
 
 	srcParentPath := filepath.Dir(fullSrcPath)
 	srcParentFid, err := resolver.ResolvePath(context.Background(), srcParentPath)
@@ -118,7 +154,7 @@ func runMv(cmd *cobra.Command, args []string) {
 	}
 
 	needsMove := srcParentFid != dstParentFid
-	if needsMove || moveIntoDir {
+	if needsMove {
 		moveEntry := drive.Entry{ID: srcFid}
 		if err := w.Move(ctx, moveEntry, dstParentFid); err != nil {
 			fmt.Printf("移动失败: %v\n", err)
@@ -137,5 +173,5 @@ func runMv(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	fmt.Printf("已重命名: %s → %s\n", srcPath, dstArg)
+	fmt.Printf("已移动: %s → %s\n", srcPath, dstArg)
 }
