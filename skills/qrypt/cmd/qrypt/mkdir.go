@@ -29,7 +29,7 @@ func runMkdir(cmd *cobra.Command, args []string) {
 	for _, userPath := range args {
 		fullPath := resolveFullPath(rootPath, userPath)
 
-		err := createDirectory(context.Background(), drv, w, cipher, fullPath, parents)
+		err := createDirectory(context.Background(), drv, w, cipher, fullPath, userPath, parents)
 		if err != nil {
 			fmt.Printf("创建目录失败: %s: %v\n", userPath, err)
 			os.Exit(1)
@@ -37,12 +37,12 @@ func runMkdir(cmd *cobra.Command, args []string) {
 	}
 }
 
-func createDirectory(ctx context.Context, drv drive.Driver, w drive.Writer, cipher *crypt.RcloneCipher, fullPath string, parents bool) error {
-	segments := strings.Split(strings.Trim(fullPath, "/"), "/")
+func createDirectory(ctx context.Context, drv drive.Driver, w drive.Writer, cipher *crypt.RcloneCipher, fullPath, userPath string, parents bool) error {
 	currentFid := "0"
 
 	// If not recursive, we just resolve up to the parent
 	if !parents {
+		segments := strings.Split(strings.Trim(fullPath, "/"), "/")
 		if len(segments) > 1 {
 			parentPath := filepath.Dir("/" + strings.Trim(fullPath, "/"))
 			if resolver, ok := drv.(pathResolver); ok {
@@ -83,7 +83,10 @@ func createDirectory(ctx context.Context, drv drive.Driver, w drive.Writer, ciph
 		return err
 	}
 
-	// Recursive (-p)
+	// Recursive (-p): iterate only the user-provided path segments,
+	// not the fullPath which includes the config root prefix.
+	userRel := strings.TrimLeft(userPath, "/")
+	segments := strings.Split(userRel, "/")
 	for _, seg := range segments {
 		if seg == "" {
 			continue

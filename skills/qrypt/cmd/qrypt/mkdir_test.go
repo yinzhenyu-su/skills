@@ -67,7 +67,7 @@ func TestCreateDirectory(t *testing.T) {
 		m := &mockMkdirDriver{
 			entries: make(map[string][]drive.Entry),
 		}
-		err := createDirectory(ctx, m, m, cipher, "/newdir", false)
+		err := createDirectory(ctx, m, m, cipher, "/newdir", "/newdir", false)
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
@@ -81,7 +81,7 @@ func TestCreateDirectory(t *testing.T) {
 		m := &mockMkdirDriver{
 			entries: make(map[string][]drive.Entry),
 		}
-		err := createDirectory(ctx, m, m, cipher, "/a/b/c", true)
+		err := createDirectory(ctx, m, m, cipher, "/a/b/c", "/a/b/c", true)
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
@@ -105,7 +105,7 @@ func TestCreateDirectory(t *testing.T) {
 		m := &mockMkdirDriver{
 			entries: make(map[string][]drive.Entry),
 		}
-		err := createDirectory(ctx, m, m, cipher, "/a/b", false)
+		err := createDirectory(ctx, m, m, cipher, "/a/b", "/a/b", false)
 		if err == nil {
 			t.Errorf("expected error for missing parent, got nil")
 		}
@@ -118,7 +118,7 @@ func TestCreateDirectory(t *testing.T) {
 				"0": {{ID: "fid_a", Name: wantA, IsDir: true}},
 			},
 		}
-		err := createDirectory(ctx, m, m, cipher, "/a", true)
+		err := createDirectory(ctx, m, m, cipher, "/a", "/a", true)
 		if err != nil {
 			t.Errorf("expected no error for existing dir with parents=true, got %v", err)
 		}
@@ -134,7 +134,7 @@ func TestCreateDirectory(t *testing.T) {
 				"0": {{ID: "fid_file", Name: wantA, IsDir: false}},
 			},
 		}
-		err := createDirectory(ctx, m, m, cipher, "/a/b", true)
+		err := createDirectory(ctx, m, m, cipher, "/a/b", "/a/b", true)
 		if err == nil || !strings.Contains(err.Error(), "路径冲突") {
 			t.Errorf("expected conflict error, got %v", err)
 		}
