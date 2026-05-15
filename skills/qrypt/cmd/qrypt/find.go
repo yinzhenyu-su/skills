@@ -339,7 +339,7 @@ func runFind(cmd *cobra.Command, args []string) {
 	}
 
 	f := newFinder(listAdapter{drv: drv}, cipher, opts)
-	matched := f.run(rootFid, fullRootPath)
+	matched := f.run(rootFid, rootPath)
 
 	if opts.countOnly {
 		fmt.Println(matched)
