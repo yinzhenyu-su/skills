@@ -403,9 +403,17 @@ func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath str
 func (m *CacheManager) RemovePendingNode(path string) error {
 	m.mu.Lock()
 	delete(m.pendingNodes, path)
+	empty := len(m.pendingNodes) == 0
 	m.mu.Unlock()
 
 	m.appendJournal(&JournalEntry{Op: JOpClean, Path: path})
+
+	// If no dirty files remain, immediately compact the journal to remove
+	// the dirty+clean pair just written. This prevents the journal from
+	// accumulating stale entries between maintenance cycles.
+	if empty {
+		m.compactJournal()
+	}
 	return nil
 }
 
