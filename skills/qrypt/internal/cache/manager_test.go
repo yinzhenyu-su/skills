@@ -17,6 +17,16 @@ func newTestManager(t *testing.T) *CacheManager {
 	return m
 }
 
+// loadPendingNodes is a test helper: calls loadJournal and returns only the pending map.
+func loadPendingNodes(m *CacheManager) (map[string]*PendingNode, error) {
+	_, p, err := m.loadJournal()
+	return p, err
+}
+
+func compactJournal(m *CacheManager) error {
+	return m.compactJournal()
+}
+
 func TestNewCacheManager(t *testing.T) {
 	m := newTestManager(t)
 	if m.CacheDir() == "" {
@@ -259,7 +269,7 @@ func TestPendingJournal_DirtyThenLoad(t *testing.T) {
 	os.WriteFile(stgPath, []byte("data"), 0o644)
 	m.SavePendingNode("/a.txt", "fid_a", "p", "a.txt", stgPath, 100, false, nil, 0, 0, "", 0)
 
-	recovered, err := m.LoadPendingJournal()
+	recovered, err := loadPendingNodes(m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +287,7 @@ func TestPendingJournal_DirtyThenClean(t *testing.T) {
 	m.SavePendingNode("/b.txt", "fid_b", "p", "b.txt", "", 50, false, nil, 0, 0, "", 0)
 	m.RemovePendingNode("/b.txt")
 
-	recovered, err := m.LoadPendingJournal()
+	recovered, err := loadPendingNodes(m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +302,7 @@ func TestPendingJournal_DirtyThenUpdate(t *testing.T) {
 	m.UpdatePendingNodeUpload("/c.txt", "up_42")
 	m.UpdatePendingNodeLastPart("/c.txt", 7)
 
-	recovered, err := m.LoadPendingJournal()
+	recovered, err := loadPendingNodes(m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +324,7 @@ func TestPendingJournal_RecoveryMissingStagingFile(t *testing.T) {
 	m.SavePendingNode("/missing.txt", "fid_m", "p", "missing.txt", stagingFile, 100, false, nil, 0, 0, "", 0)
 
 	// Don't create the staging file → recovery should drop this entry.
-	recovered, err := m.LoadPendingJournal()
+	recovered, err := loadPendingNodes(m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,11 +405,11 @@ func TestPendingJournal_Compact(t *testing.T) {
 
 	// Before compact: 4 entries (2 dirty + 2 clean)
 	// After compact: 1 entry (only /compact_a.txt)
-	if err := m.compactPendingJournal(); err != nil {
+	if err := compactJournal(m); err != nil {
 		t.Fatal(err)
 	}
 
-	recovered, err := m.LoadPendingJournal()
+	recovered, err := loadPendingNodes(m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,11 +428,11 @@ func TestPendingJournal_CompactWithUpdates(t *testing.T) {
 	m.UpdatePendingNodeUpload("/upd.txt", "upload_99")
 	m.UpdatePendingNodeLastPart("/upd.txt", 5)
 
-	if err := m.compactPendingJournal(); err != nil {
+	if err := compactJournal(m); err != nil {
 		t.Fatal(err)
 	}
 
-	recovered, err := m.LoadPendingJournal()
+	recovered, err := loadPendingNodes(m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +455,7 @@ func TestPendingJournal_RemoveThenSaveSamePath(t *testing.T) {
 	m.RemovePendingNode("/flip.txt")
 	m.SavePendingNode("/flip.txt", "fid_b", "0", "flip.txt", "", 2, false, nil, 0, 0, "", 0)
 
-	recovered, err := m.LoadPendingJournal()
+	recovered, err := loadPendingNodes(m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,12 +479,12 @@ func TestBatchDeleteNodeState_NoJournalClean(t *testing.T) {
 
 	// BatchDeleteNodeState removes from memory but does NOT write journal clean.
 	// The journal still has the dirty entry.
-	recovered, err := m.LoadPendingJournal()
+	recovered, err := loadPendingNodes(m)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Without a cross-check (staging file existence), the entry would be recovered.
-	// In production, LoadPendingJournal's os.Stat cross-check drops it when staging is gone.
+	// In production, loadPendingNodes' os.Stat cross-check drops it when staging is gone.
 	pn, ok := recovered["/batch.txt"]
 	if !ok {
 		t.Error("expected /batch.txt to remain in journal (batch ops skip clean append)")
@@ -493,7 +503,7 @@ func TestCacheManager_CloseCompactsJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recovered, err := m.LoadPendingJournal()
+	recovered, err := loadPendingNodes(m)
 	if err != nil {
 		t.Fatal(err)
 	}
