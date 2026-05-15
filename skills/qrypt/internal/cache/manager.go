@@ -79,6 +79,10 @@ func (m *CacheManager) StagingDir() string {
 	return filepath.Join(m.cacheDir, "staging")
 }
 
+func (m *CacheManager) ReadingDir() string {
+	return filepath.Join(m.cacheDir, "reading")
+}
+
 func (m *CacheManager) Staging() *staging.Store {
 	return m.staging
 }
@@ -94,6 +98,11 @@ func NewCacheManager(cacheDir string, maxSize int64) (*CacheManager, error) {
 		return nil, fmt.Errorf("failed to create staging store: %w", err)
 	}
 
+	readingDir := filepath.Join(cacheDir, "reading")
+	if err := os.MkdirAll(readingDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create reading cache dir: %w", err)
+	}
+
 	m := &CacheManager{
 		cacheDir:     cacheDir,
 		maxSize:      maxSize,
@@ -101,6 +110,17 @@ func NewCacheManager(cacheDir string, maxSize int64) (*CacheManager, error) {
 		pendingNodes: make(map[string]*PendingNode),
 		stagingMetas: make(map[string]*StagingMeta),
 		chunkIndex:   make(map[string]*fileChunkCache),
+	}
+
+	// Recover dirty-file state from journal before cleaning up, so
+	// staging files referenced by journal entries are not treated as orphans.
+	recovered, err := m.LoadPendingJournal()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "LoadPendingJournal: %v (proceeding with empty state)\n", err)
+	} else if len(recovered) > 0 {
+		for path, pn := range recovered {
+			m.pendingNodes[path] = pn
+		}
 	}
 
 	m.cleanupOrphanedStagingFiles()
@@ -222,13 +242,16 @@ func (m *CacheManager) HasChunk(fid string, chunkIndex int64) (bool, error) {
 
 func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDirty bool) error {
 	suffix := ".dec.batch"
+	dir := m.cacheDir
 	if isDirty {
 		suffix = ".dirty.batch"
+	} else {
+		dir = m.ReadingDir()
 	}
 	batchIdx := chunkIndex / CacheBatchBlocks
 	offset := int64(chunkIndex%CacheBatchBlocks) * int64(len(data))
 	fileName := fmt.Sprintf("%s_batch_%d%s", fid, batchIdx, suffix)
-	path := filepath.Join(m.cacheDir, fileName)
+	path := filepath.Join(dir, fileName)
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -321,6 +344,22 @@ func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath str
 		LastPart:        lastPart,
 	}
 	m.mu.Unlock()
+
+	m.appendPendingJournal(&PendingJournalEntry{
+		Op:        PJOpDirty,
+		Path:      path,
+		Fid:       fid,
+		ParentFid: parentFid,
+		Name:      name,
+		Stg:       localPath,
+		Size:      size,
+		IsFolder:  isFolder,
+		Nonce:     nonce,
+		BaseMtime: baseMtime,
+		BaseSize:  baseSize,
+		UploadID:  uploadID,
+		LastPart:  lastPart,
+	})
 	return nil
 }
 
@@ -328,6 +367,11 @@ func (m *CacheManager) RemovePendingNode(path string) error {
 	m.mu.Lock()
 	delete(m.pendingNodes, path)
 	m.mu.Unlock()
+
+	m.appendPendingJournal(&PendingJournalEntry{
+		Op:   PJOpClean,
+		Path: path,
+	})
 	return nil
 }
 
@@ -337,6 +381,12 @@ func (m *CacheManager) UpdatePendingNodeUpload(path, uploadID string) error {
 		n.UploadID = uploadID
 	}
 	m.mu.Unlock()
+
+	m.appendPendingJournal(&PendingJournalEntry{
+		Op:       PJOpUpdate,
+		Path:     path,
+		UploadID: uploadID,
+	})
 	return nil
 }
 
@@ -346,6 +396,12 @@ func (m *CacheManager) UpdatePendingNodeLastPart(path string, lastPart int) erro
 		n.LastPart = lastPart
 	}
 	m.mu.Unlock()
+
+	m.appendPendingJournal(&PendingJournalEntry{
+		Op:       PJOpUpdate,
+		Path:     path,
+		LastPart: lastPart,
+	})
 	return nil
 }
 
@@ -559,10 +615,227 @@ func (m *CacheManager) rewriteOpsLog(entries []OpsLogEntry) error {
 	return nil
 }
 
+// --- Pending Journal (crash-recovery for dirty files) ---
+
+type PendingJournalOp string
+
+const (
+	PJOpDirty  PendingJournalOp = "dirty"
+	PJOpUpdate PendingJournalOp = "update"
+	PJOpClean  PendingJournalOp = "clean"
+)
+
+type PendingJournalEntry struct {
+	Op        PendingJournalOp `json:"op"`
+	Path      string           `json:"path"`
+	Fid       string           `json:"fid,omitempty"`
+	ParentFid string           `json:"parent_fid,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	Stg       string           `json:"stg,omitempty"`
+	Size      int64            `json:"size,omitempty"`
+	IsFolder  bool             `json:"is_folder,omitempty"`
+	Nonce     []byte           `json:"nonce,omitempty"`
+	BaseMtime int64            `json:"base_mtime,omitempty"`
+	BaseSize  int64            `json:"base_size,omitempty"`
+	UploadID  string           `json:"upload_id,omitempty"`
+	LastPart  int              `json:"last_part,omitempty"`
+	Mtime     int64            `json:"ts"`
+}
+
+func (m *CacheManager) pendingJournalPath() string {
+	return filepath.Join(m.cacheDir, "pending.journal")
+}
+
+func (m *CacheManager) appendPendingJournal(entry *PendingJournalEntry) error {
+	entry.Mtime = time.Now().UnixNano()
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(m.pendingJournalPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	f.Write(data)
+	f.Write([]byte("\n"))
+	return nil
+}
+
+// LoadPendingJournal reads pending.journal and returns the latest non-clean
+// state for each path. The staging file is cross-checked: entries whose
+// staging file no longer exists are dropped and a 'clean' entry is written.
+func (m *CacheManager) LoadPendingJournal() (map[string]*PendingNode, error) {
+	f, err := os.Open(m.pendingJournalPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	type state struct {
+		entry  *PendingJournalEntry // latest dirty
+		update *PendingJournalEntry // latest update after dirty
+		cleaned bool                // true if a clean follows dirty
+	}
+	byPath := make(map[string]*state)
+	order := make([]string, 0) // to preserve ordering for stable results
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var entry PendingJournalEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+
+		switch entry.Op {
+		case PJOpDirty:
+			if _, ok := byPath[entry.Path]; !ok {
+				order = append(order, entry.Path)
+			}
+			byPath[entry.Path] = &state{
+				entry:  &entry,
+				update: nil,
+				cleaned: false,
+			}
+		case PJOpUpdate:
+			if s, ok := byPath[entry.Path]; ok && !s.cleaned {
+				if s.update == nil {
+					s.update = &PendingJournalEntry{}
+				}
+				if entry.UploadID != "" {
+					s.update.UploadID = entry.UploadID
+				}
+				if entry.LastPart > 0 {
+					s.update.LastPart = entry.LastPart
+				}
+				if entry.Size > 0 {
+					s.update.Size = entry.Size
+				}
+			}
+		case PJOpClean:
+			if _, ok := byPath[entry.Path]; ok {
+				byPath[entry.Path] = &state{cleaned: true}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]*PendingNode)
+	var toClean []string
+
+	for _, path := range order {
+		s := byPath[path]
+		if s == nil || s.cleaned || s.entry == nil {
+			continue
+		}
+
+		// Cross-check: staging file must exist on disk.
+		if s.entry.Stg != "" {
+			if _, statErr := os.Stat(s.entry.Stg); os.IsNotExist(statErr) {
+				toClean = append(toClean, path)
+				continue
+			}
+		}
+
+		pn := &PendingNode{
+			Path:      path,
+			Fid:       s.entry.Fid,
+			ParentFid: s.entry.ParentFid,
+			Name:      s.entry.Name,
+			LocalPath: s.entry.Stg,
+			Size:      s.entry.Size,
+			IsFolder:  s.entry.IsFolder,
+			Nonce:     s.entry.Nonce,
+		}
+
+		// Merge update fields if present.
+		if s.update != nil {
+			if s.update.Size > 0 {
+				pn.Size = s.update.Size
+			}
+			if s.update.UploadID != "" {
+				pn.UploadID = s.update.UploadID
+			}
+			if s.update.LastPart > 0 {
+				pn.LastPart = s.update.LastPart
+			}
+		}
+
+		result[path] = pn
+	}
+
+	// Clean up dangling journal entries (staging file missing).
+	for _, path := range toClean {
+		m.appendPendingJournal(&PendingJournalEntry{Op: PJOpClean, Path: path})
+	}
+
+	return result, nil
+}
+
+// rewritePendingJournal atomically rewrites the journal file for the currently
+// active pending nodes, removing stale entries.
+func (m *CacheManager) rewritePendingJournal() error {
+	m.mu.RLock()
+	nodes := make([]*PendingNode, 0, len(m.pendingNodes))
+	for _, n := range m.pendingNodes {
+		nodes = append(nodes, n)
+	}
+	m.mu.RUnlock()
+
+	if len(nodes) == 0 {
+		os.Remove(m.pendingJournalPath())
+		return nil
+	}
+
+	tmpPath := m.pendingJournalPath() + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	for _, n := range nodes {
+		entry := &PendingJournalEntry{
+			Op:        PJOpDirty,
+			Path:      n.Path,
+			Fid:       n.Fid,
+			ParentFid: n.ParentFid,
+			Name:      n.Name,
+			Stg:       n.LocalPath,
+			Size:      n.Size,
+			IsFolder:  n.IsFolder,
+			Nonce:     n.Nonce,
+			BaseMtime: n.BaseServerMtime,
+			BaseSize:  n.BaseServerSize,
+			UploadID:  n.UploadID,
+			LastPart:  n.LastPart,
+		}
+		data, _ := json.Marshal(entry)
+		f.Write(data)
+		f.Write([]byte("\n"))
+	}
+	f.Close()
+	return os.Rename(tmpPath, m.pendingJournalPath())
+}
+
+func (m *CacheManager) compactPendingJournal() error {
+	return m.rewritePendingJournal()
+}
+
 func (m *CacheManager) Maintenance() error {
 	m.EvictIfNeeded(m.maxSize * 7 / 10)
 	m.CleanupStagingMetas(24 * time.Hour)
 	m.PurgeOpsLog(72 * time.Hour)
+	m.compactPendingJournal()
 	m.reportStaleUploadIDs()
 	return nil
 }
