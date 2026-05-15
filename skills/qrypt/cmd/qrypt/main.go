@@ -61,9 +61,9 @@ func main() {
 	statusCmd.Flags().StringP("config", "f", "", "配置文件路径")
 
 	var rmCmd = &cobra.Command{
-		Use:   "rm <path>",
+		Use:   "rm <path>...",
 		Short: "删除文件或目录",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MinimumNArgs(1),
 		Run:   runRm,
 	}
 	rmCmd.Flags().StringP("config", "f", "", "配置文件路径")
@@ -109,7 +109,7 @@ func main() {
 		Run:   runPull,
 	}
 	pullCmd.Flags().StringP("config", "f", "", "配置文件路径")
-	pullCmd.Flags().BoolP("update", "u", false, "增量同步：跳过目标已存在且更新的文件")
+	pullCmd.Flags().BoolP("update", "u", false, "跳过目标已存在且大小一致的文件")
 	pullCmd.Flags().Int("transfers", 4, "并发传输文件数量")
 	pullCmd.Flags().Bool("dry-run", false, "只打印将要下载的文件列表，不执行真实下载")
 

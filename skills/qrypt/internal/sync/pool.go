@@ -27,7 +27,6 @@ type TransferJob struct {
 	RemoteEntry   drive.Entry
 	Size          int64
 	IsDir         bool
-	IsIncremental bool // if true, skip if target matches size
 }
 
 type WorkerPool struct {
