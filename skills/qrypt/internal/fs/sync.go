@@ -15,6 +15,8 @@ import (
 	syncpkg "github.com/yinzhenyu/skills/qrypt/internal/sync"
 )
 
+var errCooldown = errors.New("upload cooldown active")
+
 // collectAncestorPaths returns ancestor directory paths for a node,
 // starting from its parent up to the root.
 func collectAncestorPaths(n *Node) []string {
@@ -194,12 +196,19 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 	n.mu.Unlock()
 
 	// ── 10s upload cooldown ───────────────────────────────────────
-	// Prevents rapid re-uploads after a successful upload.  Because
-	// syncFile returns nil here, the defer re-enqueues and we loop.
-	// After ~10s the guard expires and conflict detection runs with a
-	// freshly re-read currentFid.
+	// Prevents rapid re-uploads after a successful upload.  Must NOT
+	// return nil — doing so makes the re-enqueue defer re-queue
+	// immediately, creating a tight loop (isStillDirty && err == nil).
+	// Instead return a sentinel error (syncQueued is cleared), and
+	// schedule a delayed re-enqueue.
 	if !strings.HasPrefix(fid, "local_") && !lastUpload.IsZero() && time.Since(lastUpload) < 10*time.Second {
-		return nil
+		go func() {
+			time.Sleep(time.Until(lastUpload.Add(10 * time.Second)))
+			if !fs.IsShuttingDown() {
+				fs.enqueueSync(n)
+			}
+		}()
+		return errCooldown
 	}
 
 	// ── Refresh n.fid after 10s delay ─────────────────────────────
