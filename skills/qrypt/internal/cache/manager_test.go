@@ -410,3 +410,74 @@ func TestPendingJournal_Compact(t *testing.T) {
 		t.Error("/compact_b.txt should not exist after clean")
 	}
 }
+
+func TestPendingJournal_CompactWithUpdates(t *testing.T) {
+	m := newTestManager(t)
+
+	m.SavePendingNode("/upd.txt", "fid_up", "0", "upd.txt", "", 10, false, nil, 0, 0, "", 0)
+	m.UpdatePendingNodeUpload("/upd.txt", "upload_99")
+	m.UpdatePendingNodeLastPart("/upd.txt", 5)
+
+	if err := m.compactPendingJournal(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := m.LoadPendingJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pn, ok := recovered["/upd.txt"]
+	if !ok {
+		t.Fatal("expected /upd.txt after compact")
+	}
+	if pn.UploadID != "upload_99" {
+		t.Errorf("expected upload_99 after compact, got %s", pn.UploadID)
+	}
+	if pn.LastPart != 5 {
+		t.Errorf("expected last_part 5 after compact, got %d", pn.LastPart)
+	}
+}
+
+func TestPendingJournal_RemoveThenSaveSamePath(t *testing.T) {
+	m := newTestManager(t)
+
+	m.SavePendingNode("/flip.txt", "fid_a", "0", "flip.txt", "", 1, false, nil, 0, 0, "", 0)
+	m.RemovePendingNode("/flip.txt")
+	m.SavePendingNode("/flip.txt", "fid_b", "0", "flip.txt", "", 2, false, nil, 0, 0, "", 0)
+
+	recovered, err := m.LoadPendingJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pn, ok := recovered["/flip.txt"]
+	if !ok {
+		t.Fatal("expected /flip.txt after remove+save")
+	}
+	if pn.Fid != "fid_b" {
+		t.Errorf("expected fid_b (latest), got %s", pn.Fid)
+	}
+	if pn.Size != 2 {
+		t.Errorf("expected size 2, got %d", pn.Size)
+	}
+}
+
+func TestBatchDeleteNodeState_NoJournalClean(t *testing.T) {
+	m := newTestManager(t)
+
+	m.SavePendingNode("/batch.txt", "fid_batch", "0", "batch.txt", "", 1, false, nil, 0, 0, "", 0)
+	m.BatchDeleteNodeState([]string{"fid_batch"}, []string{"/batch.txt"})
+
+	// BatchDeleteNodeState removes from memory but does NOT write journal clean.
+	// The journal still has the dirty entry.
+	recovered, err := m.LoadPendingJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without a cross-check (staging file existence), the entry would be recovered.
+	// In production, LoadPendingJournal's os.Stat cross-check drops it when staging is gone.
+	pn, ok := recovered["/batch.txt"]
+	if !ok {
+		t.Error("expected /batch.txt to remain in journal (batch ops skip clean append)")
+	}
+	_ = pn
+}
