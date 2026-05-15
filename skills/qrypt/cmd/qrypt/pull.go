@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
+	"github.com/yinzhenyu/skills/qrypt/internal/sync"
 )
 
 func runPull(cmd *cobra.Command, args []string) {
@@ -22,6 +21,10 @@ func runPull(cmd *cobra.Command, args []string) {
 		localPath = args[1]
 	}
 
+	update, _ := cmd.Flags().GetBool("update")
+	transfers, _ := cmd.Flags().GetInt("transfers")
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+
 	fullRemotePath := resolveFullPath(cfg.RootPath(), remotePath)
 	parentPath := filepath.Dir(fullRemotePath)
 	baseName := filepath.Base(fullRemotePath)
@@ -32,6 +35,34 @@ func runPull(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// Check if target is a directory
+	targetFid, err := resolver.ResolvePath(context.Background(), fullRemotePath)
+	if err == nil {
+		_, errList := drv.List(context.Background(), targetFid)
+		if errList == nil {
+			// It's a directory
+			if localPath == "" {
+				localPath = baseName
+			}
+			
+			if !dryRun {
+				os.MkdirAll(localPath, 0755)
+			}
+			
+			pool := sync.NewWorkerPool(drv, cipher, transfers, dryRun, update)
+			pool.Start(context.Background())
+
+			fmt.Printf("开始递归下载目录: %s\n", remotePath)
+			if err := sync.ScanRemoteForDownload(context.Background(), targetFid, localPath, drv, cipher, pool); err != nil {
+				fmt.Printf("扫描远端目录失败: %v\n", err)
+			}
+			pool.Wait()
+			fmt.Printf("批量任务处理完毕\n")
+			return
+		}
+	}
+
+	// Target is a file
 	parentFid, err := resolver.ResolvePath(context.Background(), parentPath)
 	if err != nil {
 		fmt.Printf("无法解析路径: %v\n", err)
@@ -58,85 +89,22 @@ func runPull(cmd *cobra.Command, args []string) {
 		fmt.Printf("文件未找到: %s\n", baseName)
 		os.Exit(1)
 	}
-	if targetEntry.IsDir {
-		fmt.Printf("错误: %s 是一个目录\n", baseName)
-		os.Exit(1)
-	}
 
 	if localPath == "" {
 		localPath = baseName
 	}
 
-	encSize := targetEntry.Size
-	fmt.Printf("下载 %s (%s) → %s\n", remotePath, formatBytes(encSize), localPath)
+	pool := sync.NewWorkerPool(drv, cipher, transfers, dryRun, update)
+	pool.Start(context.Background())
 
-	outFile, err := os.Create(localPath)
-	if err != nil {
-		fmt.Printf("创建本地文件失败: %v\n", err)
-		os.Exit(1)
-	}
-	defer outFile.Close()
+	pool.Submit(sync.TransferJob{
+		Type:        sync.JobTypeDownload,
+		LocalPath:   localPath,
+		RemoteName:  baseName,
+		RemoteEntry: targetEntry,
+		Size:        targetEntry.Size,
+	})
 
-	bodySize, err := cipher.DecryptedSize(encSize)
-	if err != nil {
-		fmt.Printf("文件大小异常: %v\n", err)
-		os.Exit(1)
-	}
-
-	ctx := context.Background()
-	headerSize := int64(crypt.FileHeaderSize)
-	rc, err := drv.Read(ctx, targetEntry, 0, headerSize)
-	if err != nil {
-		fmt.Printf("下载文件头失败: %v\n", err)
-		os.Exit(1)
-	}
-	header := make([]byte, headerSize)
-	if _, err := io.ReadFull(rc, header); err != nil {
-		rc.Close()
-		fmt.Printf("读取文件头失败: %v\n", err)
-		os.Exit(1)
-	}
-	rc.Close()
-
-	var fileNonce [crypt.FileNonceSize]byte
-	copy(fileNonce[:], header[crypt.FileMagicSize:])
-
-	encBodySize := encSize - headerSize
-	if encBodySize <= 0 {
-		return
-	}
-
-	written := int64(0)
-	blockIndex := uint64(0)
-	readOff := headerSize
-	for written < bodySize {
-		blockEncSize := int64(crypt.BlockSize)
-		remaining := bodySize - written
-		if remaining < crypt.BlockDataSize {
-			blockEncSize = int64(crypt.BlockHeaderSize + remaining)
-		}
-
-		rc, err := drv.Read(ctx, targetEntry, readOff, blockEncSize)
-		if err != nil {
-			fmt.Printf("下载失败: %v\n", err)
-			os.Exit(1)
-		}
-		encBlock := make([]byte, blockEncSize)
-		if _, err := io.ReadFull(rc, encBlock); err != nil {
-			rc.Close()
-			fmt.Printf("读取数据块失败: %v\n", err)
-			os.Exit(1)
-		}
-		rc.Close()
-
-		plaintext, err := cipher.DecryptBlock(encBlock, blockIndex, fileNonce)
-		if err != nil {
-			fmt.Printf("解密失败: %v\n", err)
-			os.Exit(1)
-		}
-		outFile.Write(plaintext)
-		written += int64(len(plaintext))
-		readOff += blockEncSize
-		blockIndex++
-	}
+	pool.Wait()
+	fmt.Printf("\n完成下载\n")
 }
