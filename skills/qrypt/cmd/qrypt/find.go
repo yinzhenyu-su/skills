@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -279,8 +280,8 @@ func runFind(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	fullRootPath := resolveFullPath(cfg.Quark.RootPath, rootPath)
-	rootFid, err := resolver.ResolvePath(nil, fullRootPath)
+	fullRootPath := resolveFullPath(cfg.RootPath(), rootPath)
+	rootFid, err := resolver.ResolvePath(context.Background(), fullRootPath)
 	if err != nil {
 		fmt.Printf("无法解析路径: %v\n", err)
 		os.Exit(1)
@@ -350,5 +351,5 @@ type listAdapter struct {
 }
 
 func (a listAdapter) List(parentID string) ([]drive.Entry, error) {
-	return a.drv.List(nil, parentID)
+	return a.drv.List(context.Background(), parentID)
 }

@@ -14,14 +14,14 @@ func runRm(cmd *cobra.Command, args []string) {
 	drv := loadToolDriver(cfg, cipher)
 
 	path := args[0]
-	fullPath := resolveFullPath(cfg.Quark.RootPath, path)
+	fullPath := resolveFullPath(cfg.RootPath(), path)
 
 	resolver, ok := drv.(pathResolver)
 	if !ok {
 		fmt.Printf("该驱动不支持路径解析\n")
 		os.Exit(1)
 	}
-	fid, err := resolver.ResolvePath(nil, fullPath)
+	fid, err := resolver.ResolvePath(context.Background(), fullPath)
 	if err != nil {
 		fmt.Printf("无法解析路径: %v\n", err)
 		os.Exit(1)

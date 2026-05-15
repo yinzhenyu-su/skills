@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -16,15 +17,15 @@ func runList(cmd *cobra.Command, args []string) {
 	if len(args) > 0 {
 		path = args[0]
 	}
-	fullPath := resolveFullPath(cfg.Quark.RootPath, path)
+	fullPath := resolveFullPath(cfg.RootPath(), path)
 
-	fid, err := resolver.ResolvePath(nil, fullPath)
+	fid, err := resolver.ResolvePath(context.Background(), fullPath)
 	if err != nil {
 		fmt.Printf("无法解析路径: %v\n", err)
 		os.Exit(1)
 	}
 
-	entries, err := drv.List(nil, fid)
+	entries, err := drv.List(context.Background(), fid)
 	if err != nil {
 		fmt.Printf("无法列出目录内容: %v\n", err)
 		os.Exit(1)

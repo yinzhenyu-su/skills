@@ -29,9 +29,9 @@ func runMv(cmd *cobra.Command, args []string) {
 
 	srcPath := args[0]
 	dstArg := args[1]
-	fullSrcPath := resolveFullPath(cfg.Quark.RootPath, srcPath)
+	fullSrcPath := resolveFullPath(cfg.RootPath(), srcPath)
 
-	srcFid, err := resolver.ResolvePath(nil, fullSrcPath)
+	srcFid, err := resolver.ResolvePath(context.Background(), fullSrcPath)
 	if err != nil {
 		fmt.Printf("无法解析源路径: %v\n", err)
 		os.Exit(1)
@@ -43,20 +43,20 @@ func runMv(cmd *cobra.Command, args []string) {
 	var dstParentFid string
 
 	if moveIntoDir {
-		fullDstDir := resolveFullPath(cfg.Quark.RootPath, dstArg)
-		dstParentFid, err = resolver.ResolvePath(nil, fullDstDir)
+		fullDstDir := resolveFullPath(cfg.RootPath(), dstArg)
+		dstParentFid, err = resolver.ResolvePath(context.Background(), fullDstDir)
 		if err != nil {
 			fmt.Printf("无法解析目标目录: %v\n", err)
 			os.Exit(1)
 		}
 
 		srcParentPath := filepath.Dir(fullSrcPath)
-		srcParentFid, err := resolver.ResolvePath(nil, srcParentPath)
+		srcParentFid, err := resolver.ResolvePath(context.Background(), srcParentPath)
 		if err != nil {
 			fmt.Printf("无法解析源目录: %v\n", err)
 			os.Exit(1)
 		}
-		entries, err := drv.List(nil, srcParentFid)
+		entries, err := drv.List(context.Background(), srcParentFid)
 		if err != nil {
 			fmt.Printf("无法列出文件: %v\n", err)
 			os.Exit(1)
@@ -77,18 +77,18 @@ func runMv(cmd *cobra.Command, args []string) {
 			os.Exit(1)
 		}
 	} else {
-		fullDstPath := resolveFullPath(cfg.Quark.RootPath, dstArg)
+		fullDstPath := resolveFullPath(cfg.RootPath(), dstArg)
 		dstParentPath := filepath.Dir(fullDstPath)
 		dstNameArg := filepath.Base(fullDstPath)
 
-		dstParentFid, err = resolver.ResolvePath(nil, dstParentPath)
+		dstParentFid, err = resolver.ResolvePath(context.Background(), dstParentPath)
 		if err != nil {
 			fmt.Printf("无法解析目标路径: %v\n", err)
 			os.Exit(1)
 		}
 
 		if dstParentFid != "0" {
-			existingEntries, _ := drv.List(nil, dstParentFid)
+			existingEntries, _ := drv.List(context.Background(), dstParentFid)
 			for _, e := range existingEntries {
 				if e.ID == srcFid {
 					continue
@@ -111,7 +111,7 @@ func runMv(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
 
 	srcParentPath := filepath.Dir(fullSrcPath)
-	srcParentFid, err := resolver.ResolvePath(nil, srcParentPath)
+	srcParentFid, err := resolver.ResolvePath(context.Background(), srcParentPath)
 	if err != nil {
 		fmt.Printf("无法解析源目录: %v\n", err)
 		os.Exit(1)
