@@ -930,6 +930,28 @@ func TestE2E_RenameDuringUploadReturnsBusy(t *testing.T) {
 	}
 }
 
+func TestShutdown_SetsFlagAndRejectsOps(t *testing.T) {
+	s := newE2E(t)
+
+	if s.fs.IsShuttingDown() {
+		t.Fatal("should not be shutting down initially")
+	}
+
+	s.fs.Shutdown()
+
+	if !s.fs.IsShuttingDown() {
+		t.Fatal("should be shutting down after Shutdown()")
+	}
+
+	// Operations should be rejected after shutdown.
+	if errc := s.fs.Unlink("/nonexistent"); errc != -fuse.EIO {
+		t.Errorf("expected EIO for Unlink after shutdown, got %d", errc)
+	}
+	if errc := s.fs.Rmdir("/"); errc != -fuse.EIO {
+		t.Errorf("expected EIO for Rmdir after shutdown, got %d", errc)
+	}
+}
+
 func TestE2E_OpenWriteDuringUploadReturnsBusy(t *testing.T) {
 	s := newE2E(t)
 	s.writeFile("/protect_open.txt", []byte("data"))

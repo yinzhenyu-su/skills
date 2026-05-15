@@ -878,7 +878,7 @@ func (m *CacheManager) MaintenanceStart() {
 }
 
 func (m *CacheManager) Close() error {
-	return nil
+	return m.compactPendingJournal()
 }
 
 // --- Staging Cleanup (kept for compatibility) ---

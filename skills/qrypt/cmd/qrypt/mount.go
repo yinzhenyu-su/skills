@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/winfsp/cgofuse/fuse"
@@ -184,11 +183,6 @@ func runMount(cmd *cobra.Command, args []string) {
 		vfs.Shutdown()
 
 		fmt.Println("\n正在卸载...")
-		go func() {
-			time.Sleep(3 * time.Second)
-			log.L.Info("Force exit\n")
-			os.Exit(0)
-		}()
 		host.Unmount()
 		log.L.Info("Shutdown complete\n")
 		os.Exit(0)
