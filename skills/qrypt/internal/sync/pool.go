@@ -106,7 +106,7 @@ func (p *WorkerPool) handleUpload(ctx context.Context, job TransferJob) {
 	}
 
 	fmt.Printf("上传: %s\n", job.LocalPath)
-	_, err := p.uploader.Upload(req)
+	_, err := p.uploader.Upload(ctx, req)
 	if err != nil {
 		fmt.Printf("上传失败 %s: %v\n", job.LocalPath, err)
 	}

@@ -41,7 +41,7 @@ func NewUploader(drv drive.Driver, cipher *crypt.RcloneCipher) *Uploader {
 	return &Uploader{drv: drv, cipher: cipher}
 }
 
-func (u *Uploader) Upload(req Request) (Result, error) {
+func (u *Uploader) Upload(ctx context.Context, req Request) (Result, error) {
 	var result Result
 	if req.DataReader == nil {
 		return result, fmt.Errorf("missing data reader for %s", req.Path)
@@ -74,7 +74,7 @@ func (u *Uploader) Upload(req Request) (Result, error) {
 		return result, fmt.Errorf("driver does not support upload")
 	}
 
-	entry, err := up.Put(context.Background(), req.ParentFid, encName, encSize, encReader)
+	entry, err := up.Put(ctx, req.ParentFid, encName, encSize, encReader)
 	if err != nil {
 		return result, fmt.Errorf("upload: %w", err)
 	}

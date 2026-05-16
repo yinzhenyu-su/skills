@@ -35,7 +35,7 @@ func TestUpload_MissingReader(t *testing.T) {
 	c, _ := crypt.NewRcloneCipher("password", "")
 	u := NewUploader(drv, c)
 
-	_, err := u.Upload(Request{
+	_, err := u.Upload(context.Background(), Request{
 		Path:       "/test.txt",
 		Name:       "test.txt",
 		ParentFid:  "0",
@@ -56,7 +56,7 @@ func TestUpload_Success(t *testing.T) {
 	c, _ := crypt.NewRcloneCipher("password", "")
 	u := NewUploader(drv, c)
 
-	result, err := u.Upload(Request{
+	result, err := u.Upload(context.Background(), Request{
 		Path:      "/test.txt",
 		Name:      "test.txt",
 		ParentFid: "0",
@@ -88,7 +88,7 @@ func TestUpload_WithNonce(t *testing.T) {
 	var nonce [24]byte
 	copy(nonce[:], []byte("provided_nonce_1234567890"))
 
-	result, err := u.Upload(Request{
+	result, err := u.Upload(context.Background(), Request{
 		Path:      "/nonce.txt",
 		Name:      "nonce.txt",
 		ParentFid: "0",
@@ -115,7 +115,7 @@ func TestUpload_DriverPutError(t *testing.T) {
 	c, _ := crypt.NewRcloneCipher("password", "")
 	u := NewUploader(drv, c)
 
-	_, err := u.Upload(Request{
+	_, err := u.Upload(context.Background(), Request{
 		Path:      "/fail.txt",
 		Name:      "fail.txt",
 		ParentFid: "0",
