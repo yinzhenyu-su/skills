@@ -156,7 +156,7 @@ func runPush(cmd *cobra.Command, args []string) {
 			fmt.Printf("[Dry Run] Would upload stdin (%s) to %s\n", formatBytes(written), remoteFileName)
 			return
 		}
-		result, err := uploader.Upload(req)
+		result, err := uploader.Upload(context.Background(), req)
 		if err != nil {
 			fmt.Printf("上传失败: %v\n", err)
 			os.Exit(1)

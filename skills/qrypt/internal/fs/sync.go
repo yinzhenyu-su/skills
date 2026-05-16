@@ -293,7 +293,9 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		n.mu.RUnlock()
 	}
 
-	result, err := fs.uploader.Upload(syncpkg.Request{
+	uploadCtx, uploadCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer uploadCancel()
+	result, err := fs.uploader.Upload(uploadCtx, syncpkg.Request{
 		Path:      path,
 		Name:      snapshotName,
 		ParentFid: parentFid,
