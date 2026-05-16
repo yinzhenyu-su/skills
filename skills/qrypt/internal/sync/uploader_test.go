@@ -185,3 +185,34 @@ func TestPartRetryBackoff_Range(t *testing.T) {
 		}
 	}
 }
+
+func TestUpload_Timeout(t *testing.T) {
+	drv := &mockDriver{
+		putFn: func(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
+			select {
+			case <-ctx.Done():
+				return drive.Entry{}, ctx.Err()
+			case <-time.After(10 * time.Second):
+				return drive.Entry{ID: "fid"}, nil
+			}
+		},
+	}
+	c, _ := crypt.NewRcloneCipher("password", "")
+	u := NewUploader(drv, c)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	_, err := u.Upload(ctx, Request{
+		Path:      "/timeout.txt",
+		Name:      "timeout.txt",
+		ParentFid: "0",
+		PlainSize: 100,
+		DataReader: func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(make([]byte, 100))), nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+}
