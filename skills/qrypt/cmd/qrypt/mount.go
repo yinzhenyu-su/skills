@@ -1,4 +1,4 @@
-//go:build cgo
+//go:build cgo && !nofuse
 
 package main
 
@@ -195,14 +195,14 @@ func runMount(cmd *cobra.Command, args []string) {
 			return
 		default:
 			fmt.Println("\n正在关闭...等待上传完成...")
-			log.L.Info("Shutdown: received signal, starting shutdown...\n")
+			log.L.Infof("Shutdown: received signal, starting shutdown...\n")
 		}
 
 		vfs.Shutdown()
 
 		fmt.Println("\n正在卸载...")
 		host.Unmount()
-		log.L.Info("Shutdown complete\n")
+		log.L.Infof("Shutdown complete\n")
 		os.Exit(0)
 	}()
 
