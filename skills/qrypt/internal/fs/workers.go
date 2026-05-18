@@ -1,3 +1,5 @@
+//go:build !nofuse
+
 package fs
 
 import (
@@ -19,7 +21,7 @@ func (fs *QryptFS) uploadWorker() {
 			log.L.Errorf("PANIC in uploadWorker: %v\n", r)
 		}
 	}()
-	log.L.Info("Upload worker started\n")
+	log.L.Infof("Upload worker started\n")
 
 	for task := range fs.uploadChan {
 		savedPath := task.node.currentPath

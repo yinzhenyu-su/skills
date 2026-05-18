@@ -9,3 +9,4 @@ skills/qrypt/mount-quark.sh
 !skills/qrypt
 .env.local
 .sisyphus/
+.DS_Store
