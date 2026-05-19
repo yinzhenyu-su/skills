@@ -58,7 +58,7 @@ type EncryptionConfig struct {
 }
 
 type CacheConfig struct {
-	Dir            string `toml:"dir"`
+	Dir            string `toml:"-"`      // computed: $QRYPT_WORK_DIR/cache
 	MaxSize        string `toml:"max_size"`
 	MemCacheSizeMB int    `toml:"mem_cache_size_mb"`
 }
@@ -76,7 +76,7 @@ type SyncConfig struct {
 
 type LogConfig struct {
 	Level      string `toml:"level"`
-	File       string `toml:"file"`
+	File       string `toml:"-"`      // computed: $QRYPT_WORK_DIR/qrypt.log
 	MaxSize    int    `toml:"max_size"`
 	MaxBackups int    `toml:"max_backups"`
 	MaxAge     int    `toml:"max_age"`
@@ -85,6 +85,7 @@ type LogConfig struct {
 
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
+	workDir := WorkDir()
 	return &Config{
 		Quark: QuarkConfig{
 			RootPath: "/Test",
@@ -97,7 +98,7 @@ func DefaultConfig() *Config {
 		},
 		Encryption: EncryptionConfig{},
 		Cache: CacheConfig{
-			Dir:     filepath.Join(homeDir, ".qrypt", "cache"),
+			Dir:     filepath.Join(workDir, "cache"),
 			MaxSize: "10GB",
 		},
 		Mount: MountConfig{
@@ -111,9 +112,19 @@ func DefaultConfig() *Config {
 		},
 		Log: LogConfig{
 			Level: "debug",
-			File:  filepath.Join(homeDir, ".qrypt", "qrypt.log"),
+			File:  filepath.Join(workDir, "qrypt.log"),
 		},
 	}
+}
+
+// WorkDir returns the qrypt working directory.
+// It is set by QRYPT_WORK_DIR environment variable, defaulting to ~/.qrypt.
+func WorkDir() string {
+	if dir := os.Getenv("QRYPT_WORK_DIR"); dir != "" {
+		return ExpandHome(dir)
+	}
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, ".qrypt")
 }
 
 func ExpandHome(path string) string {
@@ -156,9 +167,13 @@ func LoadConfig(path string) (*Config, error) {
 		config.Quark.RootPath = config.Drive.Quark.RootPath
 	}
 
-	config.Cache.Dir = ExpandHome(config.Cache.Dir)
+	// Override cache.dir and log.file with work-dir-derived paths
+	// (these fields are no longer read from the config file).
+	workDir := WorkDir()
+	config.Cache.Dir = filepath.Join(workDir, "cache")
+	config.Log.File = filepath.Join(workDir, "qrypt.log")
+
 	config.Mount.Point = ExpandHome(config.Mount.Point)
-	config.Log.File = ExpandHome(config.Log.File)
 	return config, nil
 }
 
@@ -169,6 +184,10 @@ func FindConfigFile() string {
 			filepath.Join(homeDir, ".config", "qrypt", "qrypt.toml"),
 			filepath.Join(homeDir, ".qrypt.toml"),
 		)
+	}
+	// Add $QRYPT_WORK_DIR/qrypt.toml
+	if workDir := os.Getenv("QRYPT_WORK_DIR"); workDir != "" {
+		candidates = append(candidates, filepath.Join(ExpandHome(workDir), "qrypt.toml"))
 	}
 	candidates = append(candidates, "/etc/qrypt/qrypt.toml")
 	for _, path := range candidates {

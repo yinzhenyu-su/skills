@@ -222,16 +222,16 @@ func (d *Daemon) UpdateConfig(ctx context.Context, patch protocol.ConfigPatch) e
 	return nil
 }
 
-// ValidateConfig checks if a config patch is valid.
-func (d *Daemon) ValidateConfig(patch protocol.ConfigPatch) error {
-	// Check that required fields are present
-	if patch.Password != nil && *patch.Password == "" {
-		return fmt.Errorf("password cannot be empty")
+// ValidateConfig validates a config file.
+// If path is empty, validates the currently loaded config.
+func (d *Daemon) ValidateConfig(path string) (*config.ValidationResult, error) {
+	if path != "" {
+		return config.ValidateConfigFile(path), nil
 	}
-	if patch.Cookie != nil && *patch.Cookie == "" {
-		return fmt.Errorf("cookie cannot be empty")
-	}
-	return nil
+	d.mu.RLock()
+	cfg := d.cfg
+	d.mu.RUnlock()
+	return config.ValidateConfig(cfg), nil
 }
 
 // ExportConfig writes config to a file.

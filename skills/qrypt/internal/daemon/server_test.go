@@ -77,16 +77,33 @@ func TestDaemonUpdateConfig(t *testing.T) {
 
 func TestDaemonValidateConfig(t *testing.T) {
 	d := newTestDaemon(t)
-	empty := ""
-	err := d.ValidateConfig(protocol.ConfigPatch{Password: &empty})
-	if err == nil {
-		t.Fatal("expected error for empty password")
-	}
-	valid := "validpassword"
-	err = d.ValidateConfig(protocol.ConfigPatch{Password: &valid})
+	result, err := d.ValidateConfig("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+	if result.Valid {
+		t.Fatal("expected invalid config")
+	}
+
+	checks := make(map[string]string)
+	for _, c := range result.Checks {
+		checks[c.Field] = c.Status
+	}
+
+	assertCheck := func(field, expected string) {
+		if got := checks[field]; got != expected {
+			t.Errorf("check %s: got %s, want %s", field, got, expected)
+		}
+	}
+
+	assertCheck("drive.type", "error")
+	assertCheck("encryption.password", "error")
+	assertCheck("cache.max_size", "error")
+	assertCheck("sync.concurrent_uploads", "error")
+	assertCheck("mount.point", "ok")
 }
 
 func TestDaemonGetAccountInfo(t *testing.T) {
