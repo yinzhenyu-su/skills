@@ -182,7 +182,7 @@ func (s *Server) dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		}
 		return protocol.NewResult(id, map[string]string{"status": "updated"})
 
-	case "validate_config":
+	case "init_config":
 		var params struct {
 			Path string `json:"path,omitempty"`
 		}
@@ -191,7 +191,22 @@ func (s *Server) dispatch(ctx context.Context, req *protocol.Request) *protocol.
 				return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
 			}
 		}
-		result, err := s.daemon.ValidateConfig(params.Path)
+		created, err := s.daemon.InitConfig(ctx, params.Path)
+		if err != nil {
+			return protocol.NewError(id, protocol.ErrCodeConfig, err.Error())
+		}
+		return protocol.NewResult(id, map[string]string{"status": "created", "path": created})
+
+	case "validate_config":
+		var vparams struct {
+			Path string `json:"path,omitempty"`
+		}
+		if req.Params != nil {
+			if err := unmarshalParams(req.Params, &vparams); err != nil {
+				return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+			}
+		}
+		result, err := s.daemon.ValidateConfig(vparams.Path)
 		if err != nil {
 			return protocol.NewError(id, protocol.ErrCodeConfig, err.Error())
 		}

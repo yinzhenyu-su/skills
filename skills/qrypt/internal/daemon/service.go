@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -190,6 +192,21 @@ func (d *Daemon) GetConfig() (*config.Config, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.cfg, nil
+}
+
+// InitConfig generates a default config file at the given path.
+// If path is empty, defaults to $QRYPT_WORK_DIR/qrypt.toml.
+func (d *Daemon) InitConfig(_ context.Context, path string) (string, error) {
+	if path == "" {
+		path = filepath.Join(config.WorkDir(), "qrypt.toml")
+	}
+	if _, err := os.Stat(path); err == nil {
+		return "", fmt.Errorf("config file already exists: %s", path)
+	}
+	if err := config.WriteDefaultConfig(path); err != nil {
+		return "", fmt.Errorf("write default config: %w", err)
+	}
+	return path, nil
 }
 
 // UpdateConfig patches the config.
