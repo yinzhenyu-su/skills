@@ -18,7 +18,7 @@ var version = "dev"
 func main() {
 	configPath := flag.String("config", "", "配置文件的路径（默认自动搜索）")
 	logLevel := flag.String("log-level", "info", "日志级别: debug, info, warn, error")
-	socketPath := flag.String("socket", "~/.qrypt/qryptd.sock", "Unix socket 路径")
+	socketPath := flag.String("socket", config.WorkDir()+"/qryptd.sock", "Unix socket 路径")
 	showVersion := flag.Bool("version", false, "显示版本信息")
 	flag.Parse()
 

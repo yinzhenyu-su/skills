@@ -183,14 +183,19 @@ func (s *Server) dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		return protocol.NewResult(id, map[string]string{"status": "updated"})
 
 	case "validate_config":
-		var patch protocol.ConfigPatch
-		if err := unmarshalParams(req.Params, &patch); err != nil {
-			return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+		var params struct {
+			Path string `json:"path,omitempty"`
 		}
-		if err := s.daemon.ValidateConfig(patch); err != nil {
-			return protocol.NewResult(id, map[string]string{"valid": "false", "error": err.Error()})
+		if req.Params != nil {
+			if err := unmarshalParams(req.Params, &params); err != nil {
+				return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+			}
 		}
-		return protocol.NewResult(id, map[string]string{"valid": "true"})
+		result, err := s.daemon.ValidateConfig(params.Path)
+		if err != nil {
+			return protocol.NewError(id, protocol.ErrCodeConfig, err.Error())
+		}
+		return protocol.NewResult(id, result)
 
 	case "login_cookie":
 		var p struct{ Cookie string `json:"cookie"` }

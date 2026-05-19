@@ -39,12 +39,11 @@ password = ""
 salt = ""
 
 [cache]
-# 缓存目录
-dir = "~/.qrypt/cache"
 # 最大缓存大小 (支持 KB, MB, GB, TB)
 max_size = "10GB"
 # 内存缓存 (MB, 0=默认 512)
 mem_cache_size_mb = 512
+# 注意: 缓存目录由 $QRYPT_WORK_DIR/cache 决定 (默认 ~/.qrypt/cache)
 
 [mount]
 # 本地挂载点
@@ -63,5 +62,4 @@ dir_cache_ttl = "5m"
 [log]
 # 日志级别: debug, info, warn, error
 level = "debug"
-# 日志文件路径（空则输出到终端）
-file = "~/.qrypt/qrypt.log"
+# 注意: 日志文件路径由 $QRYPT_WORK_DIR/qrypt.log 决定 (默认 ~/.qrypt/qrypt.log)
