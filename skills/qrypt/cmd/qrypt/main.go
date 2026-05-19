@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
 
 var rootCmd = &cobra.Command{
@@ -18,7 +19,7 @@ func main() {
 		Short: "生成示例配置文件",
 		Run:   runInit,
 	}
-	initCmd.Flags().StringP("output", "o", "qrypt.toml", "输出文件路径")
+	initCmd.Flags().StringP("output", "o", config.WorkDir()+"/qrypt.toml", "输出文件路径")
 
 	var lsCmd = &cobra.Command{
 		Use:   "ls [path]",
