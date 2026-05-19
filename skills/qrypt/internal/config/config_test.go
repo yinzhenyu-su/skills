@@ -59,7 +59,7 @@ point = "~/QryptMount"
 		t.Fatal(err)
 	}
 
-	cfg, err := LoadConfig(path)
+	cfg, vr, err := LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,22 +72,28 @@ point = "~/QryptMount"
 	if cfg.Encryption.Salt != "salt" {
 		t.Errorf("expected salt, got %s", cfg.Encryption.Salt)
 	}
+	if vr == nil {
+		t.Fatal("expected validation result")
+	}
 }
 
 func TestLoadConfig_NotFound(t *testing.T) {
-	_, err := LoadConfig("/nonexistent/qrypt.toml")
+	_, _, err := LoadConfig("/nonexistent/qrypt.toml")
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
 	}
 }
 
 func TestLoadConfig_EmptyPath(t *testing.T) {
-	cfg, err := LoadConfig("")
+	cfg, vr, err := LoadConfig("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Quark.Cookie != "" {
 		t.Errorf("expected empty cookie, got %s", cfg.Quark.Cookie)
+	}
+	if vr == nil {
+		t.Fatal("expected validation result")
 	}
 }
 

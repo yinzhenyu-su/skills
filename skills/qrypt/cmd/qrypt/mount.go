@@ -44,7 +44,7 @@ func runMount(cmd *cobra.Command, args []string) {
 		configPath = config.FindConfigFile()
 	}
 
-	cfg, err := config.LoadConfig(configPath)
+	cfg, _, err := config.LoadConfig(configPath)
 	if err != nil {
 		fmt.Printf("加载配置文件失败: %v\n", err)
 		os.Exit(1)

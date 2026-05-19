@@ -100,20 +100,18 @@ func ValidateConfig(cfg *Config) *ValidationResult {
 }
 
 func ValidateConfigFile(path string) *ValidationResult {
-	cfg, err := LoadConfig(path)
+	_, vr, err := LoadConfig(path)
 	if err != nil {
-		r := &ValidationResult{
+		return &ValidationResult{
 			Valid:    false,
 			FilePath: path,
 			Checks: []ValidationCheck{
 				{Field: "config.file", Status: "error", Message: err.Error()},
 			},
 		}
-		return r
 	}
-	r := ValidateConfig(cfg)
-	r.FilePath = path
-	return r
+	vr.FilePath = path
+	return vr
 }
 
 func (r *ValidationResult) addCheck(field, status, message string) {

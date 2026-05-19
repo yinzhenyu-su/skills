@@ -159,16 +159,17 @@ func ExpandHome(path string) string {
 	return filepath.Join(homeDir, path[2:])
 }
 
-func LoadConfig(path string) (*Config, error) {
+func LoadConfig(path string) (*Config, *ValidationResult, error) {
 	config := DefaultConfig()
 	if path == "" {
-		return config, nil
+		result := ValidateConfig(config)
+		return config, result, nil
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, fmt.Errorf("config file not found: %s", path)
+		return nil, nil, fmt.Errorf("config file not found: %s", path)
 	}
 	if _, err := toml.DecodeFile(path, config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
 	// Backward compatibility: auto-migrate old [quark] section to DriveConfig.
@@ -192,7 +193,9 @@ func LoadConfig(path string) (*Config, error) {
 	config.Log.File = filepath.Join(workDir, "qrypt.log")
 
 	config.Mount.Point = ExpandHome(config.Mount.Point)
-	return config, nil
+
+	result := ValidateConfig(config)
+	return config, result, nil
 }
 
 func FindConfigFile() string {
