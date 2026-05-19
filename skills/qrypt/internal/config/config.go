@@ -127,6 +127,24 @@ func WorkDir() string {
 	return filepath.Join(homeDir, ".qrypt")
 }
 
+// WriteDefaultConfig generates a default config file at path.
+func WriteDefaultConfig(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create config file: %w", err)
+	}
+	defer f.Close()
+
+	cfg := DefaultConfig()
+	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+	return nil
+}
+
 func ExpandHome(path string) string {
 	if path == "" || path[0] != '~' {
 		return path

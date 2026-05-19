@@ -22,6 +22,7 @@ type Service interface {
 
 	// Config management
 	GetConfig() (*config.Config, error)
+	InitConfig(ctx context.Context, path string) (string, error)
 	UpdateConfig(ctx context.Context, patch protocol.ConfigPatch) error
 	ValidateConfig(path string) (*config.ValidationResult, error)
 	ExportConfig(path string) error
