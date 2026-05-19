@@ -37,7 +37,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, err := config.LoadConfig(cfgPath)
+	cfg, _, err := config.LoadConfig(cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "错误: 加载配置文件失败: %v\n", err)
 		os.Exit(1)

@@ -27,7 +27,7 @@ func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
 		configPath = config.FindConfigFile()
 	}
 
-	cfg, err := config.LoadConfig(configPath)
+	cfg, _, err := config.LoadConfig(configPath)
 	if err != nil {
 		if explicitConfig {
 			fmt.Printf("加载配置文件失败: %v\n", err)

@@ -16,7 +16,7 @@ func runStatus(cmd *cobra.Command, args []string) {
 	if configPath == "" {
 		configPath = config.FindConfigFile()
 	}
-	cfg, _ := config.LoadConfig(configPath)
+	cfg, _, _ := config.LoadConfig(configPath)
 
 	fmt.Println("=== Qrypt Status ===")
 	fmt.Printf("配置文件:    %s\n", configPath)

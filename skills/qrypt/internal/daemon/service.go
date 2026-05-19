@@ -258,7 +258,7 @@ func (d *Daemon) ExportConfig(path string) error {
 
 // ImportConfig reads config from a file.
 func (d *Daemon) ImportConfig(path string) error {
-	cfg, err := config.LoadConfig(path)
+	cfg, _, err := config.LoadConfig(path)
 	if err != nil {
 		return err
 	}
