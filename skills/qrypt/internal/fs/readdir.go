@@ -322,6 +322,10 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			log.L.Warnf("MergeRemoteChanges new file: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", childPath, rf.ID, rf.Size, errDec)
 		}
 		modTime := rf.ModTime
+		lastCheck := time.Now()
+		if rf.IsDir {
+			lastCheck = time.Time{}
+		}
 		fs.storeNode(childPath, &Node{
 			fid:               rf.ID,
 			parentFid:         parentFid,
@@ -333,7 +337,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			mtime:             modTime,
 			baseServerMtime:   modTime.UnixMilli(),
 			baseServerSize:    decSize,
-			lastMetadataCheck: time.Now(),
+			lastMetadataCheck: lastCheck,
 			source:            "remote",
 		})
 		addedCount++
