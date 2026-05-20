@@ -151,19 +151,23 @@ func (s *Server) dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		return protocol.NewResult(id, status)
 
 	case "start":
-		err := s.daemon.Start(ctx)
+		var p struct{ Name string `json:"name,omitempty"` }
+		if req.Params != nil {
+			unmarshalParams(req.Params, &p)
+		}
+		err := s.daemon.Start(ctx, p.Name)
 		return s.handleAction(id, err, "started")
 
 	case "stop":
-		err := s.daemon.Stop(ctx)
+		var p struct{ Name string `json:"name,omitempty"` }
+		if req.Params != nil {
+			unmarshalParams(req.Params, &p)
+		}
+		err := s.daemon.Stop(ctx, p.Name)
 		return s.handleAction(id, err, "stopped")
 
-	case "mount_status":
-		state, err := s.daemon.MountStatus()
-		if err != nil {
-			return protocol.NewError(id, protocol.ErrCodeMount, err.Error())
-		}
-		return protocol.NewResult(id, state)
+	case "mount_list":
+		return protocol.NewResult(id, s.daemon.manager.List())
 
 	case "get_config":
 		cfg, err := s.daemon.GetConfig()
@@ -172,15 +176,12 @@ func (s *Server) dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		}
 		return protocol.NewResult(id, cfg)
 
-	case "update_config":
-		var patch protocol.ConfigPatch
-		if err := unmarshalParams(req.Params, &patch); err != nil {
-			return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+	case "reload_config":
+		result, err := s.daemon.ReloadConfig(ctx)
+		if err != nil {
+			return protocol.NewError(id, protocol.ErrCodeBusy, err.Error())
 		}
-		if err := s.daemon.UpdateConfig(ctx, patch); err != nil {
-			return protocol.NewError(id, protocol.ErrCodeConfig, err.Error())
-		}
-		return protocol.NewResult(id, map[string]string{"status": "updated"})
+		return protocol.NewResult(id, result)
 
 	case "init_config":
 		var params struct {
@@ -211,40 +212,6 @@ func (s *Server) dispatch(ctx context.Context, req *protocol.Request) *protocol.
 			return protocol.NewError(id, protocol.ErrCodeConfig, err.Error())
 		}
 		return protocol.NewResult(id, result)
-
-	case "login_cookie":
-		var p struct{ Cookie string `json:"cookie"` }
-		if err := unmarshalParams(req.Params, &p); err != nil {
-			return protocol.NewError(id, protocol.ErrCodeInvalidReq, err.Error())
-		}
-		if err := s.daemon.LoginCookie(ctx, p.Cookie); err != nil {
-			return protocol.NewError(id, protocol.ErrCodeAuth, err.Error())
-		}
-		return protocol.NewResult(id, map[string]string{"status": "logged_in"})
-
-	case "login_qr":
-		url, expires, err := s.daemon.LoginQR(ctx)
-		if err != nil {
-			return protocol.NewError(id, protocol.ErrCodeAuth, err.Error())
-		}
-		return protocol.NewResult(id, map[string]interface{}{
-			"qr_url":   url,
-			"expires_at": expires,
-		})
-
-	case "logout":
-		err := s.daemon.Logout(ctx)
-		return s.handleAction(id, err, "logged_out")
-
-	case "is_logged_in":
-		return protocol.NewResult(id, s.daemon.IsLoggedIn())
-
-	case "account_info":
-		info, err := s.daemon.GetAccountInfo(ctx)
-		if err != nil {
-			return protocol.NewError(id, protocol.ErrCodeAuth, err.Error())
-		}
-		return protocol.NewResult(id, info)
 
 	case "sync_status":
 		stats, err := s.daemon.SyncStatus()

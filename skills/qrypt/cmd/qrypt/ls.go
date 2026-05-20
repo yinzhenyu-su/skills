@@ -23,13 +23,14 @@ type ListEntry struct {
 
 func runList(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
-	drv := loadToolDriver(cfg, cipher)
-	resolver, _ := drv.(pathResolver)
 
 	path := "/"
 	if len(args) > 0 {
 		path = args[0]
 	}
+	mountName := resolveMount(cmd, &path)
+	drv := loadToolDriverForMount(cfg, cipher, mountName)
+	resolver, _ := drv.(pathResolver)
 	fullPath := resolveFullPath(cfg.RootPath(), path)
 
 	fid, err := resolver.ResolvePath(context.Background(), fullPath)

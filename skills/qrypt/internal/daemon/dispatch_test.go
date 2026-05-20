@@ -18,17 +18,13 @@ func TestDispatchAllMethods(t *testing.T) {
 		method string
 		params interface{}
 	}{
-		{"mount_status", "mount_status", nil},
 		{"get_config", "get_config", nil},
-		{"is_logged_in", "is_logged_in", nil},
-		{"account_info", "account_info", nil},
+		{"mount_list", "mount_list", nil},
 		{"sync_status", "sync_status", nil},
 		{"sync_task_list", "sync_task_list", nil},
 		{"cache_usage", "cache_usage", nil},
 		{"start", "start", nil},
 		{"stop", "stop", nil},
-		{"logout", "logout", nil},
-		{"login_qr", "login_qr", nil},
 	}
 
 	for _, tt := range tests {
@@ -47,39 +43,27 @@ func TestDispatchAllMethods(t *testing.T) {
 	}
 }
 
-func TestDispatchUpdateConfig(t *testing.T) {
+func TestDispatchStartWithName(t *testing.T) {
 	d := newTestDaemon(t)
 	srv := &Server{daemon: d}
-	ctx := context.Background()
 
-	newPoint := "/test/mount"
-	params := map[string]interface{}{
-		"mount_point": newPoint,
-	}
+	resp := srv.dispatch(context.Background(), &protocol.Request{
+		ID: 1, Method: "start", Params: map[string]string{"name": "test"},
+	})
+	// Will fail because cookie is invalid — that's expected
+	_ = resp
+}
 
-	resp := srv.dispatch(ctx, &protocol.Request{
-		ID: 1, Method: "update_config", Params: params,
+func TestDispatchStartStopAll(t *testing.T) {
+	d := newTestDaemon(t)
+	srv := &Server{daemon: d}
+
+	// stop with no name stops all (no-op since nothing running)
+	resp := srv.dispatch(context.Background(), &protocol.Request{
+		ID: 1, Method: "stop",
 	})
 	if resp.Error != nil {
 		t.Fatalf("unexpected error: %v", resp.Error)
-	}
-
-	cfg, _ := d.GetConfig()
-	if cfg.Mount.Point != newPoint {
-		t.Fatalf("mount point not updated: %s", cfg.Mount.Point)
-	}
-}
-
-func TestDispatchUpdateConfigInvalid(t *testing.T) {
-	d := newTestDaemon(t)
-	srv := &Server{daemon: d}
-
-	// Send update without proper params (string instead of JSON object)
-	resp := srv.dispatch(context.Background(), &protocol.Request{
-		ID: 1, Method: "update_config", Params: "invalid",
-	})
-	if resp.Error == nil {
-		t.Fatal("expected error for invalid params")
 	}
 }
 
@@ -209,78 +193,26 @@ func TestUnmarshalParamsJSON(t *testing.T) {
 	}
 }
 
-func TestServiceLoginLogout(t *testing.T) {
-	d := newTestDaemon(t)
-	ctx := context.Background()
-
-	// Login with cookie (updates config)
-	if err := d.LoginCookie(ctx, "test-cookie"); err != nil {
-		t.Fatal(err)
-	}
-	cfg, _ := d.GetConfig()
-	if cfg.Drive.Quark != nil && cfg.Drive.Quark.Cookie != "test-cookie" {
-		t.Fatalf("cookie not set")
-	}
-
-	// Logout
-	if err := d.Logout(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	// QR login returns error (not implemented)
-	_, _, err := d.LoginQR(ctx)
-	if err == nil {
-		t.Fatal("expected error for QR login")
-	}
-}
-
-func TestServicePauseResumeSync(t *testing.T) {
-	d := newTestDaemon(t)
-	ctx := context.Background()
-
-	if err := d.PauseSync(ctx); err == nil {
-		t.Log("PauseSync returned nil (stub)")
-	}
-	if err := d.ResumeSync(ctx); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestServiceClearCacheStaging(t *testing.T) {
-	d := newTestDaemon(t)
-	ctx := context.Background()
-
-	if err := d.ClearCache(ctx); err == nil {
-		t.Log("ClearCache returned nil (stub)")
-	}
-	// ClearStaging should not error without cache manager
-	if err := d.ClearStaging(ctx); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestServiceExportImportConfig(t *testing.T) {
-	d := newTestDaemon(t)
-
-	if err := d.ExportConfig("/tmp/nonexistent/test.toml"); err == nil {
-		t.Log("ExportConfig returned nil (stub)")
-	}
-	if err := d.ImportConfig("/tmp/nonexistent/test.toml"); err == nil {
-		t.Log("ImportConfig returned nil (stub)")
-	}
-}
-
 func TestServiceStartStop(t *testing.T) {
 	d := newTestDaemon(t)
 	ctx := context.Background()
 
 	// Stop when not started should not error
-	if err := d.Stop(ctx); err != nil {
+	if err := d.Stop(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
 
 	// Start will fail without valid crypto/driver (that's expected)
-	if err := d.Start(ctx); err == nil {
+	if err := d.Start(ctx, ""); err == nil {
 		t.Log("Start unexpectedly succeeded")
+	}
+}
+
+func TestServiceClearStaging(t *testing.T) {
+	d := newTestDaemon(t)
+	ctx := context.Background()
+
+	if err := d.ClearStaging(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

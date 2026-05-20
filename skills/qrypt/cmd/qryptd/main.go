@@ -37,9 +37,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, _, err := config.LoadConfig(cfgPath)
+	cfg, vr, err := config.LoadConfig(cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "错误: 加载配置文件失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	if vr != nil && !vr.Valid {
+		fmt.Fprintf(os.Stderr, "配置文件校验失败:\n")
+		for _, c := range vr.Checks {
+			if c.Status == "error" {
+				fmt.Fprintf(os.Stderr, "  [%s] %s\n", c.Field, c.Message)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "请修复配置文件后重试\n")
 		os.Exit(1)
 	}
 
@@ -73,7 +84,7 @@ func main() {
 	log.L.Infof("qryptd v%s starting...\n", version)
 
 	// Create daemon
-	d := daemon.NewDaemon(cfg, version)
+	d := daemon.NewDaemonWithPath(cfg, cfgPath, version)
 
 	// Create server
 	*socketPath = config.ExpandHome(*socketPath)
@@ -97,7 +108,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	// Auto-start mount
-	if err := d.Start(ctx); err != nil {
+	if err := d.Start(ctx, ""); err != nil {
 		log.L.Errorf("自动挂载失败: %v\n", err)
 		fmt.Fprintf(os.Stderr, "自动挂载失败: %v\n", err)
 		// Don't exit - daemon can still serve config requests
@@ -107,7 +118,7 @@ func main() {
 	fmt.Println("\n正在停止...")
 
 	// Graceful shutdown
-	d.Stop(ctx)
+	d.Stop(ctx, "")
 	srv.Stop()
 	log.L.Infof("qryptd stopped\n")
 }

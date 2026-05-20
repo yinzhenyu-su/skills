@@ -75,15 +75,6 @@ func TestFindMatchEntryDefaults(t *testing.T) {
 	}
 }
 
-func TestEmbeddedExampleConfig(t *testing.T) {
-	if exampleConfig == "" {
-		t.Fatal("embedded example config is empty")
-	}
-	if len(exampleConfig) < 100 {
-		t.Fatalf("embedded config too short: %d bytes", len(exampleConfig))
-	}
-}
-
 func TestFormatCommaZero(t *testing.T) {
 	got := formatComma(0)
 	if got != "0" {
@@ -203,5 +194,31 @@ func TestFindCountOnly(t *testing.T) {
 	matched := f.run("0", "/")
 	if matched != 3 {
 		t.Errorf("expected 3 matches with countOnly, got %d", matched)
+	}
+}
+
+func TestParseMountPath(t *testing.T) {
+	tests := []struct {
+		input       string
+		wantMount   string
+		wantPath    string
+	}{
+		{"personal:/docs/file.txt", "personal", "/docs/file.txt"},
+		{"my-mount:/path", "my-mount", "/path"},
+		{"a:/", "a", "/"},
+		{"/abs/path", "", "/abs/path"},
+		{"./relative", "", "./relative"},
+		{"~/home/path", "", "~/home/path"},
+		{"just-a-path", "", "just-a-path"},
+		{"C:/Windows", "", "C:/Windows"}, // uppercase C doesn't match mount name
+	}
+	for _, tt := range tests {
+		mount, path := ParseMountPath(tt.input)
+		if mount != tt.wantMount {
+			t.Errorf("ParseMountPath(%q) mount = %q, want %q", tt.input, mount, tt.wantMount)
+		}
+		if path != tt.wantPath {
+			t.Errorf("ParseMountPath(%q) path = %q, want %q", tt.input, path, tt.wantPath)
+		}
 	}
 }

@@ -14,7 +14,10 @@ import (
 
 func runMkdir(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
-	drv := loadToolDriver(cfg, cipher)
+	path := args[0]
+	mountName := resolveMount(cmd, &path)
+	args[0] = path
+	drv := loadToolDriverForMount(cfg, cipher, mountName)
 
 	parents, _ := cmd.Flags().GetBool("parents")
 

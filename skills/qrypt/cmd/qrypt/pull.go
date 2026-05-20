@@ -13,9 +13,11 @@ import (
 
 func runPull(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
-	drv := loadToolDriver(cfg, cipher)
 
 	remotePath := args[0]
+	mountName := resolveMount(cmd, &remotePath)
+	drv := loadToolDriverForMount(cfg, cipher, mountName)
+
 	localPath := ""
 	if len(args) >= 2 {
 		localPath = args[1]

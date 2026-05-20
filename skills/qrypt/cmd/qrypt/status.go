@@ -16,19 +16,37 @@ func runStatus(cmd *cobra.Command, args []string) {
 	if configPath == "" {
 		configPath = config.FindConfigFile()
 	}
-	cfg, _, _ := config.LoadConfig(configPath)
+	cfg, vr, _ := config.LoadConfig(configPath)
 
 	fmt.Println("=== Qrypt Status ===")
 	fmt.Printf("配置文件:    %s\n", configPath)
-	if configPath != "" {
-		fmt.Printf("  缓存目录:  %s\n", cfg.Cache.Dir)
-		fmt.Printf("  缓存上限:  %s\n", cfg.Cache.MaxSize)
-		fmt.Printf("  挂载点:    %s\n", cfg.Mount.Point)
+	fmt.Printf("版本:        %s\n", cfg.Version)
+
+	if vr != nil && !vr.Valid {
+		fmt.Printf("配置状态:    无效 (运行 qrypt validate 查看详情)\n")
+	} else {
+		fmt.Printf("配置状态:    有效\n")
 	}
 
-	// Cache metrics
-	cacheDir := config.ExpandHome(cfg.Cache.Dir)
-	printCacheMetrics(cacheDir)
+	if len(cfg.Mounts) > 0 {
+		fmt.Println()
+		fmt.Println("挂载实例:")
+		for _, m := range cfg.Mounts {
+			rc := cfg.MergeInstanceConfig(m)
+			state := "已配置"
+			if rc.Enabled {
+				state = "已启用"
+			}
+			fmt.Printf("  %s: %s (%s, %s)\n", m.Name, rc.MountPoint, m.Type, state)
+		}
+	}
+
+	fmt.Println()
+	for _, m := range cfg.Mounts {
+		cacheDir := filepath.Join(config.WorkDir(), "cache", m.Name)
+		fmt.Printf("缓存目录(%s): %s\n", m.Name, cacheDir)
+		printCacheMetrics(cacheDir)
+	}
 
 	procRunning := checkQryptProcess()
 	fmt.Println()
@@ -38,9 +56,9 @@ func runStatus(cmd *cobra.Command, args []string) {
 		fmt.Println("运行状态:    未运行")
 	}
 
-	fmt.Println()
-	if cfg.Mount.Point != "" {
-		mountPoint := config.ExpandHome(cfg.Mount.Point)
+	if len(cfg.Mounts) > 0 {
+		mountPoint := config.ExpandHome(cfg.Mounts[0].MountPoint)
+		fmt.Println()
 		if isMounted(mountPoint) {
 			fmt.Printf("挂载状态:    已挂载到 %s\n", mountPoint)
 		} else {
@@ -50,19 +68,16 @@ func runStatus(cmd *cobra.Command, args []string) {
 }
 
 func printCacheMetrics(cacheDir string) {
-	fmt.Println()
-	fmt.Printf("缓存目录:    %s\n", cacheDir)
+	fmt.Printf("  缓存目录:  %s\n", cacheDir)
 
-	// pending journal
 	journalPath := filepath.Join(cacheDir, "pending.jsonl")
 	if fi, err := os.Stat(journalPath); err == nil {
 		lines := countLines(journalPath)
-		fmt.Printf("  journal:    %s, %d 条\n", formatBytes(fi.Size()), lines)
+		fmt.Printf("    journal:  %s, %d 条\n", formatBytes(fi.Size()), lines)
 	} else {
-		fmt.Printf("  journal:    无\n")
+		fmt.Printf("    journal:  无\n")
 	}
 
-	// staging dir
 	stagingDir := filepath.Join(cacheDir, "staging")
 	if entries, err := os.ReadDir(stagingDir); err == nil {
 		var totalSize int64
@@ -71,18 +86,16 @@ func printCacheMetrics(cacheDir string) {
 				totalSize += fi.Size()
 			}
 		}
-		fmt.Printf("  staging:    %d 个文件, 共 %s\n", len(entries), formatBytes(totalSize))
+		fmt.Printf("    staging:  %d 个文件, 共 %s\n", len(entries), formatBytes(totalSize))
 	} else {
-		fmt.Printf("  staging:    无\n")
+		fmt.Printf("    staging:  无\n")
 	}
+}
 
-	// reading cache
-	readingDir := filepath.Join(cacheDir, "reading")
-	if entries, err := filepath.Glob(filepath.Join(readingDir, "*.dec.batch")); err == nil {
-		fmt.Printf("  读缓存:     %d 个分块\n", len(entries))
-	} else {
-		fmt.Printf("  读缓存:     无\n")
-	}
+func checkQryptProcess() bool {
+	cmd := exec.Command("pgrep", "-f", "qrypt mount")
+	out, err := cmd.Output()
+	return err == nil && len(out) > 0
 }
 
 func countLines(path string) int {
@@ -100,12 +113,6 @@ func countLines(path string) int {
 		}
 	}
 	return n
-}
-
-func checkQryptProcess() bool {
-	cmd := exec.Command("pgrep", "-f", "qrypt mount")
-	out, err := cmd.Output()
-	return err == nil && len(out) > 0
 }
 
 func isMounted(point string) bool {

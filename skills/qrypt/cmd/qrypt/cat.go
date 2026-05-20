@@ -14,9 +14,10 @@ import (
 
 func runCat(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
-	drv := loadToolDriver(cfg, cipher)
 
 	path := args[0]
+	mountName := resolveMount(cmd, &path)
+	drv := loadToolDriverForMount(cfg, cipher, mountName)
 	fullPath := resolveFullPath(cfg.RootPath(), path)
 	parentPath := filepath.Dir(fullPath)
 	baseName := filepath.Base(fullPath)
