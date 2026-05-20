@@ -1,0 +1,70 @@
+# Qrypt 配置文件
+# Cloud Drive Rclone-Compatible Crypt Mount Tool
+
+version = "1"
+
+# 全局默认值（可被每个 [[mounts]] 的对应字段覆盖）
+[defaults]
+
+[defaults.sync]
+# 同步失败重试次数
+max_retries = 3
+# 并发上传数
+concurrent_uploads = 3
+# 目录列表缓存时间 (支持 s, m, h)
+dir_cache_ttl = "5m"
+
+[defaults.cache]
+# 最大缓存大小 (支持 KB, MB, GB, TB)
+max_size = "10GB"
+# 注意: 每个 mount 的缓存目录为 ~/.qrypt/cache/<name>/
+
+# 挂载实例列表（可配置多个）
+[[mounts]]
+# 挂载实例名称（唯一标识，用于 CLI 命令中通过 name:path 语法访问）
+name = "personal"
+# 存储后端类型: quark | yun139 | localfs
+type = "quark"
+# 本地挂载点（FUSE 挂载路径）
+mount_point = "~/Qrypt/Personal"
+# 是否在 qryptd 启动时自动挂载（可选，默认 true）
+enabled = true
+# 允许其他用户访问（需要 /etc/fuse.conf 配置）
+allow_other = false
+
+  [mounts.params]
+  # Quark 网盘 Cookie（必填）
+  cookie = ""
+  # 挂载的网盘路径（默认根目录）
+  root_path = "/Test"
+
+  [mounts.encryption]
+  # 加密密码（必填，与 rclone crypt 兼容）
+  password = ""
+  # 加密盐（可选）
+  salt = ""
+
+# 第二个挂载实例示例：天翼云盘
+# [[mounts]]
+# name = "photos"
+# type = "yun139"
+# mount_point = "~/Qrypt/Photos"
+#
+#   [mounts.params]
+#   authorization = ""
+#   root_id = "/"
+
+# 第三个挂载实例示例：本地文件系统
+# [[mounts]]
+# name = "localfs"
+# type = "localfs"
+# mount_point = "~/Qrypt/Local"
+#
+#   [mounts.params]
+#   local_root = "/tmp/qrypt-data"
+
+[log]
+level = "debug"
+max_size = 100
+max_backups = 7
+max_age = 30

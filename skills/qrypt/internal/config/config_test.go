@@ -9,11 +9,11 @@ import (
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
-	if cfg.Quark.RootPath != "/Test" {
-		t.Errorf("expected /Test, got %s", cfg.Quark.RootPath)
+	if cfg.Version != "1" {
+		t.Errorf("expected version 1, got %s", cfg.Version)
 	}
-	if cfg.Sync.MaxRetries != 3 {
-		t.Errorf("expected 3, got %d", cfg.Sync.MaxRetries)
+	if cfg.Defaults.Sync.ConcurrentUploads != 3 {
+		t.Errorf("expected 3, got %d", cfg.Defaults.Sync.ConcurrentUploads)
 	}
 	if cfg.Log.Level != "debug" {
 		t.Errorf("expected debug, got %s", cfg.Log.Level)
@@ -44,16 +44,20 @@ func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "qrypt.toml")
 	content := `
-[quark]
-cookie = "test_cookie"
-root_path = "/Test"
+version = "1"
 
-[encryption]
+[[mounts]]
+name = "test"
+type = "quark"
+mount_point = "~/QryptMount"
+
+[mounts.params]
+cookie = "test_cookie"
+root_path = "/"
+
+[mounts.encryption]
 password = "pass"
 salt = "salt"
-
-[mount]
-point = "~/QryptMount"
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -63,14 +67,11 @@ point = "~/QryptMount"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Quark.Cookie != "test_cookie" {
-		t.Errorf("expected test_cookie, got %s", cfg.Quark.Cookie)
+	if len(cfg.Mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(cfg.Mounts))
 	}
-	if cfg.Encryption.Password != "pass" {
-		t.Errorf("expected pass, got %s", cfg.Encryption.Password)
-	}
-	if cfg.Encryption.Salt != "salt" {
-		t.Errorf("expected salt, got %s", cfg.Encryption.Salt)
+	if cfg.Mounts[0].Params.Cookie != "test_cookie" {
+		t.Errorf("expected test_cookie, got %s", cfg.Mounts[0].Params.Cookie)
 	}
 	if vr == nil {
 		t.Fatal("expected validation result")
@@ -89,8 +90,8 @@ func TestLoadConfig_EmptyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Quark.Cookie != "" {
-		t.Errorf("expected empty cookie, got %s", cfg.Quark.Cookie)
+	if cfg.Version != "1" {
+		t.Errorf("expected version 1, got %s", cfg.Version)
 	}
 	if vr == nil {
 		t.Fatal("expected validation result")
@@ -149,6 +150,257 @@ func TestParseSize(t *testing.T) {
 		if !tt.wantErr && result != tt.expected {
 			t.Errorf("ParseSize(%q) = %d, want %d", tt.input, result, tt.expected)
 		}
+	}
+}
+
+func TestDefaultConfig_ValidTOML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.toml")
+	if err := WriteDefaultConfig(path); err != nil {
+		t.Fatalf("WriteDefaultConfig failed: %v", err)
+	}
+	cfg, vr, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if vr.Valid {
+		t.Log("default config is valid")
+	} else {
+		for _, c := range vr.Checks {
+			t.Logf("  %s: %s — %s", c.Field, c.Status, c.Message)
+		}
+	}
+	if len(cfg.Mounts) == 0 {
+		t.Error("default config should have at least one mount")
+	}
+}
+
+func TestValidateConfig_NoMounts(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Mounts = nil
+	vr := ValidateConfig(cfg)
+	if vr.Valid {
+		t.Error("expected validation to fail with no mounts")
+	}
+}
+
+func TestValidateConfig_BadDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Defaults.Cache.MaxSize = "invalid"
+	cfg.Defaults.Sync.ConcurrentUploads = 0
+	cfg.Mounts = []MountInstance{
+		{
+			Name:       "test",
+			Type:       "quark",
+			MountPoint: "~/Qrypt/Test",
+			Params:     MountParams{Cookie: "c"},
+			Encryption: &EncryptionConfig{Password: "p"},
+		},
+	}
+	vr := ValidateConfig(cfg)
+	if vr.Valid {
+		t.Error("expected validation to fail due to bad defaults")
+	}
+}
+
+func TestValidMountName(t *testing.T) {
+	tests := []struct {
+		name  string
+		valid bool
+	}{
+		{"personal", true},
+		{"my-mount", true},
+		{"a", true},
+		{"a-1", true},
+		{"Personal", false},
+		{"my_mount", false},
+		{"", false},
+		{"this-name-is-way-too-long-for-validation", false},
+	}
+	for _, tt := range tests {
+		got := ValidMountName(tt.name)
+		if got != tt.valid {
+			t.Errorf("ValidMountName(%q) = %v, want %v", tt.name, got, tt.valid)
+		}
+	}
+}
+
+func TestRootPathForMount_AllTypes(t *testing.T) {
+	tests := []struct {
+		m    MountInstance
+		want string
+	}{
+		{MountInstance{Type: "quark", Params: MountParams{RootPath: "/MyPath"}}, "/MyPath"},
+		{MountInstance{Type: "quark"}, "/"},
+		{MountInstance{Type: "yun139", Params: MountParams{RootID: "123"}}, "123"},
+		{MountInstance{Type: "localfs", Params: MountParams{LocalRoot: "/data"}}, "/data"},
+	}
+	for _, tt := range tests {
+		got := RootPathForMount(tt.m)
+		if got != tt.want {
+			t.Errorf("RootPathForMount(%+v) = %q, want %q", tt.m, got, tt.want)
+		}
+	}
+}
+
+func TestLoadConfig_NewFormatTwoMounts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qrypt.toml")
+	content := `
+version = "1"
+
+[[mounts]]
+name = "personal"
+type = "quark"
+mount_point = "~/Qrypt/A"
+
+[mounts.params]
+cookie = "cookie_a"
+
+[[mounts]]
+name = "work"
+type = "quark"
+mount_point = "~/Qrypt/B"
+enabled = false
+
+[mounts.params]
+cookie = "cookie_b"
+
+[mounts.encryption]
+password = "work_pass"
+
+[defaults.encryption]
+password = "default_pass"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Mounts) != 2 {
+		t.Fatalf("expected 2 mounts, got %d", len(cfg.Mounts))
+	}
+	if cfg.Mounts[0].Name != "personal" || cfg.Mounts[0].Params.Cookie != "cookie_a" {
+		t.Errorf("bad first mount: %+v", cfg.Mounts[0])
+	}
+	if cfg.Mounts[1].Name != "work" || cfg.Mounts[1].Params.Cookie != "cookie_b" {
+		t.Errorf("bad second mount: %+v", cfg.Mounts[1])
+	}
+}
+
+func TestMergeInstanceConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Defaults.Encryption.Password = "global_pass"
+	cfg.Defaults.Sync.ConcurrentUploads = 5
+
+	m := MountInstance{
+		Name:       "test",
+		Type:       "quark",
+		MountPoint: "~/Qrypt/Test",
+		Params: MountParams{Cookie: "test_cookie", RootPath: "/"},
+	}
+	rc := cfg.MergeInstanceConfig(m)
+	if rc.Encryption.Password != "global_pass" {
+		t.Errorf("expected global_pass, got %s", rc.Encryption.Password)
+	}
+	if rc.Sync.ConcurrentUploads != 5 {
+		t.Errorf("expected 5, got %d", rc.Sync.ConcurrentUploads)
+	}
+
+	// Mount-level override
+	pass := "local_pass"
+	m.Encryption = &EncryptionConfig{Password: pass}
+	rc = cfg.MergeInstanceConfig(m)
+	if rc.Encryption.Password != "local_pass" {
+		t.Errorf("expected local_pass, got %s", rc.Encryption.Password)
+	}
+}
+
+func TestLoadConfig_OldFormatRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qrypt.toml")
+	content := `
+[quark]
+cookie = "old_cookie"
+
+[encryption]
+password = "old_pass"
+
+[mount]
+point = "~/Qrypt"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, vr, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Mounts) != 0 {
+		t.Errorf("expected 0 mounts for old-format config, got %d", len(cfg.Mounts))
+	}
+	if vr.Valid {
+		t.Error("expected validation to fail: old format has no [[mounts]]")
+	}
+}
+
+func TestValidateConfig_DuplicateMountName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qrypt.toml")
+	content := `
+[[mounts]]
+name = "dup"
+type = "quark"
+mount_point = "~/Qrypt/A"
+
+[mounts.params]
+cookie = "a"
+
+[[mounts]]
+name = "dup"
+type = "quark"
+mount_point = "~/Qrypt/B"
+
+[mounts.params]
+cookie = "b"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, vr, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vr.Valid {
+		t.Error("expected validation to fail due to duplicate mount name")
+	}
+}
+
+func TestValidateConfig_InvalidMountName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qrypt.toml")
+	content := `
+[[mounts]]
+name = "Invalid_Name!"
+type = "quark"
+mount_point = "~/Qrypt/A"
+
+[mounts.params]
+cookie = "a"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, vr, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vr.Valid {
+		t.Error("expected validation to fail due to invalid mount name")
 	}
 }
 

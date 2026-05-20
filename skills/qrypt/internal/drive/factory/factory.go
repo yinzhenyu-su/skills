@@ -33,3 +33,30 @@ func NewDriverFromConfig(cfg config.DriveConfig) (drive.Driver, error) {
 		return nil, fmt.Errorf("unknown driver type: %q (supported: quark, yun139, localfs)", cfg.Type)
 	}
 }
+
+// NewDriverFromType creates a Driver from a type string and MountParams.
+func NewDriverFromType(driverType string, params config.MountParams) (drive.Driver, error) {
+	switch driverType {
+	case "quark":
+		if params.Cookie == "" {
+			return nil, fmt.Errorf("missing cookie for quark driver")
+		}
+		return quark.NewDriver(params.Cookie, params.RootPath), nil
+	case "yun139":
+		if params.Authorization == "" {
+			return nil, fmt.Errorf("missing authorization for yun139 driver")
+		}
+		return yun139.NewDriver(params.Authorization, params.RootID), nil
+	case "localfs":
+		root := params.LocalRoot
+		if root == "" {
+			root = params.RootPath
+		}
+		if root == "" {
+			return nil, fmt.Errorf("missing local_root for localfs driver")
+		}
+		return localfs.NewDriver(root), nil
+	default:
+		return nil, fmt.Errorf("unknown driver type: %q (supported: quark, yun139, localfs)", driverType)
+	}
+}

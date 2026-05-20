@@ -15,14 +15,15 @@ import (
 
 func runPush(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
-	drv := loadToolDriver(cfg, cipher)
-	resolver, _ := drv.(pathResolver)
 
 	localPath := args[0]
 	remotePath := ""
 	if len(args) >= 2 {
 		remotePath = args[1]
 	}
+	mountName := resolveMount(cmd, &remotePath)
+	drv := loadToolDriverForMount(cfg, cipher, mountName)
+	resolver, _ := drv.(pathResolver)
 
 	update, _ := cmd.Flags().GetBool("update")
 	transfers, _ := cmd.Flags().GetInt("transfers")

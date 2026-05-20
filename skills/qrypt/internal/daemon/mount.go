@@ -6,6 +6,7 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 )
 
 // mountBackend abstracts the FUSE filesystem lifecycle.
@@ -13,7 +14,7 @@ import (
 //   - fuseBackend  (!nofuse build tag) — real FUSE mount
 //   - noopBackend  (nofuse  build tag) — no-op stub
 type mountBackend interface {
-	mount(ctx context.Context, cfg *config.Config, drv interface{}, cipher *crypt.RcloneCipher, cacheMgr *cache.CacheManager) error
+	mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drive.Driver, cipher *crypt.RcloneCipher, cacheMgr *cache.CacheManager) error
 	unmount() error
 }
 

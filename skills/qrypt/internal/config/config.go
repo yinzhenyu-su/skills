@@ -1,55 +1,124 @@
 package config
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
+//go:embed default.toml
+var defaultConfigContent string
+
+var validMountName = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+func ValidMountName(s string) bool {
+	return validMountName.MatchString(s)
+}
+
+const CurrentVersion = "1"
+
 type Config struct {
-	// Deprecated: Use Drive.Quark instead. Kept for backward compatibility.
-	Quark      QuarkConfig      `toml:"quark"`
-	Drive      DriveConfig      `toml:"drive"`
+	// Schema version.
+	Version string `toml:"version"`
+
+	// Mount instances.
+	Mounts   []MountInstance `toml:"mounts"`
+	Defaults DefaultsConfig  `toml:"defaults"`
+
+	// Shared config (not per-mount).
+	Log LogConfig `toml:"log"`
+
+	// Legacy fields (no TOML tags — no longer read from config files).
+	// Kept as Go fields for internal code that still references them.
+	Quark QuarkConfig
+	Drive DriveConfig
+	Mount MountConfig
+
+	Encryption EncryptionConfig
+	Cache      CacheConfig
+	Sync       SyncConfig
+}
+
+// DefaultsConfig holds global default values inherited by each mount instance.
+type DefaultsConfig struct {
 	Encryption EncryptionConfig `toml:"encryption"`
-	Cache      CacheConfig      `toml:"cache"`
-	Mount      MountConfig      `toml:"mount"`
 	Sync       SyncConfig       `toml:"sync"`
-	Log        LogConfig        `toml:"log"`
+	Cache      CacheConfig      `toml:"cache"`
 }
 
-// QuarkConfig is the deprecated top-level Quark configuration.
-// Deprecated: Use Drive.Quark instead.
-type QuarkConfig struct {
+// MountInstance declares one cloud drive mount.
+type MountInstance struct {
+	Name       string      `toml:"name"`        // unique identifier, [a-z0-9-]{1,32}
+	Type       string      `toml:"type"`        // "quark" | "yun139" | "localfs"
+	MountPoint string      `toml:"mount_point"` // FUSE mount path
+	Enabled    *bool       `toml:"enabled"`     // nil = true
+	AllowOther bool        `toml:"allow_other"`
+
+	Params     MountParams        `toml:"params"`
+	Encryption *EncryptionConfig  `toml:"encryption"` // nil = use defaults
+	Sync       *SyncConfig        `toml:"sync"`       // nil = use defaults
+	Cache      *CacheConfig       `toml:"cache"`      // nil = use defaults
+}
+
+// MountParams holds driver-specific configuration parameters.
+type MountParams struct {
+	// quark
 	Cookie   string `toml:"cookie"`
 	RootPath string `toml:"root_path"`
-}
 
-// LocalFSOptions holds configuration for the local filesystem drive backend.
-type LocalFSOptions struct {
-	RootPath string `toml:"root_path"`
-}
-
-// DriveConfig selects the storage backend and holds driver-specific options.
-type DriveConfig struct {
-	Type   string          `toml:"type"` // "quark" | "yun139" | "localfs"
-	Quark  *QuarkOptions   `toml:"quark"`
-	Yun139 *Yun139Options  `toml:"yun139"`
-	LocalFS *LocalFSOptions `toml:"localfs"`
-}
-
-// QuarkOptions holds configuration for the Quark drive backend.
-type QuarkOptions struct {
-	Cookie   string `toml:"cookie"`
-	RootPath string `toml:"root_path"`
-}
-
-// Yun139Options holds configuration for the 139 cloud drive backend.
-type Yun139Options struct {
+	// yun139
 	Authorization string `toml:"authorization"`
 	RootID        string `toml:"root_id"`
+
+	// localfs
+	LocalRoot string `toml:"local_root"`
+}
+
+// ResolvedMountConfig is a mount instance with all defaults merged in.
+type ResolvedMountConfig struct {
+	Name       string
+	Type       string
+	MountPoint string
+	AllowOther bool
+	Enabled    bool
+	Params     MountParams
+
+	Encryption EncryptionConfig
+	Sync       SyncConfig
+	Cache      CacheConfig
+	CacheDir   string // computed: ~/.qrypt/cache/<name>/
+}
+
+// Legacy types (no TOML tags — kept for internal code).
+type QuarkConfig struct {
+	Cookie   string
+	RootPath string
+}
+
+type LocalFSOptions struct {
+	RootPath string
+}
+
+type DriveConfig struct {
+	Type    string
+	Quark   *QuarkOptions
+	Yun139  *Yun139Options
+	LocalFS *LocalFSOptions
+}
+
+type QuarkOptions struct {
+	Cookie   string
+	RootPath string
+}
+
+type Yun139Options struct {
+	Authorization string
+	RootID        string
 }
 
 type EncryptionConfig struct {
@@ -64,8 +133,8 @@ type CacheConfig struct {
 }
 
 type MountConfig struct {
-	Point      string `toml:"point"`
-	AllowOther bool   `toml:"allow_other"`
+	Point      string
+	AllowOther bool
 }
 
 type SyncConfig struct {
@@ -84,36 +153,62 @@ type LogConfig struct {
 }
 
 func DefaultConfig() *Config {
-	homeDir, _ := os.UserHomeDir()
 	workDir := WorkDir()
 	return &Config{
-		Quark: QuarkConfig{
-			RootPath: "/Test",
-		},
-		Drive: DriveConfig{
-			Type: "quark",
-			Quark: &QuarkOptions{
-				RootPath: "/Test",
-			},
-		},
-		Encryption: EncryptionConfig{},
-		Cache: CacheConfig{
-			Dir:     filepath.Join(workDir, "cache"),
-			MaxSize: "10GB",
-		},
-		Mount: MountConfig{
-			Point:     filepath.Join(homeDir, "Qrypt"),
-			AllowOther: false,
-		},
-		Sync: SyncConfig{
-			MaxRetries:        3,
-			ConcurrentUploads: 3,
-			DirCacheTTL:       "5m",
-		},
+		Version: CurrentVersion,
 		Log: LogConfig{
 			Level: "debug",
 			File:  filepath.Join(workDir, "qrypt.log"),
 		},
+		Defaults: DefaultsConfig{
+			Encryption: EncryptionConfig{},
+			Sync: SyncConfig{
+				MaxRetries:        3,
+				ConcurrentUploads: 3,
+				DirCacheTTL:       "5m",
+			},
+			Cache: CacheConfig{
+				MaxSize: "10GB",
+			},
+		},
+	}
+}
+
+// MergeInstanceConfig applies global defaults to a MountInstance and returns a resolved config.
+func (c *Config) MergeInstanceConfig(m MountInstance) *ResolvedMountConfig {
+	enabled := true
+	if m.Enabled != nil {
+		enabled = *m.Enabled
+	}
+
+	enc := c.Defaults.Encryption
+	if m.Encryption != nil {
+		enc = *m.Encryption
+	}
+
+	sync := c.Defaults.Sync
+	if m.Sync != nil {
+		sync = *m.Sync
+	}
+
+	cache := c.Defaults.Cache
+	if m.Cache != nil {
+		cache = *m.Cache
+	}
+
+	cacheDir := filepath.Join(WorkDir(), "cache", m.Name)
+
+	return &ResolvedMountConfig{
+		Name:       m.Name,
+		Type:       m.Type,
+		MountPoint: ExpandHome(m.MountPoint),
+		AllowOther: m.AllowOther,
+		Enabled:    enabled,
+		Params:     m.Params,
+		Encryption: enc,
+		Sync:       sync,
+		Cache:      cache,
+		CacheDir:   cacheDir,
 	}
 }
 
@@ -138,9 +233,8 @@ func WriteDefaultConfig(path string) error {
 	}
 	defer f.Close()
 
-	cfg := DefaultConfig()
-	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
-		return fmt.Errorf("encode config: %w", err)
+	if _, err := f.WriteString(defaultConfigContent); err != nil {
+		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
 }
@@ -172,27 +266,8 @@ func LoadConfig(path string) (*Config, *ValidationResult, error) {
 		return nil, nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Backward compatibility: auto-migrate old [quark] section to DriveConfig.
-	if config.Drive.Type == "" && config.Quark.Cookie != "" {
-		config.Drive.Type = "quark"
-		config.Drive.Quark = &QuarkOptions{
-			Cookie:   config.Quark.Cookie,
-			RootPath: config.Quark.RootPath,
-		}
-	}
-	// If new format was used, propagate back to old field for CLI tool compat.
-	if config.Drive.Quark != nil && config.Quark.Cookie == "" {
-		config.Quark.Cookie = config.Drive.Quark.Cookie
-		config.Quark.RootPath = config.Drive.Quark.RootPath
-	}
-
-	// Override cache.dir and log.file with work-dir-derived paths
-	// (these fields are no longer read from the config file).
 	workDir := WorkDir()
-	config.Cache.Dir = filepath.Join(workDir, "cache")
 	config.Log.File = filepath.Join(workDir, "qrypt.log")
-
-	config.Mount.Point = ExpandHome(config.Mount.Point)
 
 	result := ValidateConfig(config)
 	return config, result, nil
@@ -219,22 +294,28 @@ func FindConfigFile() string {
 	return ""
 }
 
-// RootPath returns the root path/ID for the currently configured driver type.
-// This is used by CLI tools (ls/cat/rm/mv/push/pull/find) to resolve user-provided
-// paths relative to the configured root. Returns "/" when nothing is configured.
+// RootPath returns the root path/ID for the first mount instance.
 func (c *Config) RootPath() string {
-	switch c.Drive.Type {
+	if len(c.Mounts) > 0 {
+		return RootPathForMount(c.Mounts[0])
+	}
+	return "/"
+}
+
+// RootPathForMount returns the root path/ID for a specific mount instance.
+func RootPathForMount(m MountInstance) string {
+	switch m.Type {
 	case "quark":
-		if c.Drive.Quark != nil {
-			return c.Drive.Quark.RootPath
+		if m.Params.RootPath != "" {
+			return m.Params.RootPath
 		}
 	case "yun139":
-		if c.Drive.Yun139 != nil {
-			return c.Drive.Yun139.RootID
+		if m.Params.RootID != "" {
+			return m.Params.RootID
 		}
 	case "localfs":
-		if c.Drive.LocalFS != nil {
-			return c.Drive.LocalFS.RootPath
+		if m.Params.LocalRoot != "" {
+			return m.Params.LocalRoot
 		}
 	}
 	return "/"

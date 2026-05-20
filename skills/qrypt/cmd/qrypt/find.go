@@ -246,7 +246,13 @@ func (f *finder) output(childPath string, isDir bool) {
 
 func runFind(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
-	drv := loadToolDriver(cfg, cipher)
+
+	path := ""
+	if len(args) >= 2 {
+		path = args[0]
+	}
+	mountName := resolveMount(cmd, &path)
+	drv := loadToolDriverForMount(cfg, cipher, mountName)
 
 	resolver, ok := drv.(pathResolver)
 	if !ok {

@@ -4,7 +4,6 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/winfsp/cgofuse/fuse"
 
@@ -25,27 +24,22 @@ func newPlatformMountBackend() mountBackend {
 	return &fuseMountBackend{}
 }
 
-func (fb *fuseMountBackend) mount(ctx context.Context, cfg *config.Config, drv interface{}, cipher *crypt.RcloneCipher, cacheMgr *cache.CacheManager) error {
-	driver, ok := drv.(drive.Driver)
-	if !ok {
-		return fmt.Errorf("driver does not implement drive.Driver")
-	}
-
-	rootFid := getRootFid(ctx, driver, cfg)
-	fb.vfs = fs.NewFS(driver, cipher, cacheMgr, rootFid, fs.FSOptions{
-		MaxRetries:        cfg.Sync.MaxRetries,
-		ConcurrentUploads: cfg.Sync.ConcurrentUploads,
-		MemCacheSizeMB:    cfg.Cache.MemCacheSizeMB,
+func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drive.Driver, cipher *crypt.RcloneCipher, cacheMgr *cache.CacheManager) error {
+	rootFid := getRootFid(ctx, drv, rc)
+	fb.vfs = fs.NewFS(drv, cipher, cacheMgr, rootFid, fs.FSOptions{
+		MaxRetries:        rc.Sync.MaxRetries,
+		ConcurrentUploads: rc.Sync.ConcurrentUploads,
+		MemCacheSizeMB:    rc.Cache.MemCacheSizeMB,
 	})
 
 	fb.host = fuse.NewFileSystemHost(fb.vfs)
-	options := fs.MountOptions(cfg.Mount.AllowOther)
+	options := fs.MountOptions(rc.AllowOther)
 
 	go func() {
-		fb.host.Mount(cfg.Mount.Point, options)
+		fb.host.Mount(rc.MountPoint, options)
 	}()
 
-	log.L.Infof("fuse: mounted at %s\n", cfg.Mount.Point)
+	log.L.Infof("fuse: mounted at %s\n", rc.MountPoint)
 	return nil
 }
 
@@ -60,14 +54,17 @@ func (fb *fuseMountBackend) unmount() error {
 }
 
 // getRootFid resolves the root path to a FID.
-func getRootFid(ctx context.Context, drv drive.Driver, cfg *config.Config) string {
+func getRootFid(ctx context.Context, drv drive.Driver, rc *config.ResolvedMountConfig) string {
 	resolver, ok := drv.(interface {
 		ResolvePath(ctx context.Context, path string) (string, error)
 	})
 	if !ok {
 		return "0"
 	}
-	rootPath := cfg.RootPath()
+	rootPath := config.RootPathForMount(config.MountInstance{
+		Type:   rc.Type,
+		Params: rc.Params,
+	})
 	if rootPath == "" || rootPath == "/" {
 		return "0"
 	}

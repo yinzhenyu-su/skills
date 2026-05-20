@@ -16,9 +16,25 @@ import (
 func newTestDaemon(t *testing.T) *Daemon {
 	t.Helper()
 	cfg := &config.Config{
-		Mount: config.MountConfig{
-			Point:      "/tmp/qrypt-test-mount",
-			AllowOther: false,
+		Mounts: []config.MountInstance{
+			{
+				Name:       "test",
+				Type:       "quark",
+				MountPoint: "/tmp/qrypt-test-mount",
+				Params: config.MountParams{
+					Cookie:   "test-cookie",
+					RootPath: "/",
+				},
+			},
+		},
+		Defaults: config.DefaultsConfig{
+			Sync: config.SyncConfig{
+				MaxRetries:        3,
+				ConcurrentUploads: 3,
+			},
+			Cache: config.CacheConfig{
+				MaxSize: "10GB",
+			},
 		},
 	}
 	return NewDaemon(cfg, "test-version")
@@ -38,40 +54,14 @@ func TestDaemonStatus(t *testing.T) {
 	}
 }
 
-func TestDaemonMountStatus(t *testing.T) {
-	d := newTestDaemon(t)
-	state, err := d.MountStatus()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state != "" && state != protocol.MountStateUnmounted {
-		t.Fatalf("got state=%s", state)
-	}
-}
-
 func TestDaemonGetConfig(t *testing.T) {
 	d := newTestDaemon(t)
 	cfg, err := d.GetConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Mount.Point != "/tmp/qrypt-test-mount" {
-		t.Fatalf("got mount point=%s", cfg.Mount.Point)
-	}
-}
-
-func TestDaemonUpdateConfig(t *testing.T) {
-	d := newTestDaemon(t)
-	newPoint := "/new/mount/point"
-	err := d.UpdateConfig(context.Background(), protocol.ConfigPatch{
-		MountPoint: &newPoint,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, _ := d.GetConfig()
-	if cfg.Mount.Point != newPoint {
-		t.Fatalf("got mount point=%s", cfg.Mount.Point)
+	if len(cfg.Mounts) == 0 || cfg.Mounts[0].MountPoint != "/tmp/qrypt-test-mount" {
+		t.Fatalf("got mount point=%s", cfg.Mounts[0].MountPoint)
 	}
 }
 
@@ -83,9 +73,6 @@ func TestDaemonValidateConfig(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("result is nil")
-	}
-	if result.Valid {
-		t.Fatal("expected invalid config")
 	}
 
 	checks := make(map[string]string)
@@ -99,22 +86,12 @@ func TestDaemonValidateConfig(t *testing.T) {
 		}
 	}
 
-	assertCheck("drive.type", "error")
-	assertCheck("encryption.password", "error")
-	assertCheck("cache.max_size", "error")
-	assertCheck("sync.concurrent_uploads", "error")
-	assertCheck("mount.point", "ok")
-}
-
-func TestDaemonGetAccountInfo(t *testing.T) {
-	d := newTestDaemon(t)
-	info, err := d.GetAccountInfo(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Username != "unknown" {
-		t.Fatalf("got username=%s", info.Username)
-	}
+	assertCheck("mounts[0].type", "ok")
+	assertCheck("mounts[0].params.cookie", "ok")
+	assertCheck("mounts[0].mount_point", "ok")
+	assertCheck("mounts[0].encryption.password", "warn")
+	assertCheck("defaults.sync.concurrent_uploads", "ok")
+	assertCheck("defaults.cache.max_size", "ok")
 }
 
 func TestDaemonSyncStatus(t *testing.T) {
@@ -146,13 +123,6 @@ func TestDaemonCacheUsage(t *testing.T) {
 	}
 	if usage == nil {
 		t.Fatal("usage is nil")
-	}
-}
-
-func TestDaemonIsLoggedIn(t *testing.T) {
-	d := newTestDaemon(t)
-	if d.IsLoggedIn() {
-		t.Fatal("should not be logged in without driver")
 	}
 }
 

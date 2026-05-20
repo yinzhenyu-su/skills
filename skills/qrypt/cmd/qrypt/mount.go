@@ -35,6 +35,26 @@ func init() {
 	mountCmd.Flags().StringP("salt", "s", "", "Rclone salt (可选)")
 	mountCmd.Flags().StringP("root-path", "r", "", "网盘挂载路径")
 	mountCmd.Flags().String("log-level", "", "日志级别: debug, info, warn, error")
+
+	// Management subcommands
+	mountCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "列出所有配置的挂载实例",
+		Run:   runMountList,
+	})
+	mountCmd.AddCommand(&cobra.Command{
+		Use:   "start <name>",
+		Short: "启动指定挂载实例",
+		Args:  cobra.ExactArgs(1),
+		Run:   runMountStart,
+	})
+	mountCmd.AddCommand(&cobra.Command{
+		Use:   "stop <name>",
+		Short: "停止指定挂载实例",
+		Args:  cobra.ExactArgs(1),
+		Run:   runMountStop,
+	})
+
 	rootCmd.AddCommand(mountCmd)
 }
 
@@ -44,67 +64,58 @@ func runMount(cmd *cobra.Command, args []string) {
 		configPath = config.FindConfigFile()
 	}
 
-	cfg, _, err := config.LoadConfig(configPath)
+	cfg, vr, err := config.LoadConfig(configPath)
 	if err != nil {
 		fmt.Printf("加载配置文件失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	if driveType, _ := cmd.Flags().GetString("drive-type"); driveType != "" {
-		cfg.Drive.Type = driveType
-	}
-	if cookie, _ := cmd.Flags().GetString("cookie"); cookie != "" {
-		if cfg.Drive.Quark == nil {
-			cfg.Drive.Quark = &config.QuarkOptions{}
+	if !vr.Valid {
+		fmt.Println("配置文件校验失败:")
+		for _, c := range vr.Checks {
+			if c.Status == "error" {
+				fmt.Printf("  [%s] %s\n", c.Field, c.Message)
+			}
 		}
-		cfg.Drive.Quark.Cookie = cookie
+		fmt.Println()
+		fmt.Println("请修复配置文件后重试，或运行 qrypt validate 查看详细信息")
+		os.Exit(1)
+	}
+
+	if len(cfg.Mounts) == 0 {
+		fmt.Println("配置中没有挂载实例")
+		os.Exit(1)
+	}
+	m := cfg.Mounts[0]
+
+	if cookie, _ := cmd.Flags().GetString("cookie"); cookie != "" {
+		m.Params.Cookie = cookie
 	}
 	if password, _ := cmd.Flags().GetString("password"); password != "" {
-		cfg.Encryption.Password = password
+		if m.Encryption == nil {
+			m.Encryption = &config.EncryptionConfig{Password: password}
+		} else {
+			m.Encryption.Password = password
+		}
 	}
 	if salt, _ := cmd.Flags().GetString("salt"); salt != "" {
-		cfg.Encryption.Salt = salt
-	}
-	if cacheDir, _ := cmd.Flags().GetString("cache"); cacheDir != "" {
-		cfg.Cache.Dir = config.ExpandHome(cacheDir)
+		if m.Encryption == nil {
+			m.Encryption = &config.EncryptionConfig{Salt: salt}
+		} else {
+			m.Encryption.Salt = salt
+		}
 	}
 	if mountPoint, _ := cmd.Flags().GetString("mount"); mountPoint != "" {
-		cfg.Mount.Point = config.ExpandHome(mountPoint)
+		m.MountPoint = config.ExpandHome(mountPoint)
 	}
 	if rootPath, _ := cmd.Flags().GetString("root-path"); rootPath != "" {
-		if cfg.Drive.Quark == nil {
-			cfg.Drive.Quark = &config.QuarkOptions{}
-		}
-		cfg.Drive.Quark.RootPath = rootPath
+		m.Params.RootPath = rootPath
 	}
 	if logLevel, _ := cmd.Flags().GetString("log-level"); logLevel != "" {
 		cfg.Log.Level = logLevel
 	}
 
-	if cfg.Drive.Type == "quark" && (cfg.Drive.Quark == nil || cfg.Drive.Quark.Cookie == "") {
-		fmt.Println("错误: 缺少 Quark Cookie")
-		fmt.Println("  请通过以下方式之一设置：")
-		fmt.Println("    1. 在配置文件中设置 [drive.quark] 或 [quark] 节的 cookie")
-		fmt.Println("    2. 使用 -c <cookie> 命令行参数")
-		fmt.Println("")
-		fmt.Println("  Cookie 获取方法：登录 https://pan.quark.cn，F12 → Network → 任意请求头中复制 Cookie")
-		os.Exit(1)
-	}
-	if cfg.Encryption.Password == "" {
-		fmt.Println("错误: 缺少加密密码")
-		fmt.Println("  请通过以下方式之一设置：")
-		fmt.Println("    1. 在配置文件中设置 encryption.password")
-		fmt.Println("    2. 使用 -p <password> 命令行参数")
-		os.Exit(1)
-	}
-	if cfg.Mount.Point == "" {
-		fmt.Println("错误: 缺少挂载点")
-		fmt.Println("  请通过以下方式之一设置：")
-		fmt.Println("    1. 在配置文件中设置 mount.point")
-		fmt.Println("    2. 使用 -m <path> 命令行参数")
-		fmt.Println("    3. 运行 qrypt init 生成配置文件模板")
-		os.Exit(1)
-	}
+	rc := cfg.MergeInstanceConfig(m)
 
 	rotateCfg := log.DefaultRotateConfig
 	if cfg.Log.MaxSize > 0 {
@@ -127,17 +138,20 @@ func runMount(cmd *cobra.Command, args []string) {
 	log.L = logger
 	defer logger.Close()
 
-	cipher, err := crypt.NewRcloneCipher(cfg.Encryption.Password, cfg.Encryption.Salt)
+	cipher, err := crypt.NewRcloneCipher(rc.Encryption.Password, rc.Encryption.Salt)
 	if err != nil {
 		log.L.Errorf("加密引擎初始化失败: %v\n", err)
 		fmt.Printf("加密引擎初始化失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	drv, err := factory.NewDriverFromConfig(cfg.Drive)
+	drv, err := factory.NewDriverFromType(rc.Type, rc.Params)
 	if err != nil {
 		fmt.Printf("创建驱动失败: %v\n", err)
 		os.Exit(1)
+	}
+	if setter, ok := drv.(interface{ SetCipher(*crypt.RcloneCipher) }); ok {
+		setter.SetCipher(cipher)
 	}
 
 	if err := drv.Init(context.Background()); err != nil {
@@ -147,7 +161,7 @@ func runMount(cmd *cobra.Command, args []string) {
 
 	rootFid := "0"
 	if resolver, ok := drv.(interface{ ResolvePath(ctx context.Context, path string) (string, error) }); ok {
-		rootPath := cfg.RootPath()
+		rootPath := config.RootPathForMount(m)
 		if rootPath != "" && rootPath != "/" {
 			fmt.Printf("解析路径: %s...\n", rootPath)
 			fid, err := resolver.ResolvePath(context.Background(), rootPath)
@@ -157,31 +171,31 @@ func runMount(cmd *cobra.Command, args []string) {
 			}
 			rootFid = fid
 		}
-	} else if cfg.Drive.Type == "yun139" && cfg.Drive.Yun139 != nil && cfg.Drive.Yun139.RootID != "" {
-		rootFid = cfg.Drive.Yun139.RootID
+	} else if rc.Type == "yun139" && rc.Params.RootID != "" {
+		rootFid = rc.Params.RootID
 	}
 	fmt.Printf("根目录 ID: %s\n", rootFid)
 
-	cacheMaxSize, err := config.ParseSize(cfg.Cache.MaxSize)
+	cacheMaxSize, err := config.ParseSize(rc.Cache.MaxSize)
 	if err != nil {
 		fmt.Printf("解析缓存大小失败: %v，使用默认值 10GB\n", err)
 		cacheMaxSize = 10 * 1024 * 1024 * 1024
 	}
-	cacheMgr, err := cache.NewCacheManager(cfg.Cache.Dir, cacheMaxSize)
+	cacheMgr, err := cache.NewCacheManager(rc.CacheDir, cacheMaxSize)
 	if err != nil {
 		fmt.Printf("缓存初始化失败: %v\n", err)
 		os.Exit(1)
 	}
 
 	vfs := fs.NewFS(drv, cipher, cacheMgr, rootFid, fs.FSOptions{
-		MaxRetries:        cfg.Sync.MaxRetries,
-		ConcurrentUploads: cfg.Sync.ConcurrentUploads,
-		MemCacheSizeMB:    cfg.Cache.MemCacheSizeMB,
+		MaxRetries:        rc.Sync.MaxRetries,
+		ConcurrentUploads: rc.Sync.ConcurrentUploads,
+		MemCacheSizeMB:    rc.Cache.MemCacheSizeMB,
 	})
 	host := fuse.NewFileSystemHost(vfs)
-	options := fs.MountOptions(cfg.Mount.AllowOther)
+	options := fs.MountOptions(rc.AllowOther)
 
-	fmt.Printf("挂载 Quark Drive 到 %s... (Ctrl+C 卸载)\n", cfg.Mount.Point)
+	fmt.Printf("挂载 %s (%s) 到 %s... (Ctrl+C 卸载)\n", rc.Name, rc.Type, rc.MountPoint)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
@@ -206,5 +220,5 @@ func runMount(cmd *cobra.Command, args []string) {
 		os.Exit(0)
 	}()
 
-	host.Mount(cfg.Mount.Point, options)
+	host.Mount(rc.MountPoint, options)
 }

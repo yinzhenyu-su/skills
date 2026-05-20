@@ -134,7 +134,15 @@ func main() {
 	mkdirCmd.Flags().StringP("config", "f", "", "配置文件路径")
 	mkdirCmd.Flags().BoolP("parents", "p", false, "需要时创建目标目录的上层目录，但即使这些目录已存在也不报错")
 
+	// Add --mount flag to all tool commands
+	mountFlagCmds := []*cobra.Command{lsCmd, catCmd, rmCmd, mvCmd, findCmd, pullCmd, pushCmd, mkdirCmd}
+	for _, c := range mountFlagCmds {
+		c.Flags().String("mount", "", "挂载实例名称 (默认: 配置中唯一实例)")
+	}
+
 	rootCmd.AddCommand(initCmd, lsCmd, catCmd, configCmd, statusCmd, rmCmd, mvCmd, findCmd, pullCmd, pushCmd, mkdirCmd)
+
+	// mount subcommands are added via init() in mount.go
 
 	var toolCmd = &cobra.Command{
 		Use:   "tool",
