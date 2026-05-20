@@ -158,14 +158,23 @@ func (s *Store) WriteAt(path string, data []byte, off int64) (int, error) {
 
 	fid := FidFromPath(path)
 
-	// Use page cache if we already have one, or if the write is small enough
-	// to benefit from coalescing (< pageMaxSize / 4).
-	if _, ok := s.pages.Load(fid); ok || len(data) < pageMaxSize/4 {
-		p := s.getPage(fid)
-		return p.WriteAt(data, off)
+	if v, ok := s.pages.Load(fid); ok {
+		return v.(*Page).WriteAt(data, off)
 	}
 
-	// Large write, no existing page — direct to disk.
+	if len(data) < pageMaxSize/4 {
+		// Only create a page for files that are still empty on disk.
+		// If the file already has data (from prior direct-to-disk writes),
+		// the page buffer would start empty and overwrite that data with
+		// zeros when flushed.
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+			goto directWrite
+		}
+		return s.getPage(fid).WriteAt(data, off)
+	}
+
+directWrite:
+	// Large write, or small write to a file with existing disk data — direct to disk.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return 0, err
