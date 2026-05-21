@@ -152,6 +152,10 @@ func (d *Daemon) DaemonShutdown(ctx context.Context) error {
 	return d.manager.Shutdown(ctx)
 }
 
+func (d *Daemon) orchestrator() *Orchestrator {
+	return d.manager.orchestrator
+}
+
 // Stop stops one or all mounts. If name is empty, stops all running.
 func (d *Daemon) Stop(ctx context.Context, name string) error {
 	if name != "" {
@@ -375,7 +379,8 @@ func (d *Daemon) pushDirectory(ctx context.Context, taskID, mountName string, dr
 	}
 
 	dirName := baseOf(fullRemotePath)
-	if hasMkdir, ok := drv.(drive.Writer); ok && !params.DryRun {
+	w, hasMkdir := drv.(drive.Writer)
+	if hasMkdir && !params.DryRun {
 		entries, _ := drv.List(ctx, parentFid)
 		encDirName := cipher.EncryptSegment(dirName)
 		found := false
@@ -387,7 +392,7 @@ func (d *Daemon) pushDirectory(ctx context.Context, taskID, mountName string, dr
 			}
 		}
 		if !found {
-			ne, err := hasMkdir.Mkdir(ctx, parentFid, encDirName)
+			ne, err := w.Mkdir(ctx, parentFid, encDirName)
 			if err != nil {
 				d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("mkdir: %v", err))
 				return
@@ -396,18 +401,109 @@ func (d *Daemon) pushDirectory(ctx context.Context, taskID, mountName string, dr
 		}
 	}
 
-	pool := qryptsync.NewWorkerPool(drv, cipher, transfers, params.DryRun, params.Update)
-	pool.OnProgress = func(info qryptsync.ProgressInfo) {
-		d.publishPushEvent(taskID, mountName, "uploading", info.File, info.Bytes, info.Total, "")
-	}
-	pool.Start(ctx)
-	if err := qryptsync.ScanLocalForUpload(ctx, params.Source, parentFid, drv, cipher, pool); err != nil {
-		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("scan: %v", err))
-		pool.Wait()
+	orch := d.orchestrator()
+	uploader := qryptsync.NewUploader(drv, cipher)
+	dirFids := make(map[string]string)
+	dirFids["."] = parentFid
+	remoteCache := make(map[string][]drive.Entry)
+
+	var wg sync.WaitGroup
+	var walkErr error
+
+	walkErr = filepath.Walk(params.Source, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, _ := filepath.Rel(params.Source, path)
+		if relPath == "." {
+			return nil
+		}
+		parentRel := filepath.Dir(relPath)
+		currentParent := dirFids[parentRel]
+
+		if _, ok := remoteCache[currentParent]; !ok {
+			entries, _ := drv.List(ctx, currentParent)
+			remoteCache[currentParent] = entries
+		}
+
+		if info.IsDir() {
+			encName := cipher.EncryptSegment(info.Name())
+			var currentFid string
+			found := false
+			for _, e := range remoteCache[currentParent] {
+				if e.IsDir && e.Name == encName {
+					currentFid = e.ID
+					found = true
+					break
+				}
+			}
+			if !found && hasMkdir && !params.DryRun {
+				ne, mkerr := w.Mkdir(ctx, currentParent, encName)
+				if mkerr == nil {
+					currentFid = ne.ID
+				}
+			} else if params.DryRun && !found {
+				currentFid = "mock-" + encName
+			}
+			dirFids[relPath] = currentFid
+			return nil
+		}
+
+		if params.Update {
+			encName := cipher.EncryptSegment(info.Name())
+			shouldSkip := false
+			for _, e := range remoteCache[currentParent] {
+				if !e.IsDir && e.Name == encName {
+					plainSize, derr := cipher.DecryptedSize(e.Size)
+					if derr == nil && plainSize == info.Size() {
+						shouldSkip = true
+						break
+					}
+				}
+			}
+			if shouldSkip {
+				return nil
+			}
+		}
+
+		filePath := path
+		remoteParent := currentParent
+		remoteName := info.Name()
+		fileSize := info.Size()
+		wg.Add(1)
+		orch.Submit(func(ctx context.Context) error {
+			defer wg.Done()
+			req := qryptsync.Request{
+				Name:      remoteName,
+				ParentFid: remoteParent,
+				PlainSize: fileSize,
+				DataReader: func() (io.ReadCloser, error) {
+					return os.Open(filePath)
+				},
+				ProgressFn: func(partNumber int) {
+					d.publishPushEvent(taskID, mountName, "uploading", filePath, int64(partNumber), fileSize, "")
+				},
+			}
+			if params.DryRun {
+				return nil
+			}
+			_, uerr := uploader.Upload(ctx, req)
+			return uerr
+		})
+		return nil
+	})
+
+	if walkErr != nil {
+		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("scan: %v", walkErr))
 		return
 	}
-	pool.Wait()
-	d.publishPushEvent(taskID, mountName, "completed", "", 0, 0, "")
+
+	wg.Wait()
+	if params.DryRun {
+		d.publishPushEvent(taskID, mountName, "completed", "", 0, 0, "")
+	} else {
+		d.publishPushEvent(taskID, mountName, "completed", "", 0, 0, "")
+	}
 }
 
 func (d *Daemon) publishPushEvent(taskID, mount, state, file string, bytes, total int64, errMsg string) {

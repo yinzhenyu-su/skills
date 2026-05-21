@@ -26,7 +26,11 @@
   - daemon 管理时自动绑定 VFS → orchestrator
   - 独立模式仍走 uploadChan（向后兼容）
 - [x] 3.2 VFS staging flush 由 uploadChan → orchestrator（daemon 管理时）
-- [~] 3.3 CLI push 由 WorkerPool → orchestrator（当前 CLI push 仍独立，后续可迁入）
+- [x] 3.3 Daemon pushDirectory 由 WorkerPool → orchestrator
+  - Walk directory + mkdir remote dirs inline
+  - Submit per-file upload closures to shared Orchestrator
+  - Progress tracking via daemon's ProgressHub + events
+  - CLI standalone path continues to use sync.WorkerPool (unchanged)
 - [x] 3.4 TokenBucket 全局限速
 - [x] 3.5 ProgressHub 统一进度推送
 - [~] 3.6 WorkerPool 退役（推迟至 Phase 4）
