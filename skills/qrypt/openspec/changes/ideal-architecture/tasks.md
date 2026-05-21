@@ -19,9 +19,14 @@
 
 ## Phase 3: TransferOrchestrator
 
-- [~] 3.1 TransferOrchestrator 核心实现（推迟至 Phase 4，VFS 归入 daemon 后自然合并）
-- [~] 3.2 VFS staging flush 由 uploadChan → orchestrator（推迟至 Phase 4）
-- [~] 3.3 CLI push 由 WorkerPool → orchestrator（推迟至 Phase 4）
+- [x] 3.1 TransferOrchestrator 核心实现
+  - 共享 goroutine worker pool（VFS flush + CLI push 同一个队列）
+  - 实现 fs.UploadQueue 接口，VFS 通过闭包提交上传任务
+  - 共享 TokenBucket + ProgressHub
+  - daemon 管理时自动绑定 VFS → orchestrator
+  - 独立模式仍走 uploadChan（向后兼容）
+- [x] 3.2 VFS staging flush 由 uploadChan → orchestrator（daemon 管理时）
+- [~] 3.3 CLI push 由 WorkerPool → orchestrator（当前 CLI push 仍独立，后续可迁入）
 - [x] 3.4 TokenBucket 全局限速
 - [x] 3.5 ProgressHub 统一进度推送
 - [~] 3.6 WorkerPool 退役（推迟至 Phase 4）
@@ -51,4 +56,4 @@
   - 新增 `cat_file` RPC method: daemon 读取+解密后通过 WebSocket binary frames 流式推送
   - CLI `qrypt cat` 优先走 daemon，fallback 到 direct
   - WSClient 新增 Conn() / Ctx() 方法支持 binary streaming
-- [ ] 4.4 回归测试
+- [x] 4.4 回归测试：17 个包编译通过、vet 通过、全部单元测试通过

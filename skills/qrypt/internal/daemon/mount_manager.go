@@ -11,6 +11,7 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
+	"github.com/yinzhenyu/skills/qrypt/internal/fs"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
@@ -30,10 +31,16 @@ func (inst *MountInstance) IsBusy() bool {
 
 // MountManager manages the lifecycle of multiple FUSE mount instances.
 type MountManager struct {
-	mu         sync.RWMutex
-	cfg        *config.Config
-	sessionMgr *SessionManager
-	mounts     map[string]*MountInstance
+	mu           sync.RWMutex
+	cfg          *config.Config
+	sessionMgr   *SessionManager
+	mounts       map[string]*MountInstance
+	orchestrator *Orchestrator
+}
+
+// SetOrchestrator attaches a shared upload queue to all future mounts.
+func (mm *MountManager) SetOrchestrator(o *Orchestrator) {
+	mm.orchestrator = o
 }
 
 // MountInstance is one running mount with all its resources.
@@ -219,6 +226,13 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 	}
 	inst.Backend = backend
 
+	// Wire daemon's orchestrator to VFS upload queue (if available).
+	if orch := mm.orchestrator; orch != nil {
+		if vfs, ok := backend.VFS().(interface{ SetUploadQueue(fs.UploadQueue) }); ok {
+			vfs.SetUploadQueue(orch)
+		}
+	}
+
 	inst.State = protocol.MountStateMounted
 	mm.mounts[name] = inst
 	log.L.Infof("MountManager: mounted %q at %s\n", name, rc.MountPoint)
@@ -357,6 +371,15 @@ func (mm *MountManager) StopAll(ctx context.Context) error {
 		}
 	}
 	return lastErr
+}
+
+// Shutdown stops all mounts and the shared orchestrator.
+func (mm *MountManager) Shutdown(ctx context.Context) error {
+	err := mm.StopAll(ctx)
+	if mm.orchestrator != nil {
+		mm.orchestrator.Shutdown()
+	}
+	return err
 }
 
 // ForEachRunningMount calls fn for each running mount while holding the read lock.

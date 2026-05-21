@@ -117,8 +117,8 @@ func main() {
 	<-sigChan
 	fmt.Println("\n正在停止...")
 
-	// Graceful shutdown
-	d.Stop(ctx, "")
+	// Graceful shutdown — stops mounts, drains orchestrator, stops server
+	d.DaemonShutdown(ctx)
 	srv.Stop()
 	log.L.Infof("qryptd stopped\n")
 }

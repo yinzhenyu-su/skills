@@ -38,33 +38,41 @@ type Daemon struct {
 func NewDaemon(cfg *config.Config, version string) *Daemon {
 	sm := NewSessionManager()
 	em := NewEventManager()
+	ph := NewProgressHub(em)
+	mm := NewMountManager(cfg, sm)
+	orch := NewOrchestrator(3, NewRateLimiter(0), ph)
+	mm.SetOrchestrator(orch)
 	d := &Daemon{
 		cfg:        cfg,
 		version:    version,
 		eventMgr:   em,
 		sessionMgr: sm,
-		manager:    NewMountManager(cfg, sm),
-		progress:   NewProgressHub(em),
+		manager:    mm,
+		progress:   ph,
 		rateLimit:  NewRateLimiter(0),
 	}
-	NewCacheInvalidator(d.manager, em)
+	NewCacheInvalidator(mm, em)
 	return d
 }
 
 func NewDaemonWithPath(cfg *config.Config, cfgPath, version string) *Daemon {
 	sm := NewSessionManager()
 	em := NewEventManager()
+	ph := NewProgressHub(em)
+	mm := NewMountManager(cfg, sm)
+	orch := NewOrchestrator(3, NewRateLimiter(0), ph)
+	mm.SetOrchestrator(orch)
 	d := &Daemon{
 		cfg:        cfg,
 		cfgPath:    cfgPath,
 		version:    version,
 		eventMgr:   em,
 		sessionMgr: sm,
-		manager:    NewMountManager(cfg, sm),
-		progress:   NewProgressHub(em),
+		manager:    mm,
+		progress:   ph,
 		rateLimit:  NewRateLimiter(0),
 	}
-	NewCacheInvalidator(d.manager, em)
+	NewCacheInvalidator(mm, em)
 	return d
 }
 
@@ -137,6 +145,11 @@ func (d *Daemon) Start(ctx context.Context, name string) error {
 		return d.manager.Start(ctx, name)
 	}
 	return d.manager.StartAll(ctx)
+}
+
+// DaemonShutdown stops all mounts and the orchestrator, then waits for cleanup.
+func (d *Daemon) DaemonShutdown(ctx context.Context) error {
+	return d.manager.Shutdown(ctx)
 }
 
 // Stop stops one or all mounts. If name is empty, stops all running.

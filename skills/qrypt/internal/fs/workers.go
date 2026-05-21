@@ -57,19 +57,7 @@ func (fs *QryptFS) uploadWorker() {
 					n.mu.Lock()
 					n.syncQueued = true
 					n.mu.Unlock()
-					select {
-					case fs.uploadChan <- syncTask{node: n}:
-					default:
-						if atomic.LoadInt32(&fs.shuttingDown) == 1 {
-							n.mu.Lock()
-							n.syncQueued = false
-							n.mu.Unlock()
-							return
-						}
-						n.mu.Lock()
-						n.syncQueued = false
-						n.mu.Unlock()
-					}
+					fs.enqueueNode(n)
 				}(task.node, backoff)
 			} else {
 				task.node.mu.Lock()
