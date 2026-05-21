@@ -38,6 +38,10 @@
   - 删除根目录残留 `dispatch_test.go`
   - 迁移 `FindSocketPath`/`IsDaemonRunning` 到 `socket.go`
 - [ ] 4.1 CacheInvalidator 实现
-- [ ] 4.2 `qrypt mount` 改为 daemon 别名
+- [x] 4.2 `qrypt mount` 改为 daemon 别名
+  - daemon 运行时: CLI 通过 WS RPC 委托 daemon 启停 FUSE
+  - daemon 未运行: 降级到独立挂载模式（带 deprecation 警告）
+  - `mount list` 优先显示 daemon 实时状态（daemon 运行时）
+  - `mount start/stop` 走 daemon RPC
 - [ ] 4.3 cat/find/cp 改为走 daemon
 - [ ] 4.4 回归测试

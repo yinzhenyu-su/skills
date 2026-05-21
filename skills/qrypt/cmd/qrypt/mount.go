@@ -16,6 +16,7 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/cache"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 	factory "github.com/yinzhenyu/skills/qrypt/internal/drive/factory"
 	"github.com/yinzhenyu/skills/qrypt/internal/fs"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
@@ -74,6 +75,78 @@ type mountTarget struct {
 }
 
 func runMount(cmd *cobra.Command, args []string) {
+	socketPath := daemon.FindSocketPath()
+	if daemon.IsDaemonRunning(socketPath) {
+		runMountViaDaemon(cmd, args, socketPath)
+		return
+	}
+	// Fallback: standalone mount (deprecated path, will be removed)
+	fmt.Println("警告: qryptd 未运行, 使用独立挂载模式。启动 `qryptd` 以获得完整功能。")
+	runMountStandalone(cmd, args)
+}
+
+func runMountViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
+	client, err := daemon.DialWS(socketPath)
+	if err != nil {
+		fmt.Printf("无法连接到 qryptd: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	mountAll, _ := cmd.Flags().GetBool("all")
+	if mountAll {
+		resp, rpcErr := client.Call("start", nil)
+		if rpcErr != nil {
+			fmt.Printf("RPC 错误: %v\n", rpcErr)
+			os.Exit(1)
+		}
+		if resp.Error != nil {
+			fmt.Printf("启动挂载失败: %s\n", resp.Error.Message)
+			os.Exit(1)
+		}
+		fmt.Println("已通过 qryptd 启动所有已启用挂载")
+		return
+	}
+
+	// Resolve the mount name client-side
+	configPath, _ := cmd.Flags().GetString("config")
+	_, cfg, _, _ := config.LoadConfigAuto(configPath)
+	if cfg == nil {
+		// If config can't be loaded, ask daemon to start default
+		resp, rpcErr := client.Call("start", map[string]string{"name": ""})
+		if rpcErr != nil {
+			fmt.Printf("RPC 错误: %v\n", rpcErr)
+			os.Exit(1)
+		}
+		if resp.Error != nil {
+			fmt.Printf("启动挂载失败: %s\n", resp.Error.Message)
+			os.Exit(1)
+		}
+		fmt.Println("已通过 qryptd 启动默认挂载")
+		return
+	}
+
+	targets := resolveMountTargets(cmd, args, cfg)
+	if len(targets) == 0 {
+		fmt.Println("没有匹配的挂载实例")
+		os.Exit(1)
+	}
+
+	for _, m := range targets {
+		resp, rpcErr := client.Call("start", map[string]string{"name": m.Name})
+		if rpcErr != nil {
+			fmt.Printf("  %s: RPC 错误: %v\n", m.Name, rpcErr)
+			continue
+		}
+		if resp.Error != nil {
+			fmt.Printf("  %s: 启动失败: %s\n", m.Name, resp.Error.Message)
+			continue
+		}
+		fmt.Printf("  %s: 已通过 qryptd 挂载\n", m.Name)
+	}
+}
+
+func runMountStandalone(cmd *cobra.Command, args []string) {
 	configPath, _ := cmd.Flags().GetString("config")
 	_, cfg, vr, err := config.LoadConfigAuto(configPath)
 	if err != nil {
