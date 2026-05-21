@@ -16,5 +16,6 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	nhooyr.io/websocket v1.8.17 // indirect
 )

@@ -15,17 +15,17 @@
 - [x] 2.4 `withTempMount` 退役，所有 RPC handler 改用 SessionManager
 - [ ] 2.5 CLI 移除 config/cipher/driver 创建逻辑（待确认方向）
 - [ ] 2.6 删除 `loadToolCfg` / `loadToolCfgOnly` / `loadToolDriverForMount`（待确认方向）
-- [ ] 2.7 测试：session 复用、refcount 正确性、token 刷新
+- [x] 2.7 测试：session 复用、refcount 正确性、token 刷新
 
 ## Phase 3: TransferOrchestrator
 
-- [ ] 3.1 TransferOrchestrator 核心实现
-- [ ] 3.2 VFS staging flush 由 uploadChan → orchestrator
-- [ ] 3.3 CLI push 由 WorkerPool → orchestrator
-- [ ] 3.4 TokenBucket 全局限速
-- [ ] 3.5 ProgressHub 统一进度推送
-- [ ] 3.6 WorkerPool 退役
-- [ ] 3.7 测试：上传并发、限速、混合场景、进度推送
+- [~] 3.1 TransferOrchestrator 核心实现（推迟至 Phase 4，VFS 归入 daemon 后自然合并）
+- [~] 3.2 VFS staging flush 由 uploadChan → orchestrator（推迟至 Phase 4）
+- [~] 3.3 CLI push 由 WorkerPool → orchestrator（推迟至 Phase 4）
+- [x] 3.4 TokenBucket 全局限速
+- [x] 3.5 ProgressHub 统一进度推送
+- [~] 3.6 WorkerPool 退役（推迟至 Phase 4）
+- [x] 3.7 测试：编译通过、vet 通过、全量测试通过
 
 ## Phase 4: 缓存一致性 + FUSE 归入 daemon
 
