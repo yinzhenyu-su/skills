@@ -319,6 +319,51 @@ func TestMergeInstanceConfig(t *testing.T) {
 	}
 }
 
+func TestMergeInstanceConfig_EncryptionDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// 无 mount 级 config → 使用全局默认值
+	m := MountInstance{
+		Name:       "test",
+		Type:       "quark",
+		MountPoint: "~/Qrypt/Test",
+		Params:     MountParams{Cookie: "test_cookie", RootPath: "/"},
+	}
+	rc := cfg.MergeInstanceConfig(m)
+	if rc.Encryption.FileNameEncryption != "standard" {
+		t.Errorf("expected default standard, got %s", rc.Encryption.FileNameEncryption)
+	}
+	if rc.Encryption.FileNameEncoding != "base32" {
+		t.Errorf("expected default base32, got %s", rc.Encryption.FileNameEncoding)
+	}
+
+	// mount 级覆盖
+	m.Encryption = &EncryptionConfig{
+		Password:           "p",
+		FileNameEncryption: "obfuscate",
+		FileNameEncoding:   "base64",
+	}
+	rc = cfg.MergeInstanceConfig(m)
+	if rc.Encryption.FileNameEncryption != "obfuscate" {
+		t.Errorf("expected obfuscate, got %s", rc.Encryption.FileNameEncryption)
+	}
+	if rc.Encryption.FileNameEncoding != "base64" {
+		t.Errorf("expected base64, got %s", rc.Encryption.FileNameEncoding)
+	}
+
+	// 空字段 → 默认值
+	m.Encryption = &EncryptionConfig{
+		Password: "p",
+	}
+	rc = cfg.MergeInstanceConfig(m)
+	if rc.Encryption.FileNameEncryption != "standard" {
+		t.Errorf("empty should default to standard, got %s", rc.Encryption.FileNameEncryption)
+	}
+	if rc.Encryption.FileNameEncoding != "base32" {
+		t.Errorf("empty should default to base32, got %s", rc.Encryption.FileNameEncoding)
+	}
+}
+
 func TestLoadConfig_OldFormatRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "qrypt.toml")

@@ -178,9 +178,21 @@ func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
 	case "off":
 		return encrypted, nil
 	case "obfuscate":
-		return c.deobfuscateSegment(encrypted)
-	default: // "standard"
-		return c.decryptSegmentStandard(encrypted)
+		// obfuscate 模式下先剥离 (N) 冲突后缀，
+		// 否则后缀字符会被当作 obfuscate 内容误解码
+		cleaned := stripConflictSuffix(encrypted)
+		return c.deobfuscateSegment(cleaned)
+	default:
+		plain, err := c.decryptSegmentStandard(encrypted)
+		if err == nil {
+			return plain, nil
+		}
+		// standard 模式：冲突后缀导致解码失败 → 剥离后重试
+		cleaned := stripConflictSuffix(encrypted)
+		if cleaned != encrypted {
+			return c.decryptSegmentStandard(cleaned)
+		}
+		return "", err
 	}
 }
 

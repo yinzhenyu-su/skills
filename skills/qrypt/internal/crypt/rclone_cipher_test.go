@@ -2,6 +2,7 @@ package crypt
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/nacl/secretbox"
@@ -78,6 +79,158 @@ func TestRcloneCipher_ObfuscateMode(t *testing.T) {
 		if decrypted != name {
 			t.Errorf("[obfuscate] name mismatch! Original: %s, Decrypted: %s", name, decrypted)
 		}
+	}
+}
+
+func TestRcloneCipher_Obfuscate_EdgeCases(t *testing.T) {
+	c, _ := NewRcloneCipher("password", "", "base32", "obfuscate")
+
+	t.Run("empty string", func(t *testing.T) {
+		enc := c.EncryptSegment("")
+		if enc != "" {
+			t.Errorf("expected empty, got %q", enc)
+		}
+		dec, err := c.DecryptSegment("")
+		if err != nil || dec != "" {
+			t.Errorf("expected empty, got %q err=%v", dec, err)
+		}
+	})
+
+	t.Run("single character", func(t *testing.T) {
+		name := "a"
+		enc := c.EncryptSegment(name)
+		dec, err := c.DecryptSegment(enc)
+		if err != nil || dec != name {
+			t.Errorf("single char: %q -> %q err=%v", name, dec, err)
+		}
+	})
+
+	t.Run("special characters", func(t *testing.T) {
+		names := []string{
+			"file with spaces.txt",
+			"file_with_underscores.js",
+			"file.with.dots",
+			"hello!world",
+			"test!!double",
+			"a!!b!!c",
+		}
+		for _, name := range names {
+			enc := c.EncryptSegment(name)
+			dec, err := c.DecryptSegment(enc)
+			if err != nil || dec != name {
+				t.Errorf("special chars: %q -> %q err=%v", name, dec, err)
+			}
+		}
+	})
+
+	t.Run("numbers only", func(t *testing.T) {
+		name := "12345"
+		enc := c.EncryptSegment(name)
+		dec, err := c.DecryptSegment(enc)
+		if err != nil || dec != name {
+			t.Errorf("numbers: %q -> %q err=%v", name, dec, err)
+		}
+	})
+
+	t.Run("uppercase and lowercase", func(t *testing.T) {
+		names := []string{
+			"README.md",
+			"Index.HTML",
+			"Makefile",
+			".gitignore",
+		}
+		for _, name := range names {
+			enc := c.EncryptSegment(name)
+			dec, err := c.DecryptSegment(enc)
+			if err != nil || dec != name {
+				t.Errorf("case: %q -> %q err=%v", name, dec, err)
+			}
+		}
+	})
+
+	t.Run("very long name", func(t *testing.T) {
+		name := strings.Repeat("文件名", 50)
+		enc := c.EncryptSegment(name)
+		// obfuscate 应保持长度基本不变
+		if len(enc) > len(name)+10 {
+			t.Errorf("too long: %d vs %d", len(enc), len(name))
+		}
+		dec, err := c.DecryptSegment(enc)
+		if err != nil || dec != name {
+			t.Errorf("long name: decryption failed err=%v", err)
+		}
+	})
+
+	t.Run("conflict suffix stripping", func(t *testing.T) {
+		cObf, _ := NewRcloneCipher("password", "", "base32", "obfuscate")
+		name := "test.txt"
+		enc := cObf.EncryptSegment(name)
+		// 模拟网盘追加冲突后缀
+		withConflict := enc + " (1)"
+		dec, err := cObf.DecryptSegment(withConflict)
+		if err != nil || dec != name {
+			t.Errorf("conflict suffix: %q from %q err=%v", dec, withConflict, err)
+		}
+	})
+}
+
+func TestRcloneCipher_Obfuscate_Determinism(t *testing.T) {
+	c1, _ := NewRcloneCipher("password", "", "base32", "obfuscate")
+	c2, _ := NewRcloneCipher("password", "", "base32", "obfuscate")
+
+	names := []string{"test.txt", "电影.mp4", "a"}
+	for _, name := range names {
+		enc1 := c1.EncryptSegment(name)
+		enc2 := c2.EncryptSegment(name)
+		if enc1 != enc2 {
+			t.Errorf("determinism failed for %q: %q vs %q", name, enc1, enc2)
+		}
+	}
+}
+
+func TestRcloneCipher_Obfuscate_KeySensitivity(t *testing.T) {
+	c1, _ := NewRcloneCipher("password1", "", "base32", "obfuscate")
+	c2, _ := NewRcloneCipher("password2", "", "base32", "obfuscate")
+
+	names := []string{"test.txt", "电影.mp4"}
+	for _, name := range names {
+		enc1 := c1.EncryptSegment(name)
+		enc2 := c2.EncryptSegment(name)
+		if enc1 == enc2 {
+			t.Errorf("different keys should produce different output for %q", name)
+		}
+	}
+}
+
+func TestRcloneCipher_New_OptDefaults(t *testing.T) {
+	// 无 opts → 默认 base32 + standard
+	c, err := NewRcloneCipher("p", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.filenameEncoding != "base32" {
+		t.Errorf("expected base32, got %s", c.filenameEncoding)
+	}
+	if c.filenameEncryption != "standard" {
+		t.Errorf("expected standard, got %s", c.filenameEncryption)
+	}
+
+	// 只传 encoding
+	c2, _ := NewRcloneCipher("p", "", "base64")
+	if c2.filenameEncoding != "base64" || c2.filenameEncryption != "standard" {
+		t.Errorf("unexpected defaults: enc=%s mode=%s", c2.filenameEncoding, c2.filenameEncryption)
+	}
+
+	// 传 encoding + encryption
+	c3, _ := NewRcloneCipher("p", "", "base64", "obfuscate")
+	if c3.filenameEncoding != "base64" || c3.filenameEncryption != "obfuscate" {
+		t.Errorf("unexpected: enc=%s mode=%s", c3.filenameEncoding, c3.filenameEncryption)
+	}
+
+	// 空 string opt → 默认
+	c4, _ := NewRcloneCipher("p", "", "", "")
+	if c4.filenameEncoding != "base32" || c4.filenameEncryption != "standard" {
+		t.Errorf("empty opts should become defaults: enc=%s mode=%s", c4.filenameEncoding, c4.filenameEncryption)
 	}
 }
 
