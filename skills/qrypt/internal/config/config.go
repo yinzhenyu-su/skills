@@ -122,8 +122,9 @@ type Yun139Options struct {
 }
 
 type EncryptionConfig struct {
-	Password string `toml:"password"`
-	Salt     string `toml:"salt"`
+	Password         string `toml:"password"`
+	Salt             string `toml:"salt"`
+	FileNameEncoding string `toml:"filename_encoding"`
 }
 
 type CacheConfig struct {
@@ -184,6 +185,9 @@ func (c *Config) MergeInstanceConfig(m MountInstance) *ResolvedMountConfig {
 	enc := c.Defaults.Encryption
 	if m.Encryption != nil {
 		enc = *m.Encryption
+	}
+	if enc.FileNameEncoding == "" {
+		enc.FileNameEncoding = "base32"
 	}
 
 	sync := c.Defaults.Sync
