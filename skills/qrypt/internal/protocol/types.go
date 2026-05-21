@@ -157,6 +157,7 @@ type PushStartResult struct {
 // PushProgressData is the payload for sync_progress events during push.
 type PushProgressData struct {
 	TaskID    string  `json:"task_id"`
+	Mount     string  `json:"mount"`
 	File      string  `json:"file"`
 	FileNo    int     `json:"file_no"`
 	FileTotal int     `json:"file_total"`

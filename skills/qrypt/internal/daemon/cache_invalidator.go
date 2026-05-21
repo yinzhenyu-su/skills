@@ -39,10 +39,30 @@ func (ci *CacheInvalidator) listen(em *EventManager) {
 		if err := json.Unmarshal(data, &progress); err != nil {
 			continue
 		}
-		// progress.Mount is not in PushProgressData currently.
-		// For now, invalidate on all mounts — conservative but correct.
-		ci.invalidateAll(context.Background(), progress.File)
+		if progress.Mount != "" {
+			ci.invalidateMount(context.Background(), progress.Mount, progress.File)
+		} else {
+			ci.invalidateAll(context.Background(), progress.File)
+		}
 	}
+}
+
+func (ci *CacheInvalidator) invalidateMount(ctx context.Context, mountName, remotePath string) {
+	dir := filepath.Dir(remotePath)
+	ci.manager.ForEachRunningMount(func(name string, inst *MountInstance) {
+		if name != mountName {
+			return
+		}
+		if inst.State != protocol.MountStateMounted || inst.Backend == nil {
+			return
+		}
+		vfs := inst.Backend.VFS()
+		if vfs == nil {
+			return
+		}
+		vfs.InvalidateDirCache(dir)
+		log.L.Debugf("CacheInvalidator: evicted %q from mount %q\n", dir, name)
+	})
 }
 
 func (ci *CacheInvalidator) invalidateAll(ctx context.Context, remotePath string) {
