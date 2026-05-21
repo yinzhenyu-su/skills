@@ -13,8 +13,15 @@
 - [x] 2.2 后台 TokenRefresher goroutine（驱动自行管理 token，无需主动刷新）
 - [x] 2.3 VFS 改为从 SessionManager borrow session
 - [x] 2.4 `withTempMount` 退役，所有 RPC handler 改用 SessionManager
-- [ ] 2.5 CLI 移除 config/cipher/driver 创建逻辑（待确认方向）
-- [ ] 2.6 删除 `loadToolCfg` / `loadToolCfgOnly` / `loadToolDriverForMount`（待确认方向）
+- [x] 2.5 CLI 移除独立模式（daemon-only)
+  - push/pull/cat/mv/rm/mkdir/ls/mount 全部 daemon-only
+  - qryptd 未运行时显示明确错误信息
+  - 删除 ~900 行 standalone fallback 代码
+- [x] 2.6 删除 `loadToolCfg` / `loadToolCfgOnly` / `loadToolDriverForMount`
+  - config.go 改用 daemon RPC (get_config)
+  - find.go 改用 daemon RPC (find)
+  - tool.go 使用专用 loadCipherForTool
+  - cp.go 删除（stub）
 - [x] 2.7 测试：session 复用、refcount 正确性、token 刷新
 
 ## Phase 3: TransferOrchestrator
@@ -33,7 +40,10 @@
   - CLI standalone path continues to use sync.WorkerPool (unchanged)
 - [x] 3.4 TokenBucket 全局限速
 - [x] 3.5 ProgressHub 统一进度推送
-- [~] 3.6 WorkerPool 退役（推迟至 Phase 4）
+- [x] 3.6 WorkerPool 退役
+  - pool.go 重写：移除 WorkerPool、ScanLocalForUpload、TransferJob
+  - PullStart 改用 Orchestrator.Submit
+  - pool_test.go 删除
 - [x] 3.7 测试：编译通过、vet 通过、全量测试通过
 
 ## Phase 4: 缓存一致性 + FUSE 归入 daemon
