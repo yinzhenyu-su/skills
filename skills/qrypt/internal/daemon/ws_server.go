@@ -589,6 +589,9 @@ func (s *WSServer) dispatch(ctx context.Context, req *protocol.Request) *protoco
 		}
 		return protocol.NewResult(id, result)
 
+	case "active_transfers":
+		return protocol.NewResult(id, s.daemon.ActiveTransfers())
+
 	case "shutdown":
 		go func() {
 			s.daemon.DaemonShutdown(ctx)

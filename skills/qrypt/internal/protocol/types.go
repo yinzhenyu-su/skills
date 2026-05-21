@@ -279,3 +279,22 @@ type FindResult struct {
 	Count   int         `json:"count"`
 	Entries []FindEntry `json:"entries,omitempty"`
 }
+
+// ActiveTransfer represents one in-progress upload or download.
+type ActiveTransfer struct {
+	TaskID    string `json:"task_id"`
+	Mount     string `json:"mount"`
+	Direction string `json:"direction"` // "push" or "pull"
+	File      string `json:"file"`
+	Bytes     int64  `json:"bytes"`
+	Total     int64  `json:"total"`
+	Progress  int    `json:"progress"` // 0-100
+	State     string `json:"state"`    // "uploading" | "downloading"
+	Error     string `json:"error,omitempty"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// ActiveTransfersResult is the response for active_transfers RPC.
+type ActiveTransfersResult struct {
+	Transfers []ActiveTransfer `json:"transfers"`
+}

@@ -258,6 +258,31 @@ func (d *Daemon) GetSyncTaskList() ([]protocol.SyncTaskInfo, error) {
 	return tasks, nil
 }
 
+// ActiveTransfers returns all in-progress uploads and downloads.
+func (d *Daemon) ActiveTransfers() *protocol.ActiveTransfersResult {
+	entries := d.progress.Active()
+	result := &protocol.ActiveTransfersResult{}
+	for _, e := range entries {
+		pct := 0
+		if e.Total > 0 {
+			pct = int(e.Bytes * 100 / e.Total)
+		}
+		result.Transfers = append(result.Transfers, protocol.ActiveTransfer{
+			TaskID:    e.TaskID,
+			Mount:     e.Mount,
+			Direction: e.Direction,
+			File:      e.File,
+			Bytes:     e.Bytes,
+			Total:     e.Total,
+			Progress:  pct,
+			State:     e.State,
+			Error:     e.Error,
+			UpdatedAt: e.UpdatedAt.UnixMilli(),
+		})
+	}
+	return result
+}
+
 func (d *Daemon) CacheUsage() (*protocol.CacheUsage, error) {
 	var totalStagingCount int
 	for _, m := range d.manager.List() {
