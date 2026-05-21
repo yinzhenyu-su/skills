@@ -9,22 +9,17 @@ import (
 )
 
 func runValidate(cmd *cobra.Command, args []string) {
-	var cfgPath string
-	if len(args) > 0 {
+	cfgPath, _ := cmd.Flags().GetString("config")
+	if cfgPath == "" && len(args) > 0 {
 		cfgPath = args[0]
 	}
-	if cfgPath == "" {
-		cfgPath, _ = cmd.Flags().GetString("config")
-	}
-	if cfgPath == "" {
-		cfgPath = config.FindConfigFile()
-	}
-	if cfgPath == "" {
-		fmt.Println("未找到配置文件")
+	loadedPath, _, _, err := config.LoadConfigAuto(cfgPath)
+	if err != nil {
+		fmt.Printf("加载配置文件失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	result := config.ValidateConfigFile(cfgPath)
+	result := config.ValidateConfigFile(loadedPath)
 
 	errors := 0
 	warns := 0

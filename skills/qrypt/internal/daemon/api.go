@@ -29,6 +29,16 @@ type Service interface {
 	CacheUsage() (*protocol.CacheUsage, error)
 	ClearStaging(ctx context.Context) error
 
+	// Push/pull operations
+	PushStart(ctx context.Context, params protocol.PushStartParams) (*protocol.PushStartResult, error)
+	PullStart(ctx context.Context, params protocol.PullStartParams) (*protocol.PullStartResult, error)
+
+	// Remote file operations
+	ListDir(ctx context.Context, params protocol.ListDirParams) (*protocol.ListDirResult, error)
+	Mkdir(ctx context.Context, params protocol.MkdirParams) (*protocol.MkdirResult, error)
+	Remove(ctx context.Context, params protocol.RemoveParams) (*protocol.RemoveResult, error)
+	Move(ctx context.Context, params protocol.MoveParams) (*protocol.MoveResult, error)
+
 	// Events
 	SubscribeEvents(ctx context.Context, senderID string) (<-chan *protocol.Event, error)
 	UnsubscribeEvents(senderID string)

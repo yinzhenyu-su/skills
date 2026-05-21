@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 )
@@ -18,11 +19,11 @@ func runCat(cmd *cobra.Command, args []string) {
 	path := args[0]
 	mountName := resolveMount(cmd, &path)
 	drv := loadToolDriverForMount(cfg, cipher, mountName)
-	fullPath := resolveFullPath(cfg.RootPath(), path)
+	fullPath := config.ResolveFullPath(cfg.RootPath(), path)
 	parentPath := filepath.Dir(fullPath)
 	baseName := filepath.Base(fullPath)
 
-	resolver, ok := drv.(pathResolver)
+	resolver, ok := drv.(drive.PathResolver)
 	if !ok {
 		fmt.Printf("该驱动不支持路径解析\n")
 		os.Exit(1)

@@ -28,6 +28,16 @@ func ValidateConfig(cfg *Config) *ValidationResult {
 	if len(cfg.Mounts) == 0 {
 		r.addCheck("mounts", "error", "no mount instances configured — add [[mounts]] to configuration")
 	} else {
+		defaultCount := 0
+		for _, m := range cfg.Mounts {
+			if m.Default {
+				defaultCount++
+			}
+		}
+		if defaultCount > 1 {
+			r.addCheck("mounts", "error", fmt.Sprintf("%d mounts have default = true — at most one allowed", defaultCount))
+		}
+
 		names := make(map[string]bool)
 		for i, m := range cfg.Mounts {
 			prefix := fmt.Sprintf("mounts[%d]", i)

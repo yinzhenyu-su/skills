@@ -13,13 +13,10 @@ import (
 
 func runStatus(cmd *cobra.Command, args []string) {
 	configPath, _ := cmd.Flags().GetString("config")
-	if configPath == "" {
-		configPath = config.FindConfigFile()
-	}
-	cfg, vr, _ := config.LoadConfig(configPath)
+	loadedPath, cfg, vr, _ := config.LoadConfigAuto(configPath)
 
 	fmt.Println("=== Qrypt Status ===")
-	fmt.Printf("配置文件:    %s\n", configPath)
+	fmt.Printf("配置文件:    %s\n", loadedPath)
 	fmt.Printf("版本:        %s\n", cfg.Version)
 
 	if vr != nil && !vr.Valid {
@@ -57,12 +54,15 @@ func runStatus(cmd *cobra.Command, args []string) {
 	}
 
 	if len(cfg.Mounts) > 0 {
-		mountPoint := config.ExpandHome(cfg.Mounts[0].MountPoint)
 		fmt.Println()
-		if isMounted(mountPoint) {
-			fmt.Printf("挂载状态:    已挂载到 %s\n", mountPoint)
-		} else {
-			fmt.Printf("挂载状态:    未挂载\n")
+		fmt.Println("挂载状态:")
+		for _, m := range cfg.Mounts {
+			mountPoint := config.ExpandHome(m.MountPoint)
+			status := "未挂载"
+			if isMounted(mountPoint) {
+				status = "已挂载"
+			}
+			fmt.Printf("  %s: %s (%s)\n", m.Name, status, mountPoint)
 		}
 	}
 }

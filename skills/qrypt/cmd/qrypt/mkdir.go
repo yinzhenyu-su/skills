@@ -8,11 +8,55 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
+	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
 func runMkdir(cmd *cobra.Command, args []string) {
+	socketPath := daemon.FindSocketPath()
+	if daemon.IsDaemonRunning(socketPath) {
+		runMkdirViaDaemon(cmd, args, socketPath)
+	} else {
+		runMkdirDirect(cmd, args)
+	}
+}
+
+func runMkdirViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
+	path := args[0]
+	mountName := resolveMount(cmd, &path)
+	parents, _ := cmd.Flags().GetBool("parents")
+	password, _ := cmd.Flags().GetString("password")
+	salt, _ := cmd.Flags().GetString("salt")
+
+	client, err := daemon.DialClient(socketPath)
+	if err != nil {
+		fmt.Printf("无法连接到 qryptd: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	resp, rpcErr := client.Call("mkdir", protocol.MkdirParams{
+		MountName: mountName,
+		Path:      path,
+		Parents:   parents,
+		Password:  password,
+		Salt:      salt,
+	})
+	if rpcErr != nil {
+		fmt.Printf("RPC 错误: %v\n", rpcErr)
+		os.Exit(1)
+	}
+	if resp.Error != nil {
+		fmt.Printf("创建目录失败: %s\n", resp.Error.Message)
+		os.Exit(1)
+	}
+	fmt.Printf("已创建: %s\n", path)
+}
+
+func runMkdirDirect(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
 	path := args[0]
 	mountName := resolveMount(cmd, &path)
@@ -30,8 +74,7 @@ func runMkdir(cmd *cobra.Command, args []string) {
 	rootPath := cfg.RootPath()
 
 	for _, userPath := range args {
-		fullPath := resolveFullPath(rootPath, userPath)
-
+		fullPath := config.ResolveFullPath(rootPath, userPath)
 		err := createDirectory(context.Background(), drv, w, cipher, fullPath, userPath, parents)
 		if err != nil {
 			fmt.Printf("创建目录失败: %s: %v\n", userPath, err)
@@ -42,13 +85,11 @@ func runMkdir(cmd *cobra.Command, args []string) {
 
 func createDirectory(ctx context.Context, drv drive.Driver, w drive.Writer, cipher *crypt.RcloneCipher, fullPath, userPath string, parents bool) error {
 	currentFid := "0"
-
-	// If not recursive, we just resolve up to the parent
 	if !parents {
 		segments := strings.Split(strings.Trim(fullPath, "/"), "/")
 		if len(segments) > 1 {
 			parentPath := filepath.Dir("/" + strings.Trim(fullPath, "/"))
-			if resolver, ok := drv.(pathResolver); ok {
+			if resolver, ok := drv.(drive.PathResolver); ok {
 				var err error
 				currentFid, err = resolver.ResolvePath(ctx, parentPath)
 				if err != nil {
@@ -58,53 +99,41 @@ func createDirectory(ctx context.Context, drv drive.Driver, w drive.Writer, ciph
 				return fmt.Errorf("不支持路径解析")
 			}
 		}
-
 		targetName := segments[len(segments)-1]
 		if targetName == "" {
 			return nil
 		}
-
-		// Check if exists
 		entries, err := drv.List(ctx, currentFid)
 		if err != nil {
 			return err
 		}
-
 		encName := targetName
 		if cipher != nil {
 			encName = cipher.EncryptSegment(targetName)
 		}
-
 		for _, e := range entries {
 			if e.Name == targetName || strings.EqualFold(e.Name, encName) {
 				return fmt.Errorf("文件或目录已存在")
 			}
 		}
-
-		// Create
 		_, err = w.Mkdir(ctx, currentFid, encName)
 		return err
 	}
 
-	// Recursive (-p): iterate only the user-provided path segments,
-	// not the fullPath which includes the config root prefix.
 	userRel := strings.TrimLeft(userPath, "/")
 	segments := strings.Split(userRel, "/")
 	for _, seg := range segments {
 		if seg == "" {
 			continue
 		}
-
 		entries, err := drv.List(ctx, currentFid)
 		if err != nil {
 			return fmt.Errorf("列出目录内容失败: %w", err)
 		}
-
 		encSeg := seg
 		if cipher != nil {
 			encSeg = cipher.EncryptSegment(seg)
 		}
-
 		found := false
 		for _, e := range entries {
 			if e.Name == seg || strings.EqualFold(e.Name, encSeg) {
@@ -116,9 +145,7 @@ func createDirectory(ctx context.Context, drv drive.Driver, w drive.Writer, ciph
 				break
 			}
 		}
-
 		if !found {
-			// Create it
 			newEntry, err := w.Mkdir(ctx, currentFid, encSeg)
 			if err != nil {
 				return fmt.Errorf("创建目录 %s 失败: %w", seg, err)
@@ -126,6 +153,5 @@ func createDirectory(ctx context.Context, drv drive.Driver, w drive.Writer, ciph
 			currentFid = newEntry.ID
 		}
 	}
-
 	return nil
 }

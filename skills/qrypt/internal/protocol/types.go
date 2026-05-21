@@ -134,3 +134,122 @@ type FileEntry struct {
 	Size    int64  `json:"size"`
 	ModTime int64  `json:"mod_time"`
 }
+
+// PushStartParams is the request body for push_start RPC.
+type PushStartParams struct {
+	MountName string `json:"mount_name"`
+	Source    string `json:"source"`
+	Remote    string `json:"remote"`
+	Password  string `json:"password,omitempty"`
+	Salt      string `json:"salt,omitempty"`
+	Transfers int    `json:"transfers"`
+	Update    bool   `json:"update"`
+	DryRun    bool   `json:"dry_run"`
+	PlainSize int64  `json:"plain_size"` // -1 for stdin (unknown)
+}
+
+// PushStartResult is the response for push_start RPC.
+type PushStartResult struct {
+	TaskID    string `json:"task_id"`
+	FileCount int    `json:"file_count"` // -1 for stdin
+}
+
+// PushProgressData is the payload for sync_progress events during push.
+type PushProgressData struct {
+	TaskID    string  `json:"task_id"`
+	File      string  `json:"file"`
+	FileNo    int     `json:"file_no"`
+	FileTotal int     `json:"file_total"`
+	Bytes     int64   `json:"bytes"`
+	Total     int64   `json:"total"`
+	Speed     float64 `json:"speed,omitempty"`
+	State     string  `json:"state"` // "uploading" | "completed" | "failed"
+	Error     string  `json:"error,omitempty"`
+}
+
+// ListDirParams is the request body for list_dir RPC.
+type ListDirParams struct {
+	MountName string `json:"mount_name"`
+	Path      string `json:"path"`
+	Password  string `json:"password,omitempty"`
+	Salt      string `json:"salt,omitempty"`
+}
+
+// ListEntryItem is one entry in ListDirResult.
+type ListEntryItem struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	DecName   string `json:"dec_name"`
+	IsDir     bool   `json:"is_dir"`
+	Size      int64  `json:"size"`
+	PlainSize int64  `json:"plain_size"`
+	ModTime   int64  `json:"mod_time"`
+}
+
+// ListDirResult is the response for list_dir RPC.
+type ListDirResult struct {
+	Path    string         `json:"path"`
+	Entries []ListEntryItem `json:"entries"`
+}
+
+// MkdirParams is the request body for mkdir RPC.
+type MkdirParams struct {
+	MountName string `json:"mount_name"`
+	Path      string `json:"path"`
+	Parents   bool   `json:"parents"`
+	Password  string `json:"password,omitempty"`
+	Salt      string `json:"salt,omitempty"`
+}
+
+// MkdirResult is the response for mkdir RPC.
+type MkdirResult struct {
+	Fid string `json:"fid"`
+}
+
+// RemoveParams is the request body for remove RPC.
+type RemoveParams struct {
+	MountName string `json:"mount_name"`
+	Path      string `json:"path"`
+	Recursive bool   `json:"recursive"`
+	Force     bool   `json:"force"`
+	Password  string `json:"password,omitempty"`
+	Salt      string `json:"salt,omitempty"`
+}
+
+// RemoveResult is the response for remove RPC.
+type RemoveResult struct {
+	Status string `json:"status"`
+}
+
+// MoveParams is the request body for move RPC.
+type MoveParams struct {
+	MountName string `json:"mount_name"`
+	SrcPath   string `json:"src_path"`
+	DstPath   string `json:"dst_path"`
+	NoClobber bool   `json:"no_clobber"`
+	Password  string `json:"password,omitempty"`
+	Salt      string `json:"salt,omitempty"`
+}
+
+// MoveResult is the response for move RPC.
+type MoveResult struct {
+	Status string `json:"status"`
+}
+
+// PullStartParams is the request body for pull_start RPC.
+type PullStartParams struct {
+	MountName string `json:"mount_name"`
+	Remote    string `json:"remote"`
+	Local     string `json:"local"`
+	Password  string `json:"password,omitempty"`
+	Salt      string `json:"salt,omitempty"`
+	Transfers int    `json:"transfers"`
+	Update    bool   `json:"update"`
+	DryRun    bool   `json:"dry_run"`
+}
+
+// PullStartResult is the response for pull_start RPC.
+type PullStartResult struct {
+	TaskID    string `json:"task_id"`
+	FileCount int    `json:"file_count"`
+}

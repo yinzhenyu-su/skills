@@ -449,6 +449,100 @@ cookie = "a"
 	}
 }
 
+func TestFindDefaultMount_Explicit(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Mounts = []MountInstance{
+		{Name: "a", Type: "quark", Params: MountParams{Cookie: "a"}, MountPoint: "~/A"},
+		{Name: "b", Type: "quark", Default: true, Params: MountParams{Cookie: "b"}, MountPoint: "~/B"},
+		{Name: "c", Type: "quark", Params: MountParams{Cookie: "c"}, MountPoint: "~/C"},
+	}
+	m := FindDefaultMount(cfg)
+	if m == nil || m.Name != "b" {
+		t.Errorf("expected 'b' (explicit default), got %v", m)
+	}
+}
+
+func TestFindDefaultMount_FirstEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	f := false
+	t2 := true
+	cfg.Mounts = []MountInstance{
+		{Name: "a", Type: "quark", Enabled: &f, Params: MountParams{Cookie: "a"}, MountPoint: "~/A"},
+		{Name: "b", Type: "quark", Enabled: &t2, Params: MountParams{Cookie: "b"}, MountPoint: "~/B"},
+		{Name: "c", Type: "quark", Params: MountParams{Cookie: "c"}, MountPoint: "~/C"},
+	}
+	m := FindDefaultMount(cfg)
+	if m == nil || m.Name != "b" {
+		t.Errorf("expected 'b' (first enabled), got %v", m)
+	}
+}
+
+func TestFindDefaultMount_AllDisabled_FirstMount(t *testing.T) {
+	cfg := DefaultConfig()
+	f := false
+	cfg.Mounts = []MountInstance{
+		{Name: "a", Type: "quark", Enabled: &f, Params: MountParams{Cookie: "a"}, MountPoint: "~/A"},
+		{Name: "b", Type: "quark", Enabled: &f, Params: MountParams{Cookie: "b"}, MountPoint: "~/B"},
+	}
+	m := FindDefaultMount(cfg)
+	if m != nil {
+		t.Errorf("expected nil (all disabled), got %v", m)
+	}
+}
+
+func TestFindDefaultMount_Empty(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Mounts = nil
+	m := FindDefaultMount(cfg)
+	if m != nil {
+		t.Errorf("expected nil, got %v", m)
+	}
+}
+
+func TestValidateConfig_DuplicateDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qrypt.toml")
+	content := `
+[[mounts]]
+name = "a"
+type = "quark"
+mount_point = "~/A"
+default = true
+
+[mounts.params]
+cookie = "a"
+
+[[mounts]]
+name = "b"
+type = "quark"
+mount_point = "~/B"
+default = true
+
+[mounts.params]
+cookie = "b"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, vr, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vr.Valid {
+		t.Fatal("expected validation to fail due to duplicate default = true")
+	}
+	hasDefaultErr := false
+	for _, c := range vr.Checks {
+		if c.Field == "mounts" && c.Status == "error" {
+			hasDefaultErr = true
+			break
+		}
+	}
+	if !hasDefaultErr {
+		t.Fatal("expected error check for duplicate defaults")
+	}
+}
+
 func TestParseDuration(t *testing.T) {
 	tests := []struct {
 		input    string
