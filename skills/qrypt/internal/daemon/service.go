@@ -691,7 +691,7 @@ func (d *Daemon) walkAndMatch(ctx context.Context, drv drive.Driver, cipher *cry
 
 	entries, err := drv.List(ctx, fid)
 	if err != nil {
-		return nil // skip inaccessible directories
+		return fmt.Errorf("list %s: %w", fid, err)
 	}
 
 	matchName := func(name string) bool {
@@ -736,7 +736,7 @@ func (d *Daemon) walkEntries(ctx context.Context, drv drive.Driver, cipher *cryp
 
 	entries, err := drv.List(ctx, fid)
 	if err != nil {
-		return nil
+		return fmt.Errorf("list %s: %w", fid, err)
 	}
 
 	for _, e := range entries {
@@ -755,7 +755,7 @@ func (d *Daemon) walkEntries(ctx context.Context, drv drive.Driver, cipher *cryp
 
 		if e.IsDir {
 			if err := d.walkEntries(ctx, drv, cipher, e.ID, childPath, depth+1, maxDepth, result); err != nil {
-				continue
+				return err
 			}
 		}
 	}
