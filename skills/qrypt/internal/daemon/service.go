@@ -647,6 +647,121 @@ func (d *Daemon) ListDir(ctx context.Context, params protocol.ListDirParams) (*p
 	return &result, nil
 }
 
+// Find recursively searches for files matching a pattern.
+func (d *Daemon) Find(ctx context.Context, params protocol.FindParams) (*protocol.FindResult, error) {
+	var result protocol.FindResult
+	err := d.withMountSession(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
+		mountCfg := config.FindMount(d.cfg, d.resolveMountName(params.MountName))
+		rootPath := "/"
+		if mountCfg != nil {
+			rootPath = config.RootPathForMount(*mountCfg)
+		}
+		fullPath := config.ResolveFullPath(rootPath, params.Path)
+
+		resolver, ok := drv.(drive.PathResolver)
+		if !ok {
+			return fmt.Errorf("driver does not support path resolution")
+		}
+		fid, err := resolver.ResolvePath(ctx, fullPath)
+		if err != nil {
+			return fmt.Errorf("resolve path: %w", err)
+		}
+
+		pattern := params.Pattern
+		if pattern == "" {
+			// No pattern — return everything
+			return d.walkEntries(ctx, drv, cipher, fid, fullPath, 0, params.MaxDepth, &result)
+		}
+
+		return d.walkAndMatch(ctx, drv, cipher, fid, fullPath, 0, params.MaxDepth, params.MaxMatches, pattern, params.CaseSensitive, &result)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (d *Daemon) walkAndMatch(ctx context.Context, drv drive.Driver, cipher *crypt.RcloneCipher, fid, displayPath string, depth, maxDepth, maxMatches int, pattern string, caseSensitive bool, result *protocol.FindResult) error {
+	if maxDepth >= 0 && depth > maxDepth {
+		return nil
+	}
+	if maxMatches > 0 && result.Count >= maxMatches {
+		return nil
+	}
+
+	entries, err := drv.List(ctx, fid)
+	if err != nil {
+		return nil // skip inaccessible directories
+	}
+
+	matchName := func(name string) bool {
+		if caseSensitive {
+			return strings.Contains(name, pattern)
+		}
+		return strings.Contains(strings.ToLower(name), strings.ToLower(pattern))
+	}
+
+	for _, e := range entries {
+		decName, decErr := cipher.DecryptSegment(e.Name)
+		if decErr != nil {
+			decName = e.Name
+		}
+		childPath := displayPath + "/" + decName
+
+		if matchName(decName) {
+			if maxMatches > 0 && result.Count >= maxMatches {
+				break
+			}
+			result.Entries = append(result.Entries, protocol.FindEntry{
+				Path:  childPath,
+				IsDir: e.IsDir,
+				Size:  e.Size,
+			})
+			result.Count++
+		}
+
+		if e.IsDir {
+			if err := d.walkAndMatch(ctx, drv, cipher, e.ID, childPath, depth+1, maxDepth, maxMatches, pattern, caseSensitive, result); err != nil {
+				continue
+			}
+		}
+	}
+	return nil
+}
+
+func (d *Daemon) walkEntries(ctx context.Context, drv drive.Driver, cipher *crypt.RcloneCipher, fid, displayPath string, depth, maxDepth int, result *protocol.FindResult) error {
+	if maxDepth >= 0 && depth > maxDepth {
+		return nil
+	}
+
+	entries, err := drv.List(ctx, fid)
+	if err != nil {
+		return nil
+	}
+
+	for _, e := range entries {
+		decName, decErr := cipher.DecryptSegment(e.Name)
+		if decErr != nil {
+			decName = e.Name
+		}
+		childPath := displayPath + "/" + decName
+
+		result.Entries = append(result.Entries, protocol.FindEntry{
+			Path:  childPath,
+			IsDir: e.IsDir,
+			Size:  e.Size,
+		})
+		result.Count++
+
+		if e.IsDir {
+			if err := d.walkEntries(ctx, drv, cipher, e.ID, childPath, depth+1, maxDepth, result); err != nil {
+				continue
+			}
+		}
+	}
+	return nil
+}
+
 // Mkdir creates a remote directory via the daemon.
 func (d *Daemon) Mkdir(ctx context.Context, params protocol.MkdirParams) (*protocol.MkdirResult, error) {
 	var result protocol.MkdirResult
@@ -945,41 +1060,64 @@ func (d *Daemon) runPullTask(ctx context.Context, taskID string, s *Session, sk 
 
 	d.publishPushEvent(taskID, mountName, "started", "", 0, 0, "")
 
-	// Check if target is a directory
 	targetFid, err := resolver.ResolvePath(ctx, fullRemotePath)
 	if err != nil {
 		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("resolve path: %v", err))
 		return
 	}
 
+	downloadDir := func(fid string, localBase string) {
+		if !params.DryRun {
+			os.MkdirAll(localBase, 0755)
+		}
+
+		var wg sync.WaitGroup
+		err := qryptsync.ScanRemoteForDownload(ctx, fid, localBase, drv, cipher, params.DryRun,
+			func(entry drive.Entry, targetPath string) {
+				wg.Add(1)
+				d.orchestrator().Submit(func(ctx context.Context) error {
+					defer wg.Done()
+					if params.DryRun {
+						return nil
+					}
+					if params.Update {
+						if stat, staterr := os.Stat(targetPath); staterr == nil {
+							plainSize, _ := cipher.DecryptedSize(entry.Size)
+							if stat.Size() == plainSize {
+								return nil
+							}
+						}
+					}
+					dl := qryptsync.NewDownloader(drv, cipher)
+					req := qryptsync.DownloadRequest{
+						Entry:     entry,
+						LocalPath: targetPath,
+					}
+					err := dl.Download(ctx, req)
+					if err == nil {
+						d.publishPushEvent(taskID, mountName, "downloading", targetPath, entry.Size, entry.Size, "")
+					}
+					return err
+				})
+			})
+		if err != nil {
+			d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("scan: %v", err))
+			return
+		}
+		wg.Wait()
+	}
+
 	_, listErr := drv.List(ctx, targetFid)
 	localPath := params.Local
 	if listErr == nil {
-		// It's a directory
 		if localPath == "" {
 			localPath = baseName
 		}
-		if !params.DryRun {
-			os.MkdirAll(localPath, 0755)
-		}
-
-		pool := qryptsync.NewWorkerPool(drv, cipher, transfers, params.DryRun, params.Update)
-		pool.OnProgress = func(info qryptsync.ProgressInfo) {
-			d.publishPushEvent(taskID, mountName, "downloading", info.File, info.Bytes, info.Total, "")
-		}
-		pool.Start(ctx)
-
-		if err := qryptsync.ScanRemoteForDownload(ctx, targetFid, localPath, drv, cipher, pool); err != nil {
-			d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("scan: %v", err))
-			pool.Wait()
-			return
-		}
-		pool.Wait()
+		downloadDir(targetFid, localPath)
 		d.publishPushEvent(taskID, mountName, "completed", "", 0, 0, "")
 		return
 	}
 
-	// Single file
 	if localPath == "" {
 		localPath = baseName
 	}
@@ -1011,19 +1149,20 @@ func (d *Daemon) runPullTask(ctx context.Context, taskID string, s *Session, sk 
 		return
 	}
 
-	pool := qryptsync.NewWorkerPool(drv, cipher, transfers, params.DryRun, params.Update)
-	pool.OnProgress = func(info qryptsync.ProgressInfo) {
-		d.publishPushEvent(taskID, mountName, "downloading", info.File, info.Bytes, info.Total, "")
-	}
-	pool.Start(ctx)
-	pool.Submit(qryptsync.TransferJob{
-		Type:        qryptsync.JobTypeDownload,
-		LocalPath:   localPath,
-		RemoteName:  baseName,
-		RemoteEntry: targetEntry,
-		Size:        targetEntry.Size,
+	var wg sync.WaitGroup
+	wg.Add(1)
+	d.orchestrator().Submit(func(ctx context.Context) error {
+		defer wg.Done()
+		if params.DryRun {
+			return nil
+		}
+		dl := qryptsync.NewDownloader(drv, cipher)
+		return dl.Download(ctx, qryptsync.DownloadRequest{
+			Entry:     targetEntry,
+			LocalPath: localPath,
+		})
 	})
-	pool.Wait()
+	wg.Wait()
 	d.publishPushEvent(taskID, mountName, "completed", "", 0, 0, "")
 }
 
