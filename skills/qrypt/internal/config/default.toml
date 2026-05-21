@@ -43,6 +43,8 @@ allow_other = false
   password = ""
   # 加密盐（可选）
   salt = ""
+  # 文件名编码: base32（默认，rclone 兼容）| base64（更短，降低超长名被截断风险）
+  filename_encoding = "base32"
 
 # 第二个挂载实例示例：天翼云盘
 # [[mounts]]

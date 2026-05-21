@@ -25,24 +25,66 @@ func TestRcloneCipher_KeyDerivation(t *testing.T) {
 func TestRcloneCipher_FilenameEncryption(t *testing.T) {
 	password := "password"
 	salt := "" // 默认盐值
-	c, _ := NewRcloneCipher(password, salt)
 
+	for _, enc := range []string{"base32", "base64"} {
+		c, _ := NewRcloneCipher(password, salt, enc)
+
+		testNames := []string{
+			"README.md",
+			"电影.mp4",
+			"a",
+			"very_long_filename_that_exceeds_multiple_blocks_of_eme_encryption.txt",
+		}
+
+		for _, name := range testNames {
+			encrypted := c.EncryptSegment(name)
+			decrypted, err := c.DecryptSegment(encrypted)
+			if err != nil {
+				t.Errorf("[%s] Decryption failed for %s: %v", enc, name, err)
+				continue
+			}
+			if decrypted != name {
+				t.Errorf("[%s] Name mismatch! Original: %s, Decrypted: %s", enc, name, decrypted)
+			}
+		}
+	}
+}
+
+func TestRcloneCipher_CrossEncodingDecrypt(t *testing.T) {
+	password := "password"
+	salt := ""
 	testNames := []string{
 		"README.md",
 		"电影.mp4",
 		"a",
-		"very_long_filename_that_exceeds_multiple_blocks_of_eme_encryption.txt",
 	}
 
+	// 用 base64 加密，用 base32 配置解密（模拟编码迁移场景）
+	c64, _ := NewRcloneCipher(password, salt, "base64")
+	c32, _ := NewRcloneCipher(password, salt, "base32")
+
 	for _, name := range testNames {
-		encrypted := c.EncryptSegment(name)
-		decrypted, err := c.DecryptSegment(encrypted)
+		encrypted := c64.EncryptSegment(name)
+		decrypted, err := c32.DecryptSegment(encrypted)
 		if err != nil {
-			t.Errorf("Decryption failed for %s: %v", name, err)
+			t.Errorf("[base32←base64] Decryption failed for %s: %v", name, err)
 			continue
 		}
 		if decrypted != name {
-			t.Errorf("Name mismatch! Original: %s, Decrypted: %s", name, decrypted)
+			t.Errorf("[base32←base64] Name mismatch! Original: %s, Decrypted: %s", name, decrypted)
+		}
+	}
+
+	// 反向：用 base32 加密，用 base64 配置解密
+	for _, name := range testNames {
+		encrypted := c32.EncryptSegment(name)
+		decrypted, err := c64.DecryptSegment(encrypted)
+		if err != nil {
+			t.Errorf("[base64←base32] Decryption failed for %s: %v", name, err)
+			continue
+		}
+		if decrypted != name {
+			t.Errorf("[base64←base32] Name mismatch! Original: %s, Decrypted: %s", name, decrypted)
 		}
 	}
 }

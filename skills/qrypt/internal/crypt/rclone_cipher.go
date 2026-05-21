@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/rand"
 	"encoding/base32"
+	"encoding/base64"
 	"errors"
 	"io"
 	"regexp"
@@ -26,17 +27,19 @@ const (
 
 var defaultSalt = []byte{0xA8, 0x0D, 0xF4, 0x3A, 0x8F, 0xBD, 0x03, 0x08, 0xA7, 0xCA, 0xB8, 0x3E, 0x58, 0x1F, 0x86, 0xB1}
 var rcloneBase32 = base32.HexEncoding.WithPadding(base32.NoPadding)
+var rcloneBase64 = base64.URLEncoding.WithPadding(base64.NoPadding)
 
 // conflictSuffixRe 匹配 Quark Drive 等网盘追加的 (N) 冲突后缀
 var conflictSuffixRe = regexp.MustCompile(`^(.*?)\s*\(\d+\)$`)
 
 type RcloneCipher struct {
-	dataKey   [32]byte
-	nameKey   [32]byte
-	nameTweak [16]byte
+	dataKey          [32]byte
+	nameKey          [32]byte
+	nameTweak        [16]byte
+	filenameEncoding string // "base32" (rclone 默认) or "base64"
 }
 
-func NewRcloneCipher(password, salt string) (*RcloneCipher, error) {
+func NewRcloneCipher(password, salt string, filenameEncodings ...string) (*RcloneCipher, error) {
 	saltBytes := defaultSalt
 	if salt != "" {
 		saltBytes = []byte(salt)
@@ -47,10 +50,16 @@ func NewRcloneCipher(password, salt string) (*RcloneCipher, error) {
 		return nil, err
 	}
 
+	enc := "base32"
+	if len(filenameEncodings) > 0 && filenameEncodings[0] != "" {
+		enc = filenameEncodings[0]
+	}
+
 	c := &RcloneCipher{}
 	copy(c.dataKey[:], key[0:32])
 	copy(c.nameKey[:], key[32:64])
 	copy(c.nameTweak[:], key[64:80])
+	c.filenameEncoding = enc
 	return c, nil
 }
 
@@ -121,14 +130,29 @@ func (c *RcloneCipher) EncryptSegment(plaintext string) string {
 	block, _ := aes.NewCipher(c.nameKey[:])
 	ciphertext := eme.Transform(block, c.nameTweak[:], plaintextBytes, eme.DirectionEncrypt)
 
-	// 3. Base32 编码
-	encoded := rcloneBase32.EncodeToString(ciphertext)
-	return strings.ToLower(encoded)
+	// 3. 按配置编码
+	switch c.filenameEncoding {
+	case "base64":
+		return rcloneBase64.EncodeToString(ciphertext)
+	default:
+		return strings.ToLower(rcloneBase32.EncodeToString(ciphertext))
+	}
 }
 
 // DecryptSegment 解密单个路径段，自动处理 (N) 冲突后缀
+// 优先使用配置的编码，失败后自动 fallback 到另一种编码（兼容新旧文件）
 func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
-	plain, err := c.decryptSegment(encrypted)
+	plain, err := c.decryptSegment(encrypted, c.filenameEncoding)
+	if err == nil {
+		return plain, nil
+	}
+
+	// 用另一种编码尝试（兼容编码转换期的文件）
+	other := "base64"
+	if c.filenameEncoding == "base64" {
+		other = "base32"
+	}
+	plain, err = c.decryptSegment(encrypted, other)
 	if err == nil {
 		return plain, nil
 	}
@@ -136,19 +160,26 @@ func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
 	// 解密失败 → 尝试剥离 (N) / (N) 冲突后缀后重试
 	cleaned := stripConflictSuffix(encrypted)
 	if cleaned != encrypted {
-		return c.decryptSegment(cleaned)
+		return c.DecryptSegment(cleaned)
 	}
 
 	return "", err
 }
 
-// decryptSegment 实际解密逻辑
-func (c *RcloneCipher) decryptSegment(encrypted string) (string, error) {
+// decryptSegment 按指定编码解码后解密
+func (c *RcloneCipher) decryptSegment(encrypted, encoding string) (string, error) {
 	if encrypted == "" {
 		return "", nil
 	}
 
-	rawCiphertext, err := rcloneBase32.DecodeString(strings.ToUpper(encrypted))
+	var rawCiphertext []byte
+	var err error
+	switch encoding {
+	case "base64":
+		rawCiphertext, err = rcloneBase64.DecodeString(encrypted)
+	default:
+		rawCiphertext, err = rcloneBase32.DecodeString(strings.ToUpper(encrypted))
+	}
 	if err != nil {
 		return "", err
 	}

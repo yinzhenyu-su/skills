@@ -138,7 +138,7 @@ func runMount(cmd *cobra.Command, args []string) {
 	log.L = logger
 	defer logger.Close()
 
-	cipher, err := crypt.NewRcloneCipher(rc.Encryption.Password, rc.Encryption.Salt)
+	cipher, err := crypt.NewRcloneCipher(rc.Encryption.Password, rc.Encryption.Salt, rc.Encryption.FileNameEncoding)
 	if err != nil {
 		log.L.Errorf("加密引擎初始化失败: %v\n", err)
 		fmt.Printf("加密引擎初始化失败: %v\n", err)
