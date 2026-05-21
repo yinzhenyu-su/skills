@@ -310,7 +310,8 @@ func (c *RcloneCipher) obfuscateSegment(plaintext string) string {
 	dir %= 256
 
 	var result bytes.Buffer
-	result.WriteString(strconv.Itoa(dir) + ".")
+	result.WriteString(strconv.Itoa(dir))
+	result.WriteByte('.')
 	for i := range len(c.nameKey) {
 		dir += int(c.nameKey[i])
 	}
