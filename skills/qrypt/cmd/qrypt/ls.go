@@ -98,16 +98,17 @@ func runList(cmd *cobra.Command, args []string) {
 	humanReadable, _ := cmd.Flags().GetBool("human-readable")
 
 	for _, le := range allEntries {
+		displayPath := le.Path
+		if le.IsDir {
+			displayPath += "/"
+		}
+
 		if showLong {
 			sizeStr := fmt.Sprintf("%10d", le.PlainSize)
 			if humanReadable && !le.IsDir {
 				sizeStr = fmt.Sprintf("%10s", formatBytes(le.PlainSize))
 			} else if le.IsDir {
 				sizeStr = fmt.Sprintf("%10s", "-")
-			}
-			displayPath := le.Path
-			if le.IsDir {
-				displayPath += "/"
 			}
 			if showEnc && le.Name != le.DecName {
 				fmt.Printf("%s %s  %s  %s  [%s]\n", func() string {
@@ -124,11 +125,9 @@ func runList(cmd *cobra.Command, args []string) {
 					return "-"
 				}(), sizeStr, le.ModTime.Format("01-02 15:04"), displayPath)
 			}
+		} else if showEnc && le.Name != le.DecName {
+			fmt.Printf("%s  [%s]\n", displayPath, le.Name)
 		} else {
-			displayPath := le.Path
-			if le.IsDir {
-				displayPath += "/"
-			}
 			fmt.Println(displayPath)
 		}
 	}

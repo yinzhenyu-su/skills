@@ -29,14 +29,11 @@ func main() {
 		Args:  cobra.MaximumNArgs(1),
 		Run:   runList,
 	}
-	// Pre-register help with no shorthand so cobra's InitDefaultHelpFlag
-	// doesn't claim -h (POSIX ls uses -h for human-readable).
-	lsCmd.Flags().Bool("help", false, "help for ls")
 	lsCmd.Flags().StringP("config", "f", "", "配置文件路径")
 	lsCmd.Flags().BoolP("long", "l", false, "长格式显示")
 	lsCmd.Flags().BoolP("encrypted", "e", false, "同时显示加密文件名")
 	lsCmd.Flags().BoolP("recursive", "R", false, "递归列出所有子目录")
-	lsCmd.Flags().BoolP("human-readable", "h", false, "以可读格式显示大小 (与 -l 一起使用)")
+	lsCmd.Flags().BoolP("human-readable", "H", false, "以可读格式显示大小 (与 -l 一起使用)")
 	lsCmd.Flags().BoolP("sort-time", "t", false, "按修改时间排序 (最新在前)")
 	lsCmd.Flags().BoolP("sort-size", "S", false, "按文件大小排序 (最大在前)")
 	lsCmd.Flags().Bool("json", false, "以 JSON 格式输出")
