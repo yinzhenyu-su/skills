@@ -254,7 +254,7 @@ func runFind(cmd *cobra.Command, args []string) {
 	mountName := resolveMount(cmd, &path)
 	drv := loadToolDriverForMount(cfg, cipher, mountName)
 
-	resolver, ok := drv.(pathResolver)
+	resolver, ok := drv.(drive.PathResolver)
 	if !ok {
 		fmt.Printf("该驱动不支持路径解析\n")
 		os.Exit(1)
@@ -286,7 +286,7 @@ func runFind(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	fullRootPath := resolveFullPath(cfg.RootPath(), rootPath)
+	fullRootPath := config.ResolveFullPath(cfg.RootPath(), rootPath)
 	rootFid, err := resolver.ResolvePath(context.Background(), fullRootPath)
 	if err != nil {
 		fmt.Printf("无法解析路径: %v\n", err)

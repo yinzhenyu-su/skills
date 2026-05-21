@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
 
 func TestResolveFullPath(t *testing.T) {
@@ -20,9 +22,9 @@ func TestResolveFullPath(t *testing.T) {
 		{"", "", "/"},
 	}
 	for _, tt := range tests {
-		got := resolveFullPath(tt.root, tt.userPath)
+		got := config.ResolveFullPath(tt.root, tt.userPath)
 		if got != tt.want {
-			t.Errorf("resolveFullPath(%q, %q) = %q, want %q", tt.root, tt.userPath, got, tt.want)
+			t.Errorf("ResolveFullPath(%q, %q) = %q, want %q", tt.root, tt.userPath, got, tt.want)
 		}
 	}
 }

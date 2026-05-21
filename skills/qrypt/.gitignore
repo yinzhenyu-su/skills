@@ -2,7 +2,9 @@
 *.db-shm
 *.db-wal
 qrypt
+qryptd
 !cmd/qrypt/
+!cmd/qryptd/**
 !cmd/qrypt/**
 vfs.test
 test-config.toml

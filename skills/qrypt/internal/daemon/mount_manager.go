@@ -162,7 +162,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 		StartedAt:   time.Now(),
 	}
 
-	cipher, err := crypt.NewRcloneCipher(rc.Encryption.Password, rc.Encryption.Salt, rc.Encryption.FileNameEncoding, rc.Encryption.FileNameEncryption)
+	cipher, err := config.MakeCipher(rc.Encryption, mm.cfg.Defaults.Encryption, "", "")
 	if err != nil {
 		inst.State = protocol.MountStateError
 		inst.LastError = err.Error()

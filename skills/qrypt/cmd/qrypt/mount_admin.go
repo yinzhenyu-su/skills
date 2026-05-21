@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 )
 
@@ -15,15 +16,20 @@ func runMountList(cmd *cobra.Command, args []string) {
 		fmt.Println("没有配置任何挂载实例")
 		return
 	}
-	fmt.Printf("%-20s %-12s %-30s %-10s\n", "NAME", "STATE", "MOUNT POINT", "TYPE")
-	fmt.Println("---------------------------------------------------------------")
+	defaultMount := config.FindDefaultMount(cfg)
+	fmt.Printf("%-20s %-12s %-30s %-10s  %s\n", "NAME", "STATE", "MOUNT POINT", "TYPE", "DEFAULT")
+	fmt.Println("--------------------------------------------------------------------------")
 	for _, m := range cfg.Mounts {
 		rc := cfg.MergeInstanceConfig(m)
 		state := "configured"
 		if rc.Enabled {
 			state = "enabled"
 		}
-		fmt.Printf("%-20s %-12s %-30s %-10s\n", m.Name, state, rc.MountPoint, m.Type)
+		def := ""
+		if defaultMount != nil && m.Name == defaultMount.Name {
+			def = "default"
+		}
+		fmt.Printf("%-20s %-12s %-30s %-10s  %s\n", m.Name, state, rc.MountPoint, m.Type, def)
 	}
 }
 

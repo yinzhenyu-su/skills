@@ -29,6 +29,8 @@ type = "quark"
 mount_point = "~/Qrypt/Personal"
 # 是否在 qryptd 启动时自动挂载（可选，默认 true）
 enabled = true
+# 未指定 --mount 时默认使用此实例（可选，最多一个）
+default = true
 # 允许其他用户访问（需要 /etc/fuse.conf 配置）
 allow_other = false
 

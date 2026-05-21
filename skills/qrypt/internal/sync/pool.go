@@ -29,6 +29,16 @@ type TransferJob struct {
 	IsDir         bool
 }
 
+type ProgressInfo struct {
+	File      string
+	FileNo    int
+	FileTotal int
+	Bytes     int64
+	Total     int64
+	Speed     float64
+	State     string
+}
+
 type WorkerPool struct {
 	concurrency int
 	drv         drive.Driver
@@ -39,6 +49,7 @@ type WorkerPool struct {
 	wg          sync.WaitGroup
 	dryRun      bool
 	update      bool
+	OnProgress  func(ProgressInfo)
 }
 
 func NewWorkerPool(drv drive.Driver, cipher *crypt.RcloneCipher, concurrency int, dryRun, update bool) *WorkerPool {
@@ -102,7 +113,15 @@ func (p *WorkerPool) handleUpload(ctx context.Context, job TransferJob) {
 		DataReader: func() (io.ReadCloser, error) {
 			return os.Open(job.LocalPath)
 		},
-		ProgressFn: func(partNumber int) {}, // could add progress tracker
+		ProgressFn: func(partNumber int) {
+			if p.OnProgress != nil {
+				p.OnProgress(ProgressInfo{
+					File:  job.LocalPath,
+					Bytes: int64(partNumber),
+					Total: job.Size,
+				})
+			}
+		},
 	}
 
 	fmt.Printf("上传: %s\n", job.LocalPath)

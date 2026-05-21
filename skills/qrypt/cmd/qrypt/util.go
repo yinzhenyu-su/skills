@@ -16,10 +16,6 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 )
 
-type pathResolver interface {
-	ResolvePath(ctx context.Context, path string) (string, error)
-}
-
 // ParseMountPath parses "mount_name:path" format.
 // Returns (mountName, path). If no prefix, mountName is empty.
 func ParseMountPath(s string) (mountName, path string) {
@@ -37,68 +33,19 @@ func ParseMountPath(s string) (mountName, path string) {
 	return candidate, s[idx+1:]
 }
 
-// pickMount selects the mount instance by name, falling back to the single mount.
-func pickMount(cfg *config.Config, name string) *config.MountInstance {
-	if name != "" {
-		for _, m := range cfg.Mounts {
-			if m.Name == name {
-				return &m
-			}
-		}
-		return nil
-	}
-	if len(cfg.Mounts) == 1 {
-		return &cfg.Mounts[0]
-	}
-	if len(cfg.Mounts) > 1 {
-		return nil
-	}
-	return nil
-}
-
 func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
 	cfg := loadToolCfgOnly(cmd)
 
 	pwd, _ := cmd.Flags().GetString("password")
 	salt, _ := cmd.Flags().GetString("salt")
 
-	// Determine password/encoding/encryption from command flag, first mount, or defaults
-	encPass := pwd
-	filenameEnc := ""
-	filenameEncryption := ""
-	if len(cfg.Mounts) > 0 {
-		rc := cfg.MergeInstanceConfig(cfg.Mounts[0])
-		if encPass == "" {
-			encPass = rc.Encryption.Password
-		}
-		filenameEnc = rc.Encryption.FileNameEncoding
-		filenameEncryption = rc.Encryption.FileNameEncryption
-	}
-	if encPass == "" {
-		encPass = cfg.Defaults.Encryption.Password
-	}
-	if filenameEnc == "" {
-		filenameEnc = cfg.Defaults.Encryption.FileNameEncoding
-	}
-	if filenameEnc == "" {
-		filenameEnc = "base32"
-	}
-	if filenameEncryption == "" {
-		filenameEncryption = cfg.Defaults.Encryption.FileNameEncryption
-	}
-	if filenameEncryption == "" {
-		filenameEncryption = "standard"
+	var mountEnc config.EncryptionConfig
+	if m := config.FindDefaultMount(cfg); m != nil {
+		rc := cfg.MergeInstanceConfig(*m)
+		mountEnc = rc.Encryption
 	}
 
-	if encPass == "" {
-		fmt.Println("错误: 缺少加密密码 (配置文件或 --password 参数)")
-		os.Exit(1)
-	}
-	if pwd != "" {
-		cfg.Defaults.Encryption.Password = pwd
-	}
-
-	cipher, err := crypt.NewRcloneCipher(encPass, salt, filenameEnc, filenameEncryption)
+	cipher, err := config.MakeCipher(mountEnc, cfg.Defaults.Encryption, pwd, salt)
 	if err != nil {
 		fmt.Printf("加密引擎初始化失败: %v\n", err)
 		os.Exit(1)
@@ -109,11 +56,8 @@ func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
 func loadToolCfgOnly(cmd *cobra.Command) *config.Config {
 	configPath, _ := cmd.Flags().GetString("config")
 	explicitConfig := configPath != ""
-	if configPath == "" {
-		configPath = config.FindConfigFile()
-	}
 
-	cfg, vr, err := config.LoadConfig(configPath)
+	loadedPath, cfg, vr, err := config.LoadConfigAuto(configPath)
 	if err != nil {
 		if explicitConfig {
 			fmt.Printf("加载配置文件失败: %v\n", err)
@@ -122,6 +66,8 @@ func loadToolCfgOnly(cmd *cobra.Command) *config.Config {
 		cfg = config.DefaultConfig()
 		vr = config.ValidateConfig(cfg)
 	}
+
+	configPath = loadedPath
 
 	if vr != nil && !vr.Valid {
 		var hasError bool
@@ -165,7 +111,7 @@ func loadToolDriver(cfg *config.Config, cipher *crypt.RcloneCipher) drive.Driver
 }
 
 func loadToolDriverForMount(cfg *config.Config, globalCipher *crypt.RcloneCipher, mountName string) drive.Driver {
-	m := pickMount(cfg, mountName)
+	m := config.FindMount(cfg, mountName)
 	if m == nil {
 		if mountName != "" {
 			fmt.Printf("挂载实例 %q 未找到\n", mountName)
@@ -186,11 +132,10 @@ func loadToolDriverForMount(cfg *config.Config, globalCipher *crypt.RcloneCipher
 		os.Exit(1)
 	}
 
-	// Use mount-level encryption if available; fall back to global cipher
 	mountCipher := globalCipher
 	if rc.Encryption.Password != "" {
 		var cerr error
-		mountCipher, cerr = crypt.NewRcloneCipher(rc.Encryption.Password, rc.Encryption.Salt, rc.Encryption.FileNameEncoding, rc.Encryption.FileNameEncryption)
+		mountCipher, cerr = config.MakeCipher(rc.Encryption, cfg.Defaults.Encryption, "", "")
 		if cerr != nil {
 			fmt.Printf("加密引擎初始化失败: %v\n", cerr)
 			os.Exit(1)
@@ -217,18 +162,6 @@ func maskStr(s string) string {
 		return "****"
 	}
 	return s[:1] + "****" + s[len(s)-1:]
-}
-
-func resolveFullPath(rootPath, userPath string) string {
-	root := strings.TrimRight(rootPath, "/")
-	user := strings.TrimLeft(userPath, "/")
-	if root == "" || root == "/" {
-		return "/" + user
-	}
-	if user == "" {
-		return root
-	}
-	return root + "/" + user
 }
 
 func formatBytes(n int64) string {

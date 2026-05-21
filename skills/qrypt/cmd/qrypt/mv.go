@@ -9,10 +9,68 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/skills/qrypt/internal/config"
+	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
+	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
 func runMv(cmd *cobra.Command, args []string) {
+	socketPath := daemon.FindSocketPath()
+	if daemon.IsDaemonRunning(socketPath) {
+		runMvViaDaemon(cmd, args, socketPath)
+	} else {
+		runMvDirect(cmd, args)
+	}
+}
+
+func runMvViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
+	srcPath := args[0]
+	dstArg := args[1]
+	mountName := resolveMount(cmd, &srcPath)
+	interactive, _ := cmd.Flags().GetBool("interactive")
+	noClobber, _ := cmd.Flags().GetBool("no-clobber")
+	password, _ := cmd.Flags().GetString("password")
+	salt, _ := cmd.Flags().GetString("salt")
+
+	if interactive {
+		fmt.Printf("确认移动 %s → %s? (y/N): ", srcPath, dstArg)
+		reader := bufio.NewReader(os.Stdin)
+		response, _ := reader.ReadString('\n')
+		response = strings.TrimSpace(strings.ToLower(response))
+		if response != "y" && response != "yes" {
+			fmt.Printf("已取消移动: %s\n", srcPath)
+			return
+		}
+	}
+
+	client, err := daemon.DialClient(socketPath)
+	if err != nil {
+		fmt.Printf("无法连接到 qryptd: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	resp, rpcErr := client.Call("move", protocol.MoveParams{
+		MountName: mountName,
+		SrcPath:   srcPath,
+		DstPath:   dstArg,
+		NoClobber: noClobber,
+		Password:  password,
+		Salt:      salt,
+	})
+	if rpcErr != nil {
+		fmt.Printf("RPC 错误: %v\n", rpcErr)
+		os.Exit(1)
+	}
+	if resp.Error != nil {
+		fmt.Printf("移动失败: %s\n", resp.Error.Message)
+		os.Exit(1)
+	}
+	fmt.Printf("已移动: %s → %s\n", srcPath, dstArg)
+}
+
+func runMvDirect(cmd *cobra.Command, args []string) {
 	cfg, cipher := loadToolCfg(cmd)
 	path := args[0]
 	mountName := resolveMount(cmd, &path)
@@ -25,7 +83,7 @@ func runMv(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	resolver, rOk := drv.(pathResolver)
+	resolver, rOk := drv.(drive.PathResolver)
 	if !rOk {
 		fmt.Printf("该驱动不支持路径解析\n")
 		os.Exit(1)
@@ -36,7 +94,7 @@ func runMv(cmd *cobra.Command, args []string) {
 
 	srcPath := args[0]
 	dstArg := args[1]
-	fullSrcPath := resolveFullPath(cfg.RootPath(), srcPath)
+	fullSrcPath := config.ResolveFullPath(cfg.RootPath(), srcPath)
 
 	srcFid, err := resolver.ResolvePath(context.Background(), fullSrcPath)
 	if err != nil {
@@ -49,7 +107,6 @@ func runMv(cmd *cobra.Command, args []string) {
 	var dstName string
 	var dstParentFid string
 
-	// Helper function to resolve the target name from the source FID
 	resolveTargetNameFromSource := func() string {
 		srcParentPath := filepath.Dir(fullSrcPath)
 		srcParentFid, err := resolver.ResolvePath(context.Background(), srcParentPath)
@@ -73,7 +130,7 @@ func runMv(cmd *cobra.Command, args []string) {
 	}
 
 	if moveIntoDir {
-		fullDstDir := resolveFullPath(cfg.RootPath(), dstArg)
+		fullDstDir := config.ResolveFullPath(cfg.RootPath(), dstArg)
 		dstParentFid, err = resolver.ResolvePath(context.Background(), fullDstDir)
 		if err != nil {
 			fmt.Printf("无法解析目标目录: %v\n", err)
@@ -85,7 +142,7 @@ func runMv(cmd *cobra.Command, args []string) {
 			os.Exit(1)
 		}
 	} else {
-		fullDstPath := resolveFullPath(cfg.RootPath(), dstArg)
+		fullDstPath := config.ResolveFullPath(cfg.RootPath(), dstArg)
 		dstParentPath := filepath.Dir(fullDstPath)
 		dstNameArg := filepath.Base(fullDstPath)
 
@@ -123,7 +180,6 @@ func runMv(cmd *cobra.Command, args []string) {
 
 	ctx := context.Background()
 
-	// Check collision
 	existingEntries, err := drv.List(ctx, dstParentFid)
 	if err == nil {
 		for _, e := range existingEntries {
@@ -142,7 +198,6 @@ func runMv(cmd *cobra.Command, args []string) {
 						return
 					}
 				}
-				// Remove existing to simulate overwrite and prevent duplicates
 				_ = w.Remove(ctx, e)
 				break
 			}
@@ -167,7 +222,6 @@ func runMv(cmd *cobra.Command, args []string) {
 
 	srcName := filepath.Base(fullSrcPath)
 	srcEncName := cipher.EncryptSegment(srcName)
-
 	if dstName != srcEncName {
 		renameEntry := drive.Entry{ID: srcFid}
 		if err := w.Rename(ctx, renameEntry, dstName); err != nil {

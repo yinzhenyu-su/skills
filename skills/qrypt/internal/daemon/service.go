@@ -3,14 +3,21 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
+	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
+	factory "github.com/yinzhenyu/skills/qrypt/internal/drive/factory"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
+	qryptsync "github.com/yinzhenyu/skills/qrypt/internal/sync"
 )
+
 
 // Daemon manages the daemon lifecycle and delegates mount ops to MountManager.
 type Daemon struct {
@@ -144,15 +151,7 @@ func (d *Daemon) InitConfig(_ context.Context, path string) (string, error) {
 }
 
 func (d *Daemon) ReloadConfig(ctx context.Context) (*protocol.ReloadResult, error) {
-	path := d.cfgPath
-	if path == "" {
-		path = config.FindConfigFile()
-	}
-	if path == "" {
-		return nil, fmt.Errorf("no config file found")
-	}
-
-	cfg, vr, err := config.LoadConfig(path)
+	_, cfg, vr, err := config.LoadConfigAuto(d.cfgPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
@@ -242,6 +241,709 @@ func (d *Daemon) CacheUsage() (*protocol.CacheUsage, error) {
 	return &protocol.CacheUsage{
 		StagingCount: totalStagingCount,
 	}, nil
+}
+
+// PushStart starts a push operation in a background goroutine.
+// Returns a task ID immediately. Progress is published via EventManager.
+func (d *Daemon) PushStart(ctx context.Context, params protocol.PushStartParams) (*protocol.PushStartResult, error) {
+	mountName := d.resolveMountName(params.MountName)
+	if mountName == "" {
+		return nil, fmt.Errorf("no enabled mount found")
+	}
+
+	mountCfg := config.FindMount(d.cfg, mountName)
+	if mountCfg == nil {
+		return nil, fmt.Errorf("mount %q not found in config", mountName)
+	}
+
+	rc := d.cfg.MergeInstanceConfig(*mountCfg)
+
+	cipher, err := d.makeCipher(rc, params.Password, params.Salt)
+	if err != nil {
+		return nil, err
+	}
+
+	drv, err := factory.NewDriverFromType(rc.Type, rc.Params)
+	if err != nil {
+		return nil, fmt.Errorf("driver init: %w", err)
+	}
+	if err := drv.Init(ctx); err != nil {
+		return nil, fmt.Errorf("auth: %w", err)
+	}
+
+	transfers := params.Transfers
+	if transfers <= 0 {
+		transfers = 4
+	}
+	taskID := fmt.Sprintf("push_%d", time.Now().UnixNano())
+
+	go d.runPushTask(ctx, taskID, drv, cipher, rc, params, transfers)
+
+	return &protocol.PushStartResult{TaskID: taskID, FileCount: -1}, nil
+}
+
+func (d *Daemon) runPushTask(ctx context.Context, taskID string, drv drive.Driver, cipher *crypt.RcloneCipher, rc *config.ResolvedMountConfig, params protocol.PushStartParams, transfers int) {
+	defer drv.Drop(ctx)
+
+	mountCfg := config.FindMount(d.cfg, rc.Name)
+	rootPath := "/"
+	if mountCfg != nil {
+		rootPath = config.RootPathForMount(*mountCfg)
+	}
+	fullRemotePath := config.ResolveFullPath(rootPath, params.Remote)
+
+	d.publishPushEvent(taskID, "started", "", 0, 0, "")
+
+	localInfo, err := os.Stat(params.Source)
+	if err != nil {
+		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("stat source: %v", err))
+		return
+	}
+
+	if localInfo.IsDir() {
+		d.pushDirectory(ctx, taskID, drv, cipher, rc, params, transfers, localInfo, fullRemotePath)
+	} else {
+		d.pushSingleFile(ctx, taskID, drv, cipher, fullRemotePath, params, localInfo)
+	}
+}
+
+func (d *Daemon) pushSingleFile(ctx context.Context, taskID string, drv drive.Driver, cipher *crypt.RcloneCipher, fullRemotePath string, params protocol.PushStartParams, localInfo os.FileInfo) {
+	parentFid, err := d.resolveParent(ctx, drv, fullRemotePath)
+	if err != nil {
+		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("resolve path: %v", err))
+		return
+	}
+
+	remoteFileName := baseOf(fullRemotePath)
+	uploader := 	qryptsync.NewUploader(drv, cipher)
+	req := qryptsync.Request{
+		Name:      remoteFileName,
+		ParentFid: parentFid,
+		PlainSize: localInfo.Size(),
+		DataReader: func() (io.ReadCloser, error) {
+			return os.Open(params.Source)
+		},
+		ProgressFn: func(partNumber int) {
+			d.publishPushEvent(taskID, "uploading", params.Source, int64(partNumber), localInfo.Size(), "")
+		},
+	}
+
+	result, err := uploader.Upload(ctx, req)
+	if err != nil {
+		d.publishPushEvent(taskID, "failed", params.Source, 0, 0, fmt.Sprintf("upload: %v", err))
+		return
+	}
+
+	d.publishPushEvent(taskID, "completed", params.Source, result.EncryptedSize, result.EncryptedSize, "")
+}
+
+func (d *Daemon) pushDirectory(ctx context.Context, taskID string, drv drive.Driver, cipher *crypt.RcloneCipher, rc *config.ResolvedMountConfig, params protocol.PushStartParams, transfers int, localInfo os.FileInfo, fullRemotePath string) {
+	parentFid, err := d.resolveParent(ctx, drv, fullRemotePath)
+	if err != nil {
+		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("resolve path: %v", err))
+		return
+	}
+
+	dirName := baseOf(fullRemotePath)
+	if hasMkdir, ok := drv.(drive.Writer); ok && !params.DryRun {
+		entries, _ := drv.List(ctx, parentFid)
+		encDirName := cipher.EncryptSegment(dirName)
+		found := false
+		for _, e := range entries {
+			if e.IsDir && e.Name == encDirName {
+				parentFid = e.ID
+				found = true
+				break
+			}
+		}
+		if !found {
+			ne, err := hasMkdir.Mkdir(ctx, parentFid, encDirName)
+			if err != nil {
+				d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("mkdir: %v", err))
+				return
+			}
+			parentFid = ne.ID
+		}
+	}
+
+	pool := qryptsync.NewWorkerPool(drv, cipher, transfers, params.DryRun, params.Update)
+	pool.OnProgress = func(info qryptsync.ProgressInfo) {
+		d.publishPushEvent(taskID, "uploading", info.File, info.Bytes, info.Total, "")
+	}
+	pool.Start(ctx)
+	if err := qryptsync.ScanLocalForUpload(ctx, params.Source, parentFid, drv, cipher, pool); err != nil {
+		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("scan: %v", err))
+		pool.Wait()
+		return
+	}
+	pool.Wait()
+	d.publishPushEvent(taskID, "completed", "", 0, 0, "")
+}
+
+func (d *Daemon) publishPushEvent(taskID, state, file string, bytes, total int64, errMsg string) {
+	evtType := protocol.EventSyncProgress
+	switch state {
+	case "completed":
+		evtType = protocol.EventSyncCompleted
+	case "failed":
+		evtType = protocol.EventSyncFailed
+	}
+	d.eventMgr.Publish(&protocol.Event{
+		Type:      evtType,
+		Timestamp: time.Now().UnixMilli(),
+		Data: protocol.PushProgressData{
+			TaskID: taskID,
+			File:   file,
+			Bytes:  bytes,
+			Total:  total,
+			State:  state,
+			Error:  errMsg,
+		},
+	})
+}
+
+func (d *Daemon) resolveParent(ctx context.Context, drv drive.Driver, fullRemotePath string) (string, error) {
+	resolver, ok := drv.(drive.PathResolver)
+	if !ok {
+		return "", fmt.Errorf("driver does not support path resolution")
+	}
+	parentPath := d.dirOf(fullRemotePath)
+	return resolver.ResolvePath(ctx, parentPath)
+}
+
+func (d *Daemon) resolveMountName(name string) string {
+	if name != "" {
+		for _, m := range d.cfg.Mounts {
+			if m.Name == name {
+				return name
+			}
+		}
+		return ""
+	}
+	for _, m := range d.cfg.Mounts {
+		rc := d.cfg.MergeInstanceConfig(m)
+		if rc.Enabled {
+			return m.Name
+		}
+	}
+	return ""
+}
+
+func (d *Daemon) makeCipher(rc *config.ResolvedMountConfig, pwd, salt string) (*crypt.RcloneCipher, error) {
+	return config.MakeCipher(rc.Encryption, d.cfg.Defaults.Encryption, pwd, salt)
+}
+
+func (d *Daemon) dirOf(path string) string {
+	idx := strings.LastIndex(strings.TrimRight(path, "/"), "/")
+	if idx < 0 {
+		return "/"
+	}
+	return path[:idx+1]
+}
+
+func baseOf(path string) string {
+	path = strings.TrimRight(path, "/")
+	idx := strings.LastIndex(path, "/")
+	if idx < 0 {
+		return path
+	}
+	return path[idx+1:]
+}
+
+// withTempMount creates a driver and cipher for a mount, calls fn, then drops the driver.
+func (d *Daemon) withTempMount(ctx context.Context, mountName, password, salt string, fn func(drv drive.Driver, cipher *crypt.RcloneCipher) error) error {
+	name := d.resolveMountName(mountName)
+	if name == "" {
+		return fmt.Errorf("no enabled mount found")
+	}
+	mountCfg := config.FindMount(d.cfg, name)
+	if mountCfg == nil {
+		return fmt.Errorf("mount %q not found", mountName)
+	}
+	rc := d.cfg.MergeInstanceConfig(*mountCfg)
+
+	cipher, err := d.makeCipher(rc, password, salt)
+	if err != nil {
+		return err
+	}
+	drv, err := factory.NewDriverFromType(rc.Type, rc.Params)
+	if err != nil {
+		return fmt.Errorf("driver init: %w", err)
+	}
+	if err := drv.Init(ctx); err != nil {
+		return fmt.Errorf("auth: %w", err)
+	}
+	defer drv.Drop(ctx)
+
+	return fn(drv, cipher)
+}
+
+// ListDir lists a remote directory via the daemon.
+func (d *Daemon) ListDir(ctx context.Context, params protocol.ListDirParams) (*protocol.ListDirResult, error) {
+	var result protocol.ListDirResult
+	err := d.withTempMount(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
+		mountCfg := config.FindMount(d.cfg, d.resolveMountName(params.MountName))
+		rootPath := "/"
+		if mountCfg != nil {
+			rootPath = config.RootPathForMount(*mountCfg)
+		}
+		fullPath := config.ResolveFullPath(rootPath, params.Path)
+		result.Path = fullPath
+
+		resolver, ok := drv.(drive.PathResolver)
+		if !ok {
+			return fmt.Errorf("driver does not support path resolution")
+		}
+		fid, err := resolver.ResolvePath(ctx, fullPath)
+		if err != nil {
+			return fmt.Errorf("resolve path: %w", err)
+		}
+
+		entries, err := drv.List(ctx, fid)
+		if err != nil {
+			return fmt.Errorf("list: %w", err)
+		}
+
+		for _, e := range entries {
+			decName, decErr := cipher.DecryptSegment(e.Name)
+			if decErr != nil {
+				decName = e.Name
+			}
+			plainSize, decSizeErr := cipher.DecryptedSize(e.Size)
+			if decSizeErr != nil {
+				plainSize = e.Size
+			}
+			result.Entries = append(result.Entries, protocol.ListEntryItem{
+				ID:        e.ID,
+				Name:      e.Name,
+				DecName:   decName,
+				IsDir:     e.IsDir,
+				Size:      e.Size,
+				PlainSize: plainSize,
+				ModTime:   e.ModTime.UnixMilli(),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Mkdir creates a remote directory via the daemon.
+func (d *Daemon) Mkdir(ctx context.Context, params protocol.MkdirParams) (*protocol.MkdirResult, error) {
+	var result protocol.MkdirResult
+	err := d.withTempMount(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
+		mountCfg := config.FindMount(d.cfg, d.resolveMountName(params.MountName))
+		rootPath := "/"
+		if mountCfg != nil {
+			rootPath = config.RootPathForMount(*mountCfg)
+		}
+		fullPath := config.ResolveFullPath(rootPath, params.Path)
+
+		w, ok := drv.(drive.Writer)
+		if !ok {
+			return fmt.Errorf("driver does not support write operations")
+		}
+
+		if params.Parents {
+			fid, err := createRemoteDir(ctx, drv, w, cipher, fullPath, params.Path)
+			if err != nil {
+				return err
+			}
+			result.Fid = fid
+			return nil
+		}
+
+		parentPath := d.dirOf(fullPath)
+		dirName := baseOf(fullPath)
+
+		resolver, ok := drv.(drive.PathResolver)
+		if !ok {
+			return fmt.Errorf("driver does not support path resolution")
+		}
+		parentFid, err := resolver.ResolvePath(ctx, parentPath)
+		if err != nil {
+			return fmt.Errorf("parent directory not found: %w", err)
+		}
+
+		entries, err := drv.List(ctx, parentFid)
+		if err != nil {
+			return err
+		}
+		encName := cipher.EncryptSegment(dirName)
+		for _, e := range entries {
+			if e.Name == dirName || e.Name == encName {
+				return fmt.Errorf("already exists")
+			}
+		}
+
+		ne, err := w.Mkdir(ctx, parentFid, encName)
+		if err != nil {
+			return err
+		}
+		result.Fid = ne.ID
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Remove deletes a remote file or directory via the daemon.
+func (d *Daemon) Remove(ctx context.Context, params protocol.RemoveParams) (*protocol.RemoveResult, error) {
+	var result protocol.RemoveResult
+	err := d.withTempMount(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
+		mountCfg := config.FindMount(d.cfg, d.resolveMountName(params.MountName))
+		rootPath := "/"
+		if mountCfg != nil {
+			rootPath = config.RootPathForMount(*mountCfg)
+		}
+		fullPath := config.ResolveFullPath(rootPath, params.Path)
+
+		if fullPath == "/" {
+			return fmt.Errorf("cannot remove root")
+		}
+
+		parentPath := d.dirOf(fullPath)
+		baseName := baseOf(fullPath)
+
+		resolver, ok := drv.(drive.PathResolver)
+		if !ok {
+			return fmt.Errorf("driver does not support path resolution")
+		}
+		parentFid, err := resolver.ResolvePath(ctx, parentPath)
+		if err != nil {
+			if params.Force {
+				return nil
+			}
+			return fmt.Errorf("resolve parent: %w", err)
+		}
+
+		entries, err := drv.List(ctx, parentFid)
+		if err != nil {
+			if params.Force {
+				return nil
+			}
+			return fmt.Errorf("list parent: %w", err)
+		}
+
+		encName := cipher.EncryptSegment(baseName)
+		var target drive.Entry
+		found := false
+		for _, e := range entries {
+			if e.Name == baseName || e.Name == encName {
+				target = e
+				found = true
+				break
+			}
+		}
+		if !found {
+			if params.Force {
+				return nil
+			}
+			return fmt.Errorf("not found")
+		}
+
+		if target.IsDir && !params.Recursive {
+			return fmt.Errorf("is a directory; use -r for recursive delete")
+		}
+
+		w, ok := drv.(drive.Writer)
+		if !ok {
+			return fmt.Errorf("driver does not support delete")
+		}
+		if err := w.Remove(ctx, target); err != nil {
+			return fmt.Errorf("remove: %w", err)
+		}
+		result.Status = "removed"
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Move moves or renames a remote file/directory via the daemon.
+func (d *Daemon) Move(ctx context.Context, params protocol.MoveParams) (*protocol.MoveResult, error) {
+	var result protocol.MoveResult
+	err := d.withTempMount(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
+		mountCfg := config.FindMount(d.cfg, d.resolveMountName(params.MountName))
+		rootPath := "/"
+		if mountCfg != nil {
+			rootPath = config.RootPathForMount(*mountCfg)
+		}
+
+		w, ok := drv.(drive.Writer)
+		if !ok {
+			return fmt.Errorf("driver does not support move")
+		}
+		resolver, ok := drv.(drive.PathResolver)
+		if !ok {
+			return fmt.Errorf("driver does not support path resolution")
+		}
+
+		fullSrcPath := config.ResolveFullPath(rootPath, params.SrcPath)
+		fullDstPath := config.ResolveFullPath(rootPath, params.DstPath)
+
+		srcFid, err := resolver.ResolvePath(ctx, fullSrcPath)
+		if err != nil {
+			return fmt.Errorf("resolve source: %w", err)
+		}
+
+		moveIntoDir := strings.HasSuffix(params.DstPath, "/")
+		dstParentPath := d.dirOf(fullDstPath)
+		dstName := baseOf(fullDstPath)
+
+		dstParentFid, err := resolver.ResolvePath(ctx, dstParentPath)
+		if err != nil {
+			return fmt.Errorf("resolve dest parent: %w", err)
+		}
+
+		if !moveIntoDir {
+			// Check if dst is an existing directory
+			if dstParentFid != "0" {
+				entries, _ := drv.List(ctx, dstParentFid)
+				for _, e := range entries {
+					decName, _ := cipher.DecryptSegment(e.Name)
+					if decName == dstName && e.IsDir {
+						dstParentFid = e.ID
+						moveIntoDir = true
+						break
+					}
+				}
+			}
+		}
+
+		if moveIntoDir {
+			srcParentPath := d.dirOf(fullSrcPath)
+			srcParentFid, _ := resolver.ResolvePath(ctx, srcParentPath)
+			entries, _ := drv.List(ctx, srcParentFid)
+			for _, e := range entries {
+				if e.ID == srcFid {
+					decName, _ := cipher.DecryptSegment(e.Name)
+					dstName = cipher.EncryptSegment(decName)
+					break
+				}
+			}
+		} else {
+			dstName = cipher.EncryptSegment(dstName)
+		}
+
+		// Check no-clobber
+		if params.NoClobber {
+			entries, _ := drv.List(ctx, dstParentFid)
+			for _, e := range entries {
+				if e.Name == dstName && e.ID != srcFid {
+					return fmt.Errorf("target exists (--no-clobber)")
+				}
+			}
+		}
+
+		srcParentPath := d.dirOf(fullSrcPath)
+		srcParentFid, _ := resolver.ResolvePath(ctx, srcParentPath)
+
+		if srcParentFid != dstParentFid {
+			moveEntry := drive.Entry{ID: srcFid}
+			if err := w.Move(ctx, moveEntry, dstParentFid); err != nil {
+				return fmt.Errorf("move: %w", err)
+			}
+		}
+
+		srcName := baseOf(fullSrcPath)
+		srcEncName := cipher.EncryptSegment(srcName)
+		if dstName != srcEncName {
+			renameEntry := drive.Entry{ID: srcFid}
+			if err := w.Rename(ctx, renameEntry, dstName); err != nil {
+				return fmt.Errorf("rename: %w", err)
+			}
+		}
+
+		result.Status = "moved"
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// PullStart starts a pull (download) operation in the background.
+// Returns a task ID immediately. Progress is published via EventManager.
+func (d *Daemon) PullStart(ctx context.Context, params protocol.PullStartParams) (*protocol.PullStartResult, error) {
+	mountName := d.resolveMountName(params.MountName)
+	if mountName == "" {
+		return nil, fmt.Errorf("no enabled mount found")
+	}
+	mountCfg := config.FindMount(d.cfg, mountName)
+	if mountCfg == nil {
+		return nil, fmt.Errorf("mount %q not found", mountName)
+	}
+	rc := d.cfg.MergeInstanceConfig(*mountCfg)
+
+	cipher, err := d.makeCipher(rc, params.Password, params.Salt)
+	if err != nil {
+		return nil, err
+	}
+	drv, err := factory.NewDriverFromType(rc.Type, rc.Params)
+	if err != nil {
+		return nil, fmt.Errorf("driver init: %w", err)
+	}
+	if err := drv.Init(ctx); err != nil {
+		return nil, fmt.Errorf("auth: %w", err)
+	}
+
+	transfers := params.Transfers
+	if transfers <= 0 {
+		transfers = 4
+	}
+	taskID := fmt.Sprintf("pull_%d", time.Now().UnixNano())
+
+	go d.runPullTask(ctx, taskID, drv, cipher, rc, params, transfers)
+
+	return &protocol.PullStartResult{TaskID: taskID, FileCount: -1}, nil
+}
+
+func (d *Daemon) runPullTask(ctx context.Context, taskID string, drv drive.Driver, cipher *crypt.RcloneCipher, rc *config.ResolvedMountConfig, params protocol.PullStartParams, transfers int) {
+	defer drv.Drop(ctx)
+
+	mountCfg := config.FindMount(d.cfg, rc.Name)
+	rootPath := "/"
+	if mountCfg != nil {
+		rootPath = config.RootPathForMount(*mountCfg)
+	}
+	fullRemotePath := config.ResolveFullPath(rootPath, params.Remote)
+
+	parentPath := d.dirOf(fullRemotePath)
+	baseName := baseOf(fullRemotePath)
+
+	resolver, ok := drv.(drive.PathResolver)
+	if !ok {
+		d.publishPushEvent(taskID, "failed", "", 0, 0, "driver does not support path resolution")
+		return
+	}
+
+	d.publishPushEvent(taskID, "started", "", 0, 0, "")
+
+	// Check if target is a directory
+	targetFid, err := resolver.ResolvePath(ctx, fullRemotePath)
+	if err != nil {
+		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("resolve path: %v", err))
+		return
+	}
+
+	_, listErr := drv.List(ctx, targetFid)
+	localPath := params.Local
+	if listErr == nil {
+		// It's a directory
+		if localPath == "" {
+			localPath = baseName
+		}
+		if !params.DryRun {
+			os.MkdirAll(localPath, 0755)
+		}
+
+		pool := qryptsync.NewWorkerPool(drv, cipher, transfers, params.DryRun, params.Update)
+		pool.OnProgress = func(info qryptsync.ProgressInfo) {
+			d.publishPushEvent(taskID, "downloading", info.File, info.Bytes, info.Total, "")
+		}
+		pool.Start(ctx)
+
+		if err := qryptsync.ScanRemoteForDownload(ctx, targetFid, localPath, drv, cipher, pool); err != nil {
+			d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("scan: %v", err))
+			pool.Wait()
+			return
+		}
+		pool.Wait()
+		d.publishPushEvent(taskID, "completed", "", 0, 0, "")
+		return
+	}
+
+	// Single file
+	if localPath == "" {
+		localPath = baseName
+	}
+
+	parentFid, err := resolver.ResolvePath(ctx, parentPath)
+	if err != nil {
+		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("resolve parent: %v", err))
+		return
+	}
+
+	entries, err := drv.List(ctx, parentFid)
+	if err != nil {
+		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("list: %v", err))
+		return
+	}
+
+	encName := cipher.EncryptSegment(baseName)
+	var targetEntry drive.Entry
+	found := false
+	for _, e := range entries {
+		if e.Name == encName {
+			targetEntry = e
+			found = true
+			break
+		}
+	}
+	if !found {
+		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("file not found: %s", baseName))
+		return
+	}
+
+	pool := qryptsync.NewWorkerPool(drv, cipher, transfers, params.DryRun, params.Update)
+	pool.OnProgress = func(info qryptsync.ProgressInfo) {
+		d.publishPushEvent(taskID, "downloading", info.File, info.Bytes, info.Total, "")
+	}
+	pool.Start(ctx)
+	pool.Submit(qryptsync.TransferJob{
+		Type:        qryptsync.JobTypeDownload,
+		LocalPath:   localPath,
+		RemoteName:  baseName,
+		RemoteEntry: targetEntry,
+		Size:        targetEntry.Size,
+	})
+	pool.Wait()
+	d.publishPushEvent(taskID, "completed", "", 0, 0, "")
+}
+
+// createRemoteDir recursively creates directories (like mkdir -p).
+func createRemoteDir(ctx context.Context, drv drive.Driver, w drive.Writer, cipher *crypt.RcloneCipher, fullPath, userPath string) (string, error) {
+	currentFid := "0"
+	userRel := strings.TrimLeft(userPath, "/")
+	segments := strings.Split(userRel, "/")
+	for _, seg := range segments {
+		if seg == "" {
+			continue
+		}
+		entries, err := drv.List(ctx, currentFid)
+		if err != nil {
+			return "", fmt.Errorf("list: %w", err)
+		}
+		encSeg := cipher.EncryptSegment(seg)
+		found := false
+		for _, e := range entries {
+			if e.Name == seg || e.Name == encSeg {
+				currentFid = e.ID
+				found = true
+				if !e.IsDir {
+					return "", fmt.Errorf("path conflict: %s is a file", seg)
+				}
+				break
+			}
+		}
+		if !found {
+			ne, err := w.Mkdir(ctx, currentFid, encSeg)
+			if err != nil {
+				return "", fmt.Errorf("mkdir %s: %w", seg, err)
+			}
+			currentFid = ne.ID
+		}
+	}
+	return currentFid, nil
 }
 
 func (d *Daemon) ClearStaging(ctx context.Context) error {

@@ -14,6 +14,11 @@ import (
 	"time"
 )
 
+// PathResolver is the interface for resolving remote paths to FIDs.
+type PathResolver interface {
+	ResolvePath(ctx context.Context, path string) (string, error)
+}
+
 // Entry is a universal file/directory descriptor returned by all drivers.
 type Entry struct {
 	ID      string

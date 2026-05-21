@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 )
 
 //go:embed default.toml
@@ -57,6 +59,7 @@ type MountInstance struct {
 	Type       string      `toml:"type"`        // "quark" | "yun139" | "localfs"
 	MountPoint string      `toml:"mount_point"` // FUSE mount path
 	Enabled    *bool       `toml:"enabled"`     // nil = true
+	Default    bool        `toml:"default"`     // true = selection target when --mount omitted
 	AllowOther bool        `toml:"allow_other"`
 
 	Params     MountParams        `toml:"params"`
@@ -302,12 +305,34 @@ func FindConfigFile() string {
 	return ""
 }
 
-// RootPath returns the root path/ID for the first mount instance.
+// RootPath returns the root path/ID for the default mount instance.
 func (c *Config) RootPath() string {
-	if len(c.Mounts) > 0 {
-		return RootPathForMount(c.Mounts[0])
+	if m := FindDefaultMount(c); m != nil {
+		return RootPathForMount(*m)
 	}
 	return "/"
+}
+
+// FindDefaultMount returns the default mount:
+//   - the mount with default = true (if exactly one)
+//   - otherwise the first enabled mount
+//   - nil if no mounts are enabled (or no mounts exist)
+func FindDefaultMount(cfg *Config) *MountInstance {
+	for _, m := range cfg.Mounts {
+		if m.Default {
+			return &m
+		}
+	}
+	for _, m := range cfg.Mounts {
+		enabled := true
+		if m.Enabled != nil {
+			enabled = *m.Enabled
+		}
+		if enabled {
+			return &m
+		}
+	}
+	return nil
 }
 
 // RootPathForMount returns the root path/ID for a specific mount instance.
@@ -362,3 +387,82 @@ func ParseDuration(s string) (time.Duration, error) {
 	}
 	return time.ParseDuration(s)
 }
+
+// ResolveFullPath resolves a user-provided path against a root path.
+func ResolveFullPath(rootPath, userPath string) string {
+	root := strings.TrimRight(rootPath, "/")
+	user := strings.TrimLeft(userPath, "/")
+	if root == "" || root == "/" {
+		return "/" + user
+	}
+	if user == "" {
+		return root
+	}
+	return root + "/" + user
+}
+
+// LoadConfigAuto loads config from path or auto-discovers it.
+func LoadConfigAuto(path string) (configPath string, cfg *Config, vr *ValidationResult, err error) {
+	if path == "" {
+		path = FindConfigFile()
+	}
+	if path == "" {
+		return "", nil, nil, fmt.Errorf("no config file found")
+	}
+	cfg, vr, err = LoadConfig(path)
+	if err != nil {
+		return path, nil, nil, err
+	}
+	return path, cfg, vr, nil
+}
+
+// FindMount finds a mount by name; if name is empty, returns the default mount.
+func FindMount(cfg *Config, name string) *MountInstance {
+	if name != "" {
+		for _, m := range cfg.Mounts {
+			if m.Name == name {
+				return &m
+			}
+		}
+		return nil
+	}
+	return FindDefaultMount(cfg)
+}
+
+// MakeCipher creates an RcloneCipher from encryption config with optional overrides.
+func MakeCipher(enc EncryptionConfig, defaults EncryptionConfig, password, salt string) (*crypt.RcloneCipher, error) {
+	if password == "" {
+		password = enc.Password
+	}
+	if password == "" {
+		password = defaults.Password
+	}
+	if password == "" {
+		return nil, fmt.Errorf("encryption password required")
+	}
+
+	if salt == "" {
+		salt = enc.Salt
+	}
+	if salt == "" {
+		salt = defaults.Salt
+	}
+
+	filenameEnc := enc.FileNameEncoding
+	if filenameEnc == "" {
+		filenameEnc = defaults.FileNameEncoding
+	}
+	if filenameEnc == "" {
+		filenameEnc = "base32"
+	}
+	filenameEncryption := enc.FileNameEncryption
+	if filenameEncryption == "" {
+		filenameEncryption = defaults.FileNameEncryption
+	}
+	if filenameEncryption == "" {
+		filenameEncryption = "standard"
+	}
+
+	return crypt.NewRcloneCipher(password, salt, filenameEnc, filenameEncryption)
+}
+

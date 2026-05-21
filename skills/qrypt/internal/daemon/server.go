@@ -234,6 +234,84 @@ func (s *Server) dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		}
 		return protocol.NewResult(id, usage)
 
+	case "push_start":
+		var p protocol.PushStartParams
+		if req.Params != nil {
+			if err := unmarshalParams(req.Params, &p); err != nil {
+				return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+			}
+		}
+		result, err := s.daemon.PushStart(ctx, p)
+		if err != nil {
+			return protocol.NewError(id, protocol.ErrCodeSync, err.Error())
+		}
+		return protocol.NewResult(id, result)
+
+	case "pull_start":
+		var p protocol.PullStartParams
+		if req.Params != nil {
+			if err := unmarshalParams(req.Params, &p); err != nil {
+				return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+			}
+		}
+		result, err := s.daemon.PullStart(ctx, p)
+		if err != nil {
+			return protocol.NewError(id, protocol.ErrCodeSync, err.Error())
+		}
+		return protocol.NewResult(id, result)
+
+	case "list_dir":
+		var p protocol.ListDirParams
+		if req.Params != nil {
+			if err := unmarshalParams(req.Params, &p); err != nil {
+				return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+			}
+		}
+		result, err := s.daemon.ListDir(ctx, p)
+		if err != nil {
+			return protocol.NewError(id, protocol.ErrCodeSync, err.Error())
+		}
+		return protocol.NewResult(id, result)
+
+	case "mkdir":
+		var p protocol.MkdirParams
+		if req.Params != nil {
+			if err := unmarshalParams(req.Params, &p); err != nil {
+				return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+			}
+		}
+		result, err := s.daemon.Mkdir(ctx, p)
+		if err != nil {
+			return protocol.NewError(id, protocol.ErrCodeSync, err.Error())
+		}
+		return protocol.NewResult(id, result)
+
+	case "remove":
+		var p protocol.RemoveParams
+		if req.Params != nil {
+			if err := unmarshalParams(req.Params, &p); err != nil {
+				return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+			}
+		}
+		result, err := s.daemon.Remove(ctx, p)
+		if err != nil {
+			return protocol.NewError(id, protocol.ErrCodeSync, err.Error())
+		}
+		return protocol.NewResult(id, result)
+
+	case "move":
+		var p protocol.MoveParams
+		if req.Params != nil {
+			if err := unmarshalParams(req.Params, &p); err != nil {
+				return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+			}
+		}
+		result, err := s.daemon.Move(ctx, p)
+		if err != nil {
+			return protocol.NewError(id, protocol.ErrCodeSync, err.Error())
+		}
+		return protocol.NewResult(id, result)
+
 	default:
 		return protocol.NewError(id, protocol.ErrCodeMethodNotFound,
 			fmt.Sprintf("method not found: %s", req.Method))
