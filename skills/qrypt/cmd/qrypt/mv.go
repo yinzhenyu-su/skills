@@ -44,7 +44,7 @@ func runMvViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 		}
 	}
 
-	client, err := daemon.DialClient(socketPath)
+	client, err := daemon.DialWS(socketPath)
 	if err != nil {
 		fmt.Printf("无法连接到 qryptd: %v\n", err)
 		os.Exit(1)

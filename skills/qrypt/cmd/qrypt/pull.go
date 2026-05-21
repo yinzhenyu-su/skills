@@ -38,8 +38,8 @@ func runPullViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	password, _ := cmd.Flags().GetString("password")
 	salt, _ := cmd.Flags().GetString("salt")
 
-	// Connect to daemon
-	client, err := daemon.DialClient(socketPath)
+	// Connect to daemon via WebSocket (single connection for RPC + events)
+	client, err := daemon.DialWS(socketPath)
 	if err != nil {
 		fmt.Printf("无法连接到 qryptd: %v\n", err)
 		os.Exit(1)
@@ -71,14 +71,8 @@ func runPullViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 
 	fmt.Printf("下载任务已启动: %s\n", startResult.TaskID)
 
-	// Subscribe to events on second connection
-	client2, err := daemon.DialClient(socketPath)
-	if err != nil {
-		return
-	}
-	defer client2.Close()
-
-	evtCh, err := client2.SubscribeEvents()
+	// Subscribe to events on the same connection
+	evtCh, err := client.SubscribeEvents()
 	if err != nil {
 		fmt.Printf("订阅事件失败: %v\n", err)
 		os.Exit(1)

@@ -13,7 +13,6 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
-	factory "github.com/yinzhenyu/skills/qrypt/internal/drive/factory"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 	qryptsync "github.com/yinzhenyu/skills/qrypt/internal/sync"
 )
@@ -25,6 +24,7 @@ type Daemon struct {
 	cfgPath   string
 	version   string
 	eventMgr  *EventManager
+	sessionMgr *SessionManager
 	manager   *MountManager
 
 	mu         sync.RWMutex
@@ -34,21 +34,25 @@ type Daemon struct {
 }
 
 func NewDaemon(cfg *config.Config, version string) *Daemon {
+	sm := NewSessionManager()
 	return &Daemon{
-		cfg:      cfg,
-		version:  version,
-		eventMgr: NewEventManager(),
-		manager:  NewMountManager(cfg),
+		cfg:        cfg,
+		version:    version,
+		eventMgr:   NewEventManager(),
+		sessionMgr: sm,
+		manager:    NewMountManager(cfg, sm),
 	}
 }
 
 func NewDaemonWithPath(cfg *config.Config, cfgPath, version string) *Daemon {
+	sm := NewSessionManager()
 	return &Daemon{
-		cfg:     cfg,
-		cfgPath: cfgPath,
-		version: version,
-		eventMgr: NewEventManager(),
-		manager: NewMountManager(cfg),
+		cfg:       cfg,
+		cfgPath:   cfgPath,
+		version:   version,
+		eventMgr:  NewEventManager(),
+		sessionMgr: sm,
+		manager:   NewMountManager(cfg, sm),
 	}
 }
 
@@ -263,12 +267,10 @@ func (d *Daemon) PushStart(ctx context.Context, params protocol.PushStartParams)
 		return nil, err
 	}
 
-	drv, err := factory.NewDriverFromType(rc.Type, rc.Params)
+	sk, _ := SessionKeyForMount(rc)
+	s, err := d.sessionMgr.Acquire(ctx, sk, rc.Params)
 	if err != nil {
-		return nil, fmt.Errorf("driver init: %w", err)
-	}
-	if err := drv.Init(ctx); err != nil {
-		return nil, fmt.Errorf("auth: %w", err)
+		return nil, fmt.Errorf("session: %w", err)
 	}
 
 	transfers := params.Transfers
@@ -277,13 +279,14 @@ func (d *Daemon) PushStart(ctx context.Context, params protocol.PushStartParams)
 	}
 	taskID := fmt.Sprintf("push_%d", time.Now().UnixNano())
 
-	go d.runPushTask(ctx, taskID, drv, cipher, rc, params, transfers)
+	go d.runPushTask(ctx, taskID, s, sk, cipher, rc, params, transfers)
 
 	return &protocol.PushStartResult{TaskID: taskID, FileCount: -1}, nil
 }
 
-func (d *Daemon) runPushTask(ctx context.Context, taskID string, drv drive.Driver, cipher *crypt.RcloneCipher, rc *config.ResolvedMountConfig, params protocol.PushStartParams, transfers int) {
-	defer drv.Drop(ctx)
+func (d *Daemon) runPushTask(ctx context.Context, taskID string, s *Session, sk SessionKey, cipher *crypt.RcloneCipher, rc *config.ResolvedMountConfig, params protocol.PushStartParams, transfers int) {
+	drv := s.Drv
+	defer d.sessionMgr.Release(ctx, sk)
 
 	mountCfg := config.FindMount(d.cfg, rc.Name)
 	rootPath := "/"
@@ -450,8 +453,8 @@ func baseOf(path string) string {
 	return path[idx+1:]
 }
 
-// withTempMount creates a driver and cipher for a mount, calls fn, then drops the driver.
-func (d *Daemon) withTempMount(ctx context.Context, mountName, password, salt string, fn func(drv drive.Driver, cipher *crypt.RcloneCipher) error) error {
+// withMountSession borrows a session and cipher for a mount, calls fn, then releases.
+func (d *Daemon) withMountSession(ctx context.Context, mountName, password, salt string, fn func(drv drive.Driver, cipher *crypt.RcloneCipher) error) error {
 	name := d.resolveMountName(mountName)
 	if name == "" {
 		return fmt.Errorf("no enabled mount found")
@@ -466,22 +469,21 @@ func (d *Daemon) withTempMount(ctx context.Context, mountName, password, salt st
 	if err != nil {
 		return err
 	}
-	drv, err := factory.NewDriverFromType(rc.Type, rc.Params)
-	if err != nil {
-		return fmt.Errorf("driver init: %w", err)
-	}
-	if err := drv.Init(ctx); err != nil {
-		return fmt.Errorf("auth: %w", err)
-	}
-	defer drv.Drop(ctx)
 
-	return fn(drv, cipher)
+	sk, _ := SessionKeyForMount(rc)
+	s, err := d.sessionMgr.Acquire(ctx, sk, rc.Params)
+	if err != nil {
+		return fmt.Errorf("session: %w", err)
+	}
+	defer d.sessionMgr.Release(ctx, sk)
+
+	return fn(s.Drv, cipher)
 }
 
 // ListDir lists a remote directory via the daemon.
 func (d *Daemon) ListDir(ctx context.Context, params protocol.ListDirParams) (*protocol.ListDirResult, error) {
 	var result protocol.ListDirResult
-	err := d.withTempMount(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
+	err := d.withMountSession(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
 		mountCfg := config.FindMount(d.cfg, d.resolveMountName(params.MountName))
 		rootPath := "/"
 		if mountCfg != nil {
@@ -534,7 +536,7 @@ func (d *Daemon) ListDir(ctx context.Context, params protocol.ListDirParams) (*p
 // Mkdir creates a remote directory via the daemon.
 func (d *Daemon) Mkdir(ctx context.Context, params protocol.MkdirParams) (*protocol.MkdirResult, error) {
 	var result protocol.MkdirResult
-	err := d.withTempMount(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
+	err := d.withMountSession(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
 		mountCfg := config.FindMount(d.cfg, d.resolveMountName(params.MountName))
 		rootPath := "/"
 		if mountCfg != nil {
@@ -595,7 +597,7 @@ func (d *Daemon) Mkdir(ctx context.Context, params protocol.MkdirParams) (*proto
 // Remove deletes a remote file or directory via the daemon.
 func (d *Daemon) Remove(ctx context.Context, params protocol.RemoveParams) (*protocol.RemoveResult, error) {
 	var result protocol.RemoveResult
-	err := d.withTempMount(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
+	err := d.withMountSession(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
 		mountCfg := config.FindMount(d.cfg, d.resolveMountName(params.MountName))
 		rootPath := "/"
 		if mountCfg != nil {
@@ -670,7 +672,7 @@ func (d *Daemon) Remove(ctx context.Context, params protocol.RemoveParams) (*pro
 // Move moves or renames a remote file/directory via the daemon.
 func (d *Daemon) Move(ctx context.Context, params protocol.MoveParams) (*protocol.MoveResult, error) {
 	var result protocol.MoveResult
-	err := d.withTempMount(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
+	err := d.withMountSession(ctx, params.MountName, params.Password, params.Salt, func(drv drive.Driver, cipher *crypt.RcloneCipher) error {
 		mountCfg := config.FindMount(d.cfg, d.resolveMountName(params.MountName))
 		rootPath := "/"
 		if mountCfg != nil {
@@ -788,12 +790,11 @@ func (d *Daemon) PullStart(ctx context.Context, params protocol.PullStartParams)
 	if err != nil {
 		return nil, err
 	}
-	drv, err := factory.NewDriverFromType(rc.Type, rc.Params)
+
+	sk, _ := SessionKeyForMount(rc)
+	s, err := d.sessionMgr.Acquire(ctx, sk, rc.Params)
 	if err != nil {
-		return nil, fmt.Errorf("driver init: %w", err)
-	}
-	if err := drv.Init(ctx); err != nil {
-		return nil, fmt.Errorf("auth: %w", err)
+		return nil, fmt.Errorf("session: %w", err)
 	}
 
 	transfers := params.Transfers
@@ -802,13 +803,14 @@ func (d *Daemon) PullStart(ctx context.Context, params protocol.PullStartParams)
 	}
 	taskID := fmt.Sprintf("pull_%d", time.Now().UnixNano())
 
-	go d.runPullTask(ctx, taskID, drv, cipher, rc, params, transfers)
+	go d.runPullTask(ctx, taskID, s, sk, cipher, rc, params, transfers)
 
 	return &protocol.PullStartResult{TaskID: taskID, FileCount: -1}, nil
 }
 
-func (d *Daemon) runPullTask(ctx context.Context, taskID string, drv drive.Driver, cipher *crypt.RcloneCipher, rc *config.ResolvedMountConfig, params protocol.PullStartParams, transfers int) {
-	defer drv.Drop(ctx)
+func (d *Daemon) runPullTask(ctx context.Context, taskID string, s *Session, sk SessionKey, cipher *crypt.RcloneCipher, rc *config.ResolvedMountConfig, params protocol.PullStartParams, transfers int) {
+	drv := s.Drv
+	defer d.sessionMgr.Release(ctx, sk)
 
 	mountCfg := config.FindMount(d.cfg, rc.Name)
 	rootPath := "/"

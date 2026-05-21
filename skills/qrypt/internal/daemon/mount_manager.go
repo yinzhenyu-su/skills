@@ -11,7 +11,6 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
-	factory "github.com/yinzhenyu/skills/qrypt/internal/drive/factory"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
@@ -31,9 +30,10 @@ func (inst *MountInstance) IsBusy() bool {
 
 // MountManager manages the lifecycle of multiple FUSE mount instances.
 type MountManager struct {
-	mu     sync.RWMutex
-	cfg    *config.Config
-	mounts map[string]*MountInstance
+	mu         sync.RWMutex
+	cfg        *config.Config
+	sessionMgr *SessionManager
+	mounts     map[string]*MountInstance
 }
 
 // MountInstance is one running mount with all its resources.
@@ -45,16 +45,27 @@ type MountInstance struct {
 	Cache   *cache.CacheManager
 	Backend mountBackend
 
+	sessionKey  SessionKey // for releasing the session on stop
 	ResolvedCfg *config.ResolvedMountConfig
 	StartedAt   time.Time
 	LastError   string
 }
 
-func NewMountManager(cfg *config.Config) *MountManager {
-	return &MountManager{
-		cfg:    cfg,
-		mounts: make(map[string]*MountInstance),
+func NewMountManager(cfg *config.Config, sm *SessionManager) *MountManager {
+	if sm == nil {
+		sm = NewSessionManager()
 	}
+	return &MountManager{
+		cfg:        cfg,
+		sessionMgr: sm,
+		mounts:     make(map[string]*MountInstance),
+	}
+}
+
+// NewMountManagerStandalone creates a MountManager without a shared SessionManager.
+// Each mount creates/drops its own driver (no pooling).
+func NewMountManagerStandalone(cfg *config.Config) *MountManager {
+	return NewMountManager(cfg, nil)
 }
 
 // List returns a summary of all configured mounts.
@@ -171,22 +182,18 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 	}
 	inst.Cipher = cipher
 
-	drv, err := factory.NewDriverFromType(rc.Type, rc.Params)
+	sk, _ := SessionKeyForMount(rc)
+	inst.sessionKey = sk
+	s, err := mm.sessionMgr.Acquire(ctx, sk, rc.Params)
 	if err != nil {
 		inst.State = protocol.MountStateError
 		inst.LastError = err.Error()
 		mm.mounts[name] = inst
-		return fmt.Errorf("mount %q driver init: %w", name, err)
+		return fmt.Errorf("mount %q session: %w", name, err)
 	}
-	if err := drv.Init(ctx); err != nil {
-		inst.State = protocol.MountStateError
-		inst.LastError = err.Error()
-		mm.mounts[name] = inst
-		return fmt.Errorf("mount %q auth: %w", name, err)
-	}
-	inst.Driver = drv
+	inst.Driver = s.Drv
 
-	if setter, ok := drv.(interface{ SetCipher(*crypt.RcloneCipher) }); ok {
+	if setter, ok := s.Drv.(interface{ SetCipher(*crypt.RcloneCipher) }); ok {
 		setter.SetCipher(cipher)
 	}
 
@@ -204,7 +211,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 	inst.Cache = cacheMgr
 
 	backend := newMountBackend()
-	if err := backend.mount(ctx, rc, drv, cipher, cacheMgr); err != nil {
+	if err := backend.mount(ctx, rc, inst.Driver, cipher, cacheMgr); err != nil {
 		inst.State = protocol.MountStateError
 		inst.LastError = err.Error()
 		mm.mounts[name] = inst
@@ -238,7 +245,7 @@ func (mm *MountManager) Stop(ctx context.Context, name string) error {
 		inst.Cache.Close()
 	}
 	if inst.Driver != nil {
-		_ = inst.Driver.Drop(ctx)
+		mm.sessionMgr.Release(ctx, inst.sessionKey)
 	}
 	if inst.Cipher != nil {
 		inst.Cipher = nil
@@ -299,7 +306,7 @@ func (mm *MountManager) Reload(ctx context.Context, newCfg *config.Config) (*pro
 			inst.Cache.Close()
 		}
 		if inst.Driver != nil {
-			_ = inst.Driver.Drop(ctx)
+			mm.sessionMgr.Release(ctx, inst.sessionKey)
 		}
 		inst.State = protocol.MountStateUnmounted
 		log.L.Infof("MountManager: stopped %q for reload\n", name)
