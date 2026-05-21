@@ -29,8 +29,15 @@
 
 ## Phase 4: 缓存一致性 + FUSE 归入 daemon
 
+- [x] 4.5 清理废弃的 JSON-RPC 和 direct 代码
+  - 删除 `server.go`（旧 JSON-RPC Server，WS Server 替代）
+  - 删除 `client.go`（旧 JSON-RPC Client，WS Client 替代）
+  - 精简 `protocol/codec.go`（仅保留 NewError/NewResult）
+  - 删除 `protocol/codec_test.go` + `server_test.go`
+  - 迁移 `dispatch_test.go` → 使用 `WSServer`
+  - 删除根目录残留 `dispatch_test.go`
+  - 迁移 `FindSocketPath`/`IsDaemonRunning` 到 `socket.go`
 - [ ] 4.1 CacheInvalidator 实现
 - [ ] 4.2 `qrypt mount` 改为 daemon 别名
 - [ ] 4.3 cat/find/cp 改为走 daemon
 - [ ] 4.4 回归测试
-- [ ] 4.5 清理废弃的 JSON-RPC 和 direct 代码
