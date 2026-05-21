@@ -1,6 +1,7 @@
 package crypt
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/rand"
 	"encoding/base32"
@@ -8,7 +9,9 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/rfjakob/eme"
 	"golang.org/x/crypto/nacl/secretbox"
@@ -32,14 +35,17 @@ var rcloneBase64 = base64.URLEncoding.WithPadding(base64.NoPadding)
 // conflictSuffixRe 匹配 Quark Drive 等网盘追加的 (N) 冲突后缀
 var conflictSuffixRe = regexp.MustCompile(`^(.*?)\s*\(\d+\)$`)
 
+const obfuscQuoteRune = '!'
+
 type RcloneCipher struct {
-	dataKey          [32]byte
-	nameKey          [32]byte
-	nameTweak        [16]byte
-	filenameEncoding string // "base32" (rclone 默认) or "base64"
+	dataKey            [32]byte
+	nameKey            [32]byte
+	nameTweak          [16]byte
+	filenameEncryption string // "standard", "obfuscate", "off"
+	filenameEncoding   string // "base32", "base64" (only for "standard")
 }
 
-func NewRcloneCipher(password, salt string, filenameEncodings ...string) (*RcloneCipher, error) {
+func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, error) {
 	saltBytes := defaultSalt
 	if salt != "" {
 		saltBytes = []byte(salt)
@@ -50,16 +56,27 @@ func NewRcloneCipher(password, salt string, filenameEncodings ...string) (*Rclon
 		return nil, err
 	}
 
-	enc := "base32"
-	if len(filenameEncodings) > 0 && filenameEncodings[0] != "" {
-		enc = filenameEncodings[0]
+	encoding := "base32"
+	encryption := "standard"
+	for i, opt := range opts {
+		switch i {
+		case 0:
+			if opt != "" {
+				encoding = opt
+			}
+		case 1:
+			if opt != "" {
+				encryption = opt
+			}
+		}
 	}
 
 	c := &RcloneCipher{}
 	copy(c.dataKey[:], key[0:32])
 	copy(c.nameKey[:], key[32:64])
 	copy(c.nameTweak[:], key[64:80])
-	c.filenameEncoding = enc
+	c.filenameEncoding = encoding
+	c.filenameEncryption = encryption
 	return c, nil
 }
 
@@ -119,6 +136,18 @@ func (c *RcloneCipher) EncryptSegment(plaintext string) string {
 		return ""
 	}
 
+	switch c.filenameEncryption {
+	case "off":
+		return plaintext
+	case "obfuscate":
+		return c.obfuscateSegment(plaintext)
+	default: // "standard"
+		return c.encryptSegmentStandard(plaintext)
+	}
+}
+
+// encryptSegmentStandard EME-AES + base32/base64 加密
+func (c *RcloneCipher) encryptSegmentStandard(plaintext string) string {
 	// 1. PKCS7 填充
 	plaintextBytes := []byte(plaintext)
 	paddingLen := 16 - (len(plaintextBytes) % 16)
@@ -140,34 +169,49 @@ func (c *RcloneCipher) EncryptSegment(plaintext string) string {
 }
 
 // DecryptSegment 解密单个路径段，自动处理 (N) 冲突后缀
-// 优先使用配置的编码，失败后自动 fallback 到另一种编码（兼容新旧文件）
 func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
-	plain, err := c.decryptSegment(encrypted, c.filenameEncoding)
-	if err == nil {
-		return plain, nil
+	if encrypted == "" {
+		return "", nil
 	}
 
-	// 用另一种编码尝试（兼容编码转换期的文件）
-	other := "base64"
-	if c.filenameEncoding == "base64" {
-		other = "base32"
+	switch c.filenameEncryption {
+	case "off":
+		return encrypted, nil
+	case "obfuscate":
+		return c.deobfuscateSegment(encrypted)
+	default: // "standard"
+		return c.decryptSegmentStandard(encrypted)
 	}
-	plain, err = c.decryptSegment(encrypted, other)
-	if err == nil {
-		return plain, nil
-	}
-
-	// 解密失败 → 尝试剥离 (N) / (N) 冲突后缀后重试
-	cleaned := stripConflictSuffix(encrypted)
-	if cleaned != encrypted {
-		return c.DecryptSegment(cleaned)
-	}
-
-	return "", err
 }
 
-// decryptSegment 按指定编码解码后解密
-func (c *RcloneCipher) decryptSegment(encrypted, encoding string) (string, error) {
+// decryptSegmentStandard EME-AES 解码 + 双编码 fallback
+func (c *RcloneCipher) decryptSegmentStandard(encrypted string) (string, error) {
+	// 优先使用配置的编码
+	for _, enc := range []string{c.filenameEncoding, otherEncoding(c.filenameEncoding)} {
+		plain, err := c.decodeAndDecrypt(encrypted, enc)
+		if err == nil {
+			return plain, nil
+		}
+	}
+
+	// 尝试剥离 (N) / (N) 冲突后缀后重试
+	cleaned := stripConflictSuffix(encrypted)
+	if cleaned != encrypted {
+		return c.decryptSegmentStandard(cleaned)
+	}
+
+	return "", errors.New("failed to decrypt filename")
+}
+
+func otherEncoding(enc string) string {
+	if enc == "base64" {
+		return "base32"
+	}
+	return "base64"
+}
+
+// decodeAndDecrypt base32/base64 -> EME-AES 解密 -> 去填充
+func (c *RcloneCipher) decodeAndDecrypt(encrypted, encoding string) (string, error) {
 	if encrypted == "" {
 		return "", nil
 	}
@@ -194,7 +238,6 @@ func (c *RcloneCipher) decryptSegment(encrypted, encoding string) (string, error
 	block, _ := aes.NewCipher(c.nameKey[:])
 	plaintextBytes := eme.Transform(block, c.nameTweak[:], rawCiphertext, eme.DirectionDecrypt)
 
-	// 去除 PKCS7 填充
 	if len(plaintextBytes) == 0 {
 		return "", nil
 	}
@@ -234,6 +277,158 @@ func (c *RcloneCipher) DecryptedSize(size int64) (int64, error) {
 		decSize += residue
 	}
 	return decSize, nil
+}
+
+// ──────────────────────────────────────────────
+// obfuscate 模式（rclone 兼容，长度不变）
+// ──────────────────────────────────────────────
+
+func (c *RcloneCipher) obfuscateSegment(plaintext string) string {
+	if plaintext == "" {
+		return ""
+	}
+	if !utf8.ValidString(plaintext) {
+		return "!." + plaintext
+	}
+
+	var dir int
+	for _, runeValue := range plaintext {
+		dir += int(runeValue)
+	}
+	dir %= 256
+
+	var result bytes.Buffer
+	result.WriteString(strconv.Itoa(dir) + ".")
+	for i := range len(c.nameKey) {
+		dir += int(c.nameKey[i])
+	}
+
+	for _, runeValue := range plaintext {
+		switch {
+		case runeValue == obfuscQuoteRune:
+			result.WriteRune(obfuscQuoteRune)
+			result.WriteRune(obfuscQuoteRune)
+
+		case runeValue >= '0' && runeValue <= '9':
+			thisdir := (dir % 9) + 1
+			newRune := '0' + (int(runeValue)-'0'+thisdir)%10
+			result.WriteRune(rune(newRune))
+
+		case (runeValue >= 'A' && runeValue <= 'Z') ||
+			(runeValue >= 'a' && runeValue <= 'z'):
+			thisdir := dir%25 + 1
+			pos := int(runeValue - 'A')
+			if pos >= 26 {
+				pos -= 6
+			}
+			pos = (pos + thisdir) % 52
+			if pos >= 26 {
+				pos += 6
+			}
+			result.WriteRune(rune('A' + pos))
+
+		case runeValue >= 0xA0 && runeValue <= 0xFF:
+			thisdir := (dir % 95) + 1
+			newRune := 0xA0 + (int(runeValue)-0xA0+thisdir)%96
+			result.WriteRune(rune(newRune))
+
+		case runeValue >= 0x100:
+			thisdir := (dir % 127) + 1
+			base := int(runeValue - runeValue%256)
+			newRune := rune(base + (int(runeValue)-base+thisdir)%256)
+			if !utf8.ValidRune(newRune) {
+				result.WriteRune(obfuscQuoteRune)
+				result.WriteRune(runeValue)
+			} else {
+				result.WriteRune(newRune)
+			}
+
+		default:
+			result.WriteRune(runeValue)
+		}
+	}
+	return result.String()
+}
+
+func (c *RcloneCipher) deobfuscateSegment(ciphertext string) (string, error) {
+	if ciphertext == "" {
+		return "", nil
+	}
+	before, after, ok := strings.Cut(ciphertext, ".")
+	if !ok {
+		return "", errors.New("not an obfuscated file")
+	}
+	num := before
+	if num == "!" {
+		return after, nil
+	}
+	dir, err := strconv.Atoi(num)
+	if err != nil {
+		return "", errors.New("not an obfuscated file")
+	}
+	for i := range len(c.nameKey) {
+		dir += int(c.nameKey[i])
+	}
+
+	var result bytes.Buffer
+	inQuote := false
+	for _, runeValue := range after {
+		if inQuote {
+			result.WriteRune(runeValue)
+			inQuote = false
+			continue
+		}
+		if runeValue == obfuscQuoteRune {
+			inQuote = true
+			continue
+		}
+		switch {
+		case runeValue >= '0' && runeValue <= '9':
+			thisdir := (dir % 9) + 1
+			orig := (int(runeValue) - '0' - thisdir) % 10
+			if orig < 0 {
+				orig += 10
+			}
+			result.WriteRune(rune('0' + orig))
+
+		case (runeValue >= 'A' && runeValue <= 'Z') ||
+			(runeValue >= 'a' && runeValue <= 'z'):
+			thisdir := dir%25 + 1
+			pos := int(runeValue - 'A')
+			if pos >= 26 {
+				pos -= 6
+			}
+			pos = (pos - thisdir) % 52
+			if pos < 0 {
+				pos += 52
+			}
+			if pos >= 26 {
+				pos += 6
+			}
+			result.WriteRune(rune('A' + pos))
+
+		case runeValue >= 0xA0 && runeValue <= 0xFF:
+			thisdir := (dir % 95) + 1
+			orig := (int(runeValue) - 0xA0 - thisdir) % 96
+			if orig < 0 {
+				orig += 96
+			}
+			result.WriteRune(rune(0xA0 + orig))
+
+		case runeValue >= 0x100:
+			thisdir := (dir % 127) + 1
+			base := int(runeValue - runeValue%256)
+			orig := (int(runeValue) - base - thisdir) % 256
+			if orig < 0 {
+				orig += 256
+			}
+			result.WriteRune(rune(base + orig))
+
+		default:
+			result.WriteRune(runeValue)
+		}
+	}
+	return result.String(), nil
 }
 
 // stripConflictSuffix 剥离 (N) /  (N) 等网盘冲突后缀，返回清理后的文件名

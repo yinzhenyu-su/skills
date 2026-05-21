@@ -50,6 +50,63 @@ func TestRcloneCipher_FilenameEncryption(t *testing.T) {
 	}
 }
 
+func TestRcloneCipher_ObfuscateMode(t *testing.T) {
+	password := "password"
+	salt := ""
+	c, _ := NewRcloneCipher(password, salt, "base32", "obfuscate")
+
+	testNames := []string{
+		"README.md",
+		"电影.mp4",
+		"a",
+		"hello world",
+		"测试中文文件名",
+		"very_long_filename_that_exceeds_multiple_blocks.txt",
+	}
+
+	for _, name := range testNames {
+		encrypted := c.EncryptSegment(name)
+		// obfuscate 输出应接近输入长度（仅多数字前缀 + "."）
+		if len(encrypted) > len(name)+10 {
+			t.Errorf("[obfuscate] output too long for %s: %d vs %d", name, len(encrypted), len(name))
+		}
+		decrypted, err := c.DecryptSegment(encrypted)
+		if err != nil {
+			t.Errorf("[obfuscate] decryption failed for %s: %v", name, err)
+			continue
+		}
+		if decrypted != name {
+			t.Errorf("[obfuscate] name mismatch! Original: %s, Decrypted: %s", name, decrypted)
+		}
+	}
+}
+
+func TestRcloneCipher_OffMode(t *testing.T) {
+	password := "password"
+	salt := ""
+	c, _ := NewRcloneCipher(password, salt, "base32", "off")
+
+	testNames := []string{
+		"README.md",
+		"电影.mp4",
+		"hello world",
+	}
+
+	for _, name := range testNames {
+		encrypted := c.EncryptSegment(name)
+		if encrypted != name {
+			t.Errorf("[off] encrypt should be no-op, got %s", encrypted)
+		}
+		decrypted, err := c.DecryptSegment(encrypted)
+		if err != nil {
+			t.Errorf("[off] decrypt failed: %v", err)
+		}
+		if decrypted != name {
+			t.Errorf("[off] name mismatch: %s vs %s", name, decrypted)
+		}
+	}
+}
+
 func TestRcloneCipher_CrossEncodingDecrypt(t *testing.T) {
 	password := "password"
 	salt := ""
