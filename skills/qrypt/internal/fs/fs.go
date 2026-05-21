@@ -4,6 +4,7 @@ package fs
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -176,6 +177,23 @@ func NewFS(
 	}
 
 	return fs
+}
+
+// InvalidateDirCache removes a path from the in-memory node tree,
+// causing the next lookup to re-fetch from the remote. This is called
+// by the daemon's CacheInvalidator when external uploads complete.
+func (fs *QryptFS) InvalidateDirCache(path string) {
+	if v, ok := fs.nodes.Load(path); ok {
+		n := v.(*Node)
+		n.mu.RLock()
+		fid := n.fid
+		n.mu.RUnlock()
+		if fid != "" && !strings.HasPrefix(fid, "local_") {
+			fs.fidNodes.Delete(fid)
+		}
+		fs.nodes.Delete(path)
+		log.L.Debugf("Invalidated cache for %s\n", path)
+	}
 }
 
 func (fs *QryptFS) IsShuttingDown() bool {

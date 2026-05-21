@@ -359,5 +359,14 @@ func (mm *MountManager) StopAll(ctx context.Context) error {
 	return lastErr
 }
 
+// ForEachRunningMount calls fn for each running mount while holding the read lock.
+func (mm *MountManager) ForEachRunningMount(fn func(name string, inst *MountInstance)) {
+	mm.mu.RLock()
+	defer mm.mu.RUnlock()
+	for name, inst := range mm.mounts {
+		fn(name, inst)
+	}
+}
+
 // MountSummary alias for protocol type.
 type MountSummary = protocol.MountSummary

@@ -37,7 +37,11 @@
   - 迁移 `dispatch_test.go` → 使用 `WSServer`
   - 删除根目录残留 `dispatch_test.go`
   - 迁移 `FindSocketPath`/`IsDaemonRunning` 到 `socket.go`
-- [ ] 4.1 CacheInvalidator 实现
+- [x] 4.1 CacheInvalidator 实现
+  - 新增 QryptFS.InvalidateDirCache（节点树缓存驱逐）
+  - 新增 daemon.CacheInvalidator（订阅 EventSyncCompleted 事件，转发驱逐）
+  - mountBackend 接口新增 VFS() 方法暴露 CacheInvalidatable
+  - MountManager 新增 ForEachRunningMount 安全遍历
 - [x] 4.2 `qrypt mount` 改为 daemon 别名
   - daemon 运行时: CLI 通过 WS RPC 委托 daemon 启停 FUSE
   - daemon 未运行: 降级到独立挂载模式（带 deprecation 警告）

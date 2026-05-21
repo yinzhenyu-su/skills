@@ -38,7 +38,7 @@ type Daemon struct {
 func NewDaemon(cfg *config.Config, version string) *Daemon {
 	sm := NewSessionManager()
 	em := NewEventManager()
-	return &Daemon{
+	d := &Daemon{
 		cfg:        cfg,
 		version:    version,
 		eventMgr:   em,
@@ -47,12 +47,14 @@ func NewDaemon(cfg *config.Config, version string) *Daemon {
 		progress:   NewProgressHub(em),
 		rateLimit:  NewRateLimiter(0),
 	}
+	NewCacheInvalidator(d.manager, em)
+	return d
 }
 
 func NewDaemonWithPath(cfg *config.Config, cfgPath, version string) *Daemon {
 	sm := NewSessionManager()
 	em := NewEventManager()
-	return &Daemon{
+	d := &Daemon{
 		cfg:        cfg,
 		cfgPath:    cfgPath,
 		version:    version,
@@ -62,6 +64,8 @@ func NewDaemonWithPath(cfg *config.Config, cfgPath, version string) *Daemon {
 		progress:   NewProgressHub(em),
 		rateLimit:  NewRateLimiter(0),
 	}
+	NewCacheInvalidator(d.manager, em)
+	return d
 }
 
 // deriveState computes the aggregate daemon state from individual mount states.

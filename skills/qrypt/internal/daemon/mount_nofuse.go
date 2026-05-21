@@ -25,3 +25,7 @@ func (nb *noopMountBackend) mount(_ context.Context, _ *config.ResolvedMountConf
 func (nb *noopMountBackend) unmount() error {
 	return nil
 }
+
+func (nb *noopMountBackend) VFS() CacheInvalidatable {
+	return nil
+}
