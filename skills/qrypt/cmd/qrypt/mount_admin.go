@@ -49,7 +49,7 @@ func runMountStart(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	mm := daemon.NewMountManager(cfg)
+	mm := daemon.NewMountManagerStandalone(cfg)
 	if err := mm.Start(context.Background(), name); err != nil {
 		fmt.Printf("启动挂载实例 %q 失败: %v\n", name, err)
 		os.Exit(1)
@@ -61,7 +61,7 @@ func runMountStop(cmd *cobra.Command, args []string) {
 	cfg := loadToolCfgOnly(cmd)
 	name := args[0]
 
-	mm := daemon.NewMountManager(cfg)
+	mm := daemon.NewMountManagerStandalone(cfg)
 	if err := mm.Stop(context.Background(), name); err != nil {
 		fmt.Printf("停止挂载实例 %q 失败: %v\n", name, err)
 		os.Exit(1)

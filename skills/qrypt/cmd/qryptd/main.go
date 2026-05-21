@@ -86,9 +86,9 @@ func main() {
 	// Create daemon
 	d := daemon.NewDaemonWithPath(cfg, cfgPath, version)
 
-	// Create server
+	// Create WebSocket server (single-connection full-duplex IPC)
 	*socketPath = config.ExpandHome(*socketPath)
-	srv := daemon.NewServer(d, *socketPath)
+	srv := daemon.NewWSServer(d, *socketPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

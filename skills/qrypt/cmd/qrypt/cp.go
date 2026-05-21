@@ -35,7 +35,7 @@ func runCp(cmd *cobra.Command, args []string) {
 	}
 
 	cfg := loadToolCfgOnly(cmd)
-	mm := daemon.NewMountManager(cfg)
+	mm := daemon.NewMountManagerStandalone(cfg)
 
 	var startedSrc, startedDst bool
 
