@@ -354,7 +354,7 @@ func (s *WSServer) streamCatFile(ctx context.Context, conn *websocket.Conn, req 
 	chunkEncBytes := int64(blocksPerChunk * crypt.BlockSize)
 	numChunks := int((bodySize + chunkEncBytes - 1) / chunkEncBytes)
 
-	for chunk := 0; chunk < numChunks; chunk++ {
+	for chunk := range numChunks {
 		off := headerSize + int64(chunk)*chunkEncBytes
 		sz := chunkEncBytes
 		if chunk == numChunks-1 {
