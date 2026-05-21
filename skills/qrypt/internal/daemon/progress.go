@@ -60,6 +60,7 @@ func (ph *ProgressHub) Publish(entry *ProgressEntry) {
 		Timestamp: time.Now().UnixMilli(),
 		Data: protocol.PushProgressData{
 			TaskID: entry.TaskID,
+			Mount:  entry.Mount,
 			File:   entry.File,
 			Bytes:  entry.Bytes,
 			Total:  entry.Total,
