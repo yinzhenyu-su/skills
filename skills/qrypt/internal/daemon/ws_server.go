@@ -576,6 +576,19 @@ func (s *WSServer) dispatch(ctx context.Context, req *protocol.Request) *protoco
 		}
 		return protocol.NewResult(id, result)
 
+	case "find":
+		var p protocol.FindParams
+		if req.Params != nil {
+			if err := unmarshalParams(req.Params, &p); err != nil {
+				return protocol.NewError(id, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error())
+			}
+		}
+		result, err := s.daemon.Find(ctx, p)
+		if err != nil {
+			return protocol.NewError(id, protocol.ErrCodeSync, err.Error())
+		}
+		return protocol.NewResult(id, result)
+
 	case "shutdown":
 		go func() {
 			s.daemon.DaemonShutdown(ctx)

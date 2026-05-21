@@ -254,3 +254,28 @@ type PullStartResult struct {
 	TaskID    string `json:"task_id"`
 	FileCount int    `json:"file_count"`
 }
+
+// FindParams is the request body for find RPC.
+type FindParams struct {
+	MountName     string `json:"mount_name"`
+	Path          string `json:"path"`
+	Pattern       string `json:"pattern"`
+	CaseSensitive bool   `json:"case_sensitive"`
+	MaxDepth      int    `json:"max_depth"`  // -1 for unlimited
+	MaxMatches    int    `json:"max_matches"` // 0 for unlimited
+	Password      string `json:"password,omitempty"`
+	Salt          string `json:"salt,omitempty"`
+}
+
+// FindEntry is one matched entry in FindResult.
+type FindEntry struct {
+	Path  string `json:"path"`
+	IsDir bool   `json:"is_dir"`
+	Size  int64  `json:"size"`
+}
+
+// FindResult is the response for find RPC.
+type FindResult struct {
+	Count   int         `json:"count"`
+	Entries []FindEntry `json:"entries,omitempty"`
+}
