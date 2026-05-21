@@ -15,7 +15,15 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/drive"
+	factory "github.com/yinzhenyu/skills/qrypt/internal/drive/factory"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive/localfs"
+	quark "github.com/yinzhenyu/skills/qrypt/internal/drive/quark"
 )
+
+type cipherHelper interface {
+	DecryptSegment(string) (string, error)
+	EncryptSegment(string) string
+}
 
 const (
 	matchSubstring = iota
@@ -58,11 +66,13 @@ func newMatcher(pattern string, opts *findOptions) *nodeMatcher {
 		sizeBytes:     opts.sizeBytes,
 	}
 	if opts.matchMode == matchRegex && pattern != "" {
+		var expr string
 		if opts.caseSensitive {
-			m.re = regexp.MustCompile(pattern)
+			expr = pattern
 		} else {
-			m.re = regexp.MustCompile("(?i)" + pattern)
+			expr = "(?i)" + pattern
 		}
+		m.re = regexp.MustCompile(expr)
 	}
 	return m
 }
@@ -73,158 +83,136 @@ func (m *nodeMatcher) matchName(name string) bool {
 	}
 	test := name
 	if !m.caseSensitive && m.mode != matchRegex {
-		test = strings.ToLower(test)
-	}
-	p := m.pattern
-	if !m.caseSensitive && m.mode != matchRegex {
-		p = strings.ToLower(p)
+		test = strings.ToLower(name)
 	}
 	switch m.mode {
 	case matchGlob:
-		ok, _ := path.Match(p, test)
-		return ok
+		return matchGlobPattern(m.pattern, name, m.caseSensitive)
 	case matchRegex:
-		return m.re.MatchString(name)
+		return m.re.MatchString(test)
 	case matchExact:
-		return test == p
+		if m.caseSensitive {
+			return test == m.pattern
+		}
+		return strings.EqualFold(test, m.pattern)
 	default:
-		return strings.Contains(test, p)
+		return strings.Contains(test, m.pattern)
 	}
 }
 
-func (m *nodeMatcher) matchEntry(e drive.Entry) bool {
-	switch m.fileType {
-	case 1:
-		if e.IsDir {
+func (m *nodeMatcher) matchEntry(entry drive.Entry) bool {
+	if m.fileType != 0 {
+		isDir := entry.IsDir
+		if m.fileType == 1 && isDir {
 			return false
 		}
-	case 2:
-		if !e.IsDir {
+		if m.fileType == 2 && !isDir {
 			return false
 		}
 	}
-	if m.sizeOp != 0 && !e.IsDir {
-		s := e.Size
+
+	if m.sizeOp != 0 && !entry.IsDir {
+		sz := entry.Size
 		switch m.sizeOp {
 		case 1:
-			if s <= m.sizeBytes {
+			if sz <= m.sizeBytes {
 				return false
 			}
 		case -1:
-			if s >= m.sizeBytes {
-				return false
-			}
-		case 0:
-			if s != m.sizeBytes {
+			if sz >= m.sizeBytes {
 				return false
 			}
 		}
 	}
-	return true
+
+	return m.matchName(entry.Name)
 }
 
-type fileLister interface {
+func matchGlobPattern(pattern, name string, caseSensitive bool) bool {
+	if !caseSensitive {
+		pattern = strings.ToLower(pattern)
+		name = strings.ToLower(name)
+	}
+	matched, _ := path.Match(pattern, name)
+	return matched
+}
+
+type lister interface {
 	List(parentID string) ([]drive.Entry, error)
 }
 
-type cipherHelper interface {
-	DecryptSegment(string) (string, error)
-	EncryptSegment(string) string
-}
-
 type finder struct {
-	lister  fileLister
+	lister  lister
 	cipher  cipherHelper
 	opts    *findOptions
-	matcher *nodeMatcher
-
-	stopped atomic.Bool
-	count   atomic.Int32
-	wg      sync.WaitGroup
+	matches atomic.Int32
 	sem     chan struct{}
-	outMu   sync.Mutex
 }
 
-func newFinder(lister fileLister, cipher cipherHelper, opts *findOptions) *finder {
-	workers := opts.workers
-	if workers <= 0 {
-		workers = 1
-	}
-	if workers > 8 {
-		workers = 8
+func newFinder(l lister, c cipherHelper, opts *findOptions) *finder {
+	if opts.workers <= 0 {
+		opts.workers = 1
+	} else if opts.workers > 8 {
+		opts.workers = 8
 	}
 	return &finder{
-		lister:  lister,
-		cipher:  cipher,
-		opts:    opts,
-		matcher: newMatcher(opts.pattern, opts),
-		sem:     make(chan struct{}, workers),
+		lister: l,
+		cipher: c,
+		opts:   opts,
+		sem:    make(chan struct{}, opts.workers),
 	}
 }
 
-func (f *finder) run(rootFid, rootPath string) int {
-	f.sem <- struct{}{}
-	f.wg.Add(1)
-	go func() {
-		defer func() { <-f.sem; f.wg.Done() }()
-		f.visitDir(rootFid, rootPath, 0)
-	}()
-	f.wg.Wait()
-	if !f.opts.countOnly {
-		n := f.count.Load()
-		if n == 0 {
-			fmt.Println("未找到匹配的文件")
-		}
-	}
-	return int(f.count.Load())
+func (f *finder) run(fid string, displayPath string) int {
+	f.matches.Store(0)
+	f.scan(fid, displayPath, 0)
+	return int(f.matches.Load())
 }
 
-func (f *finder) visitDir(fid, displayPath string, depth int) {
-	if f.stopped.Load() {
+func (f *finder) scan(fid string, displayPath string, depth int) {
+	if f.opts.maxDepth >= 0 && depth > f.opts.maxDepth {
 		return
 	}
+
 	entries, err := f.lister.List(fid)
 	if err != nil {
 		return
 	}
-	for _, e := range entries {
-		if f.stopped.Load() {
-			return
-		}
-		decName, decErr := f.cipher.DecryptSegment(e.Name)
-		if decErr != nil {
-			decName = e.Name
-		}
-		childPath := filepath.Join(displayPath, decName)
 
-		if f.matcher.matchName(decName) && f.matcher.matchEntry(e) {
-			f.count.Add(1)
-			if !f.opts.countOnly {
-				f.output(childPath, e.IsDir)
-			}
-			if f.opts.maxMatches > 0 && f.count.Load() >= int32(f.opts.maxMatches) {
-				f.stopped.Store(true)
+	var wg sync.WaitGroup
+	for _, e := range entries {
+		childPath := filepath.Join(displayPath, e.Name)
+		isDir := e.IsDir
+
+		matcher := newMatcher(f.opts.pattern, f.opts)
+		if matcher.matchEntry(e) {
+			if f.opts.maxMatches > 0 && f.matches.Load() >= int32(f.opts.maxMatches) {
 				return
 			}
+			f.printResult(childPath, isDir)
+			f.matches.Add(1)
 		}
-		if e.IsDir && (f.opts.maxDepth < 0 || depth < f.opts.maxDepth) {
-			select {
-			case f.sem <- struct{}{}:
-				f.wg.Add(1)
-				go func(cfid, cpath string, cdepth int) {
-					defer func() { <-f.sem; f.wg.Done() }()
-					f.visitDir(cfid, cpath, cdepth)
-				}(e.ID, childPath, depth+1)
-			default:
-				f.visitDir(e.ID, childPath, depth+1)
+
+		if isDir {
+			if f.opts.maxDepth >= 0 && depth >= f.opts.maxDepth {
+				continue
 			}
+			wg.Add(1)
+			f.sem <- struct{}{}
+			go func(childFid string, childDisplay string) {
+				defer func() { <-f.sem }()
+				defer wg.Done()
+				f.scan(childFid, childDisplay, depth+1)
+			}(e.ID, childPath)
 		}
 	}
+	wg.Wait()
 }
 
-func (f *finder) output(childPath string, isDir bool) {
-	f.outMu.Lock()
-	defer f.outMu.Unlock()
+func (f *finder) printResult(childPath string, isDir bool) {
+	if f.opts.countOnly {
+		return
+	}
 	if f.opts.jsonOutput {
 		typ := "file"
 		if isDir {
@@ -245,14 +233,59 @@ func (f *finder) output(childPath string, isDir bool) {
 }
 
 func runFind(cmd *cobra.Command, args []string) {
-	cfg, cipher := loadToolCfg(cmd)
+	configPath, _ := cmd.Flags().GetString("config")
+	_, cfg, _, _ := config.LoadConfigAuto(configPath)
+	if cfg == nil {
+		fmt.Println("未找到配置文件，请使用 --config 指定")
+		os.Exit(1)
+	}
 
 	path := ""
 	if len(args) >= 2 {
 		path = args[0]
 	}
 	mountName := resolveMount(cmd, &path)
-	drv := loadToolDriverForMount(cfg, cipher, mountName)
+
+	m := config.FindMount(cfg, mountName)
+	if m == nil {
+		if mountName != "" {
+			fmt.Printf("挂载实例 %q 未找到\n", mountName)
+		} else {
+			fmt.Printf("未指定挂载实例 (配置中有 %d 个，使用 --mount 或 mount_name:path 选择)\n", len(cfg.Mounts))
+		}
+		os.Exit(1)
+	}
+
+	rc := cfg.MergeInstanceConfig(*m)
+
+	pwd, _ := cmd.Flags().GetString("password")
+	salt, _ := cmd.Flags().GetString("salt")
+
+	mountCipher, cerr := config.MakeCipher(rc.Encryption, cfg.Defaults.Encryption, pwd, salt)
+	if cerr != nil {
+		fmt.Printf("加密引擎初始化失败: %v\n", cerr)
+		os.Exit(1)
+	}
+
+	drv, err := factory.NewDriverFromType(rc.Type, rc.Params)
+	if err != nil {
+		fmt.Printf("创建驱动失败: %v\n", err)
+		os.Exit(1)
+	}
+	if err := drv.Init(context.Background()); err != nil {
+		fmt.Printf("认证失败: %v\n", err)
+		os.Exit(1)
+	}
+	switch d := drv.(type) {
+	case *quark.QuarkDriver:
+		if mountCipher != nil {
+			d.SetCipher(mountCipher)
+		}
+	case *localfs.LocalDriver:
+		if mountCipher != nil {
+			d.SetCipher(mountCipher)
+		}
+	}
 
 	resolver, ok := drv.(drive.PathResolver)
 	if !ok {
@@ -286,7 +319,7 @@ func runFind(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	fullRootPath := config.ResolveFullPath(cfg.RootPath(), rootPath)
+	fullRootPath := config.ResolveFullPath(config.RootPathForMount(*m), rootPath)
 	rootFid, err := resolver.ResolvePath(context.Background(), fullRootPath)
 	if err != nil {
 		fmt.Printf("无法解析路径: %v\n", err)
@@ -344,7 +377,7 @@ func runFind(cmd *cobra.Command, args []string) {
 		sizeBytes:     sizeBytes,
 	}
 
-	f := newFinder(listAdapter{drv: drv}, cipher, opts)
+	f := newFinder(listAdapter{drv: drv}, mountCipher, opts)
 	matched := f.run(rootFid, rootPath)
 
 	if opts.countOnly {

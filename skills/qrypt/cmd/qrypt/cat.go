@@ -6,32 +6,21 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 	"nhooyr.io/websocket"
 )
 
 func runCat(cmd *cobra.Command, args []string) {
-	socketPath := daemon.FindSocketPath()
-	if !daemon.IsDaemonRunning(socketPath) {
-		fmt.Println("错误: qryptd 未运行，请先启动 qryptd")
-		fmt.Println("提示: 运行 qryptd 启动守护进程，以使用查看功能")
+	client, err := ensureDaemon()
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
-	runCatViaDaemon(cmd, args, socketPath)
-}
+	defer client.Close()
 
-func runCatViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	path := args[0]
 	mountName := resolveMount(cmd, &path)
 	password, _ := cmd.Flags().GetString("password")
 	salt, _ := cmd.Flags().GetString("salt")
-
-	client, err := daemon.DialWS(socketPath)
-	if err != nil {
-		fmt.Printf("无法连接到 qryptd: %v\n", err)
-		os.Exit(1)
-	}
-	defer client.Close()
 
 	// Send cat request
 	resp, err := client.Call("cat_file", map[string]interface{}{

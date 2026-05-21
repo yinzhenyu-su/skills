@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
@@ -23,16 +22,13 @@ type ListEntry struct {
 }
 
 func runList(cmd *cobra.Command, args []string) {
-	socketPath := daemon.FindSocketPath()
-	if !daemon.IsDaemonRunning(socketPath) {
-		fmt.Println("错误: qryptd 未运行，请先启动 qryptd")
-		fmt.Println("提示: 运行 qryptd 启动守护进程，以使用列表功能")
+	client, err := ensureDaemon()
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
-	runListViaDaemon(cmd, args, socketPath)
-}
+	defer client.Close()
 
-func runListViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	path := "/"
 	if len(args) > 0 {
 		path = args[0]
@@ -40,13 +36,6 @@ func runListViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	mountName := resolveMount(cmd, &path)
 	password, _ := cmd.Flags().GetString("password")
 	salt, _ := cmd.Flags().GetString("salt")
-
-	client, err := daemon.DialWS(socketPath)
-	if err != nil {
-		fmt.Printf("无法连接到 qryptd: %v\n", err)
-		os.Exit(1)
-	}
-	defer client.Close()
 
 	resp, rpcErr := client.Call("list_dir", protocol.ListDirParams{
 		MountName: mountName,

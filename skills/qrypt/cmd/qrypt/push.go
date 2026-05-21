@@ -7,21 +7,17 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
 func runPush(cmd *cobra.Command, args []string) {
-	socketPath := daemon.FindSocketPath()
-	if !daemon.IsDaemonRunning(socketPath) {
-		fmt.Println("错误: qryptd 未运行，请先启动 qryptd")
-		fmt.Println("提示: 运行 qryptd 启动守护进程，以使用推送功能")
+	client, err := ensureDaemon()
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
-	runPushViaDaemon(cmd, args, socketPath)
-}
+	defer client.Close()
 
-func runPushViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	localPath := args[0]
 	remotePath := ""
 	if len(args) >= 2 {
@@ -61,15 +57,6 @@ func runPushViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 		plainSize = fi.Size()
 	}
 
-	// Connect to daemon via WebSocket (single connection for RPC + events)
-	client, err := daemon.DialWS(socketPath)
-	if err != nil {
-		fmt.Printf("无法连接到 qryptd: %v\n", err)
-		os.Exit(1)
-	}
-	defer client.Close()
-
-	// Send push_start RPC
 	resp, err := client.Call("push_start", protocol.PushStartParams{
 		MountName: mountName,
 		Source:    source,
@@ -90,14 +77,12 @@ func runPushViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 		os.Exit(1)
 	}
 
-	// Parse task ID from result
 	resultData, _ := json.Marshal(resp.Result)
 	var startResult protocol.PushStartResult
 	json.Unmarshal(resultData, &startResult)
 
 	fmt.Printf("推送任务已启动: %s\n", startResult.TaskID)
 
-	// Subscribe to events on the same connection
 	evtCh, err := client.SubscribeEvents()
 	if err != nil {
 		fmt.Printf("订阅事件失败: %v\n", err)
@@ -137,5 +122,3 @@ func runPushViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 		}
 	}
 }
-
-

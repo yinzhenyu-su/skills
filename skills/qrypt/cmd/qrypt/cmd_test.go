@@ -75,31 +75,6 @@ func TestFindMatchEntryDefaults(t *testing.T) {
 	}
 }
 
-func TestFormatCommaZero(t *testing.T) {
-	got := formatComma(0)
-	if got != "0" {
-		t.Errorf("expected '0', got %q", got)
-	}
-}
-
-func TestPercentOrZeroAll(t *testing.T) {
-	if got := percentOrZero(0, 0); got != 0 {
-		t.Errorf("expected 0, got %d", got)
-	}
-	if got := percentOrZero(100, 0); got != 0 {
-		t.Errorf("expected 0, got %d", got)
-	}
-	if got := percentOrZero(50, 100); got != 50 {
-		t.Errorf("expected 50, got %d", got)
-	}
-	if got := percentOrZero(100, 100); got != 100 {
-		t.Errorf("expected 100, got %d", got)
-	}
-	if got := percentOrZero(200, 100); got != 200 {
-		t.Errorf("expected 200, got %d", got)
-	}
-}
-
 func TestFindListError(t *testing.T) {
 	mock := &mockLister{
 		err: nil,

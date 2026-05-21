@@ -69,12 +69,6 @@ func NewMountManager(cfg *config.Config, sm *SessionManager) *MountManager {
 	}
 }
 
-// NewMountManagerStandalone creates a MountManager without a shared SessionManager.
-// Each mount creates/drops its own driver (no pooling).
-func NewMountManagerStandalone(cfg *config.Config) *MountManager {
-	return NewMountManager(cfg, nil)
-}
-
 // List returns a summary of all configured mounts.
 func (mm *MountManager) List() []MountSummary {
 	mm.mu.RLock()

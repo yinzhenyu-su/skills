@@ -7,21 +7,17 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
 func runMv(cmd *cobra.Command, args []string) {
-	socketPath := daemon.FindSocketPath()
-	if !daemon.IsDaemonRunning(socketPath) {
-		fmt.Println("错误: qryptd 未运行，请先启动 qryptd")
-		fmt.Println("提示: 运行 qryptd 启动守护进程，以使用移动功能")
+	client, err := ensureDaemon()
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
-	runMvViaDaemon(cmd, args, socketPath)
-}
+	defer client.Close()
 
-func runMvViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	srcPath := args[0]
 	dstArg := args[1]
 	mountName := resolveMount(cmd, &srcPath)
@@ -41,13 +37,6 @@ func runMvViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 		}
 	}
 
-	client, err := daemon.DialWS(socketPath)
-	if err != nil {
-		fmt.Printf("无法连接到 qryptd: %v\n", err)
-		os.Exit(1)
-	}
-	defer client.Close()
-
 	resp, rpcErr := client.Call("move", protocol.MoveParams{
 		MountName: mountName,
 		SrcPath:   srcPath,
@@ -66,5 +55,3 @@ func runMvViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	}
 	fmt.Printf("已移动: %s → %s\n", srcPath, dstArg)
 }
-
-

@@ -8,7 +8,7 @@ import (
 )
 
 func TestMountManagerListEmpty(t *testing.T) {
-	mm := NewMountManagerStandalone(&config.Config{})
+	mm := NewMountManager(&config.Config{}, nil)
 	list := mm.List()
 	if len(list) != 0 {
 		t.Errorf("expected empty list, got %d", len(list))
@@ -38,7 +38,7 @@ func TestMountManagerList(t *testing.T) {
 			},
 		},
 	}
-	mm := NewMountManagerStandalone(cfg)
+	mm := NewMountManager(cfg, nil)
 	list := mm.List()
 	if len(list) != 2 {
 		t.Fatalf("expected 2 mounts, got %d", len(list))
@@ -69,7 +69,7 @@ func TestMountManagerResolvedConfig(t *testing.T) {
 			},
 		},
 	}
-	mm := NewMountManagerStandalone(cfg)
+	mm := NewMountManager(cfg, nil)
 	rc, ok := mm.ResolvedConfig("test")
 	if !ok {
 		t.Fatal("expected resolved config to be found")
@@ -83,7 +83,7 @@ func TestMountManagerResolvedConfig(t *testing.T) {
 }
 
 func TestMountManagerGetNotFound(t *testing.T) {
-	mm := NewMountManagerStandalone(&config.Config{})
+	mm := NewMountManager(&config.Config{}, nil)
 	_, err := mm.Get("nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent mount")
@@ -107,7 +107,7 @@ func TestMountManagerLookupByPath(t *testing.T) {
 			},
 		},
 	}
-	mm := NewMountManagerStandalone(cfg)
+	mm := NewMountManager(cfg, nil)
 
 	// Mounts aren't started, so LookupByPath returns error
 	// But we can verify config lookup by checking ResolvedConfig
@@ -140,7 +140,7 @@ func TestMountManagerListWithDefaults(t *testing.T) {
 			},
 		},
 	}
-	mm := NewMountManagerStandalone(cfg)
+	mm := NewMountManager(cfg, nil)
 	list := mm.List()
 	if len(list) != 1 {
 		t.Fatalf("expected 1 mount, got %d", len(list))
@@ -167,7 +167,7 @@ func TestMountManagerStartStopFailsWithoutAuth(t *testing.T) {
 			},
 		},
 	}
-	mm := NewMountManagerStandalone(cfg)
+	mm := NewMountManager(cfg, nil)
 
 	// Start will fail because cookie is not valid, but the error handling
 	// should work — mount should be in error state, not crash

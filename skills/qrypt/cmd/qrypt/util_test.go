@@ -74,42 +74,4 @@ func TestFormatBytes(t *testing.T) {
 	}
 }
 
-func TestFormatComma(t *testing.T) {
-	tests := []struct {
-		n    int
-		want string
-	}{
-		{0, "0"},
-		{1, "1"},
-		{100, "100"},
-		{1000, "1,000"},
-		{1000000, "1,000,000"},
-		{1234567, "1,234,567"},
-	}
-	for _, tt := range tests {
-		got := formatComma(tt.n)
-		if got != tt.want {
-			t.Errorf("formatComma(%d) = %q, want %q", tt.n, got, tt.want)
-		}
-	}
-}
 
-func TestPercentOrZero(t *testing.T) {
-	tests := []struct {
-		a, b int64
-		want int
-	}{
-		{0, 100, 0},
-		{50, 100, 50},
-		{100, 100, 100},
-		{200, 100, 200},
-		{0, 0, 0},
-		{100, 0, 0},
-	}
-	for _, tt := range tests {
-		got := percentOrZero(tt.a, tt.b)
-		if got != tt.want {
-			t.Errorf("percentOrZero(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
-		}
-	}
-}
