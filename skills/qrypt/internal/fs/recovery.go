@@ -59,7 +59,7 @@ func (fs *QryptFS) recoverDirtyFiles() {
 				newNode.mu.Lock()
 				newNode.syncQueued = true
 				newNode.mu.Unlock()
-				fs.uploadChan <- syncTask{node: newNode}
+				fs.enqueueNode(newNode)
 				continue
 			}
 			continue
@@ -93,6 +93,6 @@ func (fs *QryptFS) recoverDirtyFiles() {
 			n.lastPart = f.LastPart
 		}
 		n.mu.Unlock()
-		fs.uploadChan <- syncTask{node: n}
+		fs.enqueueNode(n)
 	}
 }

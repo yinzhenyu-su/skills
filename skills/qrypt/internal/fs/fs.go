@@ -3,6 +3,7 @@
 package fs
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -28,6 +29,12 @@ const (
 	MetadataTTL         = 15 * time.Second
 )
 
+// UploadQueue allows the daemon to provide a shared worker pool for VFS uploads.
+// When set, enqueueSyncDelay uses it instead of the internal uploadChan.
+type UploadQueue interface {
+	Submit(job func(ctx context.Context) error) bool
+}
+
 var errNonRetryableSync = errors.New("non-retryable sync error")
 var errDirGone = errors.New("parent directory deleted during upload")
 
@@ -51,6 +58,12 @@ type deletionState struct {
 	parentFid string
 	path      string
 	apiDone   bool
+}
+
+// SetUploadQueue replaces the internal uploadChan with an external queue.
+// Call before any uploads are enqueued (e.g., right after NewFS).
+func (fs *QryptFS) SetUploadQueue(q UploadQueue) {
+	fs.uploadQueue = q
 }
 
 type QryptFS struct {
@@ -79,6 +92,7 @@ type QryptFS struct {
 
 	uploader      *syncpkg.Uploader
 	uploadChan    chan syncTask
+	uploadQueue   UploadQueue // optional: replaces uploadChan when set
 	metadataOpChan chan metadataTask
 
 	shuttingDown int32

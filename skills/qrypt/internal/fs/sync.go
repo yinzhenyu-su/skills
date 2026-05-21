@@ -53,6 +53,18 @@ func (fs *QryptFS) decParentUploadCounts(n *Node) {
 	}
 }
 
+// enqueueNode enqueues a node for upload via the active queue (orchestrator or uploadChan).
+func (fs *QryptFS) enqueueNode(n *Node) {
+	if fs.uploadQueue != nil {
+		path := n.currentPath
+		fs.uploadQueue.Submit(func(ctx context.Context) error {
+			return fs.syncFile(path, n)
+		})
+	} else {
+		fs.uploadChan <- syncTask{node: n}
+	}
+}
+
 func (fs *QryptFS) enqueueSync(n *Node) {
 	fs.enqueueSyncDelay(n, 0)
 }
@@ -83,10 +95,10 @@ func (fs *QryptFS) enqueueSyncDelay(n *Node, delay time.Duration) {
 				n.mu.Unlock()
 				return
 			}
-			fs.uploadChan <- syncTask{node: n}
+			fs.enqueueNode(n)
 		}()
 	} else {
-		fs.uploadChan <- syncTask{node: n}
+		fs.enqueueNode(n)
 	}
 }
 
@@ -160,7 +172,7 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		isStillDirty := n.isDirty
 		if isStillDirty && err == nil {
 			n.mu.Unlock()
-			fs.uploadChan <- syncTask{node: n}
+			fs.enqueueNode(n)
 		} else {
 			n.syncQueued = false
 			n.mu.Unlock()
