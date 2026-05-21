@@ -78,7 +78,7 @@ func runMount(cmd *cobra.Command, args []string) {
 			fmt.Println("daemon 已经在运行中")
 			return
 		}
-		runMountViaDaemon(cmd, args, socketPath)
+		delegateMountToRunningDaemon(cmd, args, socketPath)
 		return
 	}
 
@@ -224,7 +224,7 @@ func stopRunningDaemon() {
 	fmt.Println("daemon 已停止")
 }
 
-func runMountViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
+func delegateMountToRunningDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	client, err := daemon.DialWS(socketPath)
 	if err != nil {
 		fmt.Printf("无法连接到 daemon: %v\n", err)
@@ -247,7 +247,6 @@ func runMountViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 		return
 	}
 
-	// Resolve the mount name client-side
 	configPath, _ := cmd.Flags().GetString("config")
 	_, cfg, _, _ := config.LoadConfigAuto(configPath)
 	if cfg == nil {
