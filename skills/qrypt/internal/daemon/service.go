@@ -26,6 +26,8 @@ type Daemon struct {
 	eventMgr  *EventManager
 	sessionMgr *SessionManager
 	manager   *MountManager
+	progress   *ProgressHub
+	rateLimit  *RateLimiter
 
 	mu         sync.RWMutex
 	startedAt  time.Time
@@ -35,24 +37,30 @@ type Daemon struct {
 
 func NewDaemon(cfg *config.Config, version string) *Daemon {
 	sm := NewSessionManager()
+	em := NewEventManager()
 	return &Daemon{
 		cfg:        cfg,
 		version:    version,
-		eventMgr:   NewEventManager(),
+		eventMgr:   em,
 		sessionMgr: sm,
 		manager:    NewMountManager(cfg, sm),
+		progress:   NewProgressHub(em),
+		rateLimit:  NewRateLimiter(0),
 	}
 }
 
 func NewDaemonWithPath(cfg *config.Config, cfgPath, version string) *Daemon {
 	sm := NewSessionManager()
+	em := NewEventManager()
 	return &Daemon{
-		cfg:       cfg,
-		cfgPath:   cfgPath,
-		version:   version,
-		eventMgr:  NewEventManager(),
+		cfg:        cfg,
+		cfgPath:    cfgPath,
+		version:    version,
+		eventMgr:   em,
 		sessionMgr: sm,
-		manager:   NewMountManager(cfg, sm),
+		manager:    NewMountManager(cfg, sm),
+		progress:   NewProgressHub(em),
+		rateLimit:  NewRateLimiter(0),
 	}
 }
 
@@ -295,25 +303,27 @@ func (d *Daemon) runPushTask(ctx context.Context, taskID string, s *Session, sk 
 	}
 	fullRemotePath := config.ResolveFullPath(rootPath, params.Remote)
 
-	d.publishPushEvent(taskID, "started", "", 0, 0, "")
+	mountName := rc.Name
+
+	d.publishPushEvent(taskID, mountName, "started", "", 0, 0, "")
 
 	localInfo, err := os.Stat(params.Source)
 	if err != nil {
-		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("stat source: %v", err))
+		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("stat source: %v", err))
 		return
 	}
 
 	if localInfo.IsDir() {
-		d.pushDirectory(ctx, taskID, drv, cipher, rc, params, transfers, localInfo, fullRemotePath)
+		d.pushDirectory(ctx, taskID, mountName, drv, cipher, rc, params, transfers, localInfo, fullRemotePath)
 	} else {
-		d.pushSingleFile(ctx, taskID, drv, cipher, fullRemotePath, params, localInfo)
+		d.pushSingleFile(ctx, taskID, mountName, drv, cipher, fullRemotePath, params, localInfo)
 	}
 }
 
-func (d *Daemon) pushSingleFile(ctx context.Context, taskID string, drv drive.Driver, cipher *crypt.RcloneCipher, fullRemotePath string, params protocol.PushStartParams, localInfo os.FileInfo) {
+func (d *Daemon) pushSingleFile(ctx context.Context, taskID, mountName string, drv drive.Driver, cipher *crypt.RcloneCipher, fullRemotePath string, params protocol.PushStartParams, localInfo os.FileInfo) {
 	parentFid, err := d.resolveParent(ctx, drv, fullRemotePath)
 	if err != nil {
-		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("resolve path: %v", err))
+		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("resolve path: %v", err))
 		return
 	}
 
@@ -327,23 +337,23 @@ func (d *Daemon) pushSingleFile(ctx context.Context, taskID string, drv drive.Dr
 			return os.Open(params.Source)
 		},
 		ProgressFn: func(partNumber int) {
-			d.publishPushEvent(taskID, "uploading", params.Source, int64(partNumber), localInfo.Size(), "")
+			d.publishPushEvent(taskID, mountName, "uploading", params.Source, int64(partNumber), localInfo.Size(), "")
 		},
 	}
 
 	result, err := uploader.Upload(ctx, req)
 	if err != nil {
-		d.publishPushEvent(taskID, "failed", params.Source, 0, 0, fmt.Sprintf("upload: %v", err))
+		d.publishPushEvent(taskID, mountName, "failed", params.Source, 0, 0, fmt.Sprintf("upload: %v", err))
 		return
 	}
 
-	d.publishPushEvent(taskID, "completed", params.Source, result.EncryptedSize, result.EncryptedSize, "")
+	d.publishPushEvent(taskID, mountName, "completed", params.Source, result.EncryptedSize, result.EncryptedSize, "")
 }
 
-func (d *Daemon) pushDirectory(ctx context.Context, taskID string, drv drive.Driver, cipher *crypt.RcloneCipher, rc *config.ResolvedMountConfig, params protocol.PushStartParams, transfers int, localInfo os.FileInfo, fullRemotePath string) {
+func (d *Daemon) pushDirectory(ctx context.Context, taskID, mountName string, drv drive.Driver, cipher *crypt.RcloneCipher, rc *config.ResolvedMountConfig, params protocol.PushStartParams, transfers int, localInfo os.FileInfo, fullRemotePath string) {
 	parentFid, err := d.resolveParent(ctx, drv, fullRemotePath)
 	if err != nil {
-		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("resolve path: %v", err))
+		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("resolve path: %v", err))
 		return
 	}
 
@@ -362,7 +372,7 @@ func (d *Daemon) pushDirectory(ctx context.Context, taskID string, drv drive.Dri
 		if !found {
 			ne, err := hasMkdir.Mkdir(ctx, parentFid, encDirName)
 			if err != nil {
-				d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("mkdir: %v", err))
+				d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("mkdir: %v", err))
 				return
 			}
 			parentFid = ne.ID
@@ -371,37 +381,28 @@ func (d *Daemon) pushDirectory(ctx context.Context, taskID string, drv drive.Dri
 
 	pool := qryptsync.NewWorkerPool(drv, cipher, transfers, params.DryRun, params.Update)
 	pool.OnProgress = func(info qryptsync.ProgressInfo) {
-		d.publishPushEvent(taskID, "uploading", info.File, info.Bytes, info.Total, "")
+		d.publishPushEvent(taskID, mountName, "uploading", info.File, info.Bytes, info.Total, "")
 	}
 	pool.Start(ctx)
 	if err := qryptsync.ScanLocalForUpload(ctx, params.Source, parentFid, drv, cipher, pool); err != nil {
-		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("scan: %v", err))
+		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("scan: %v", err))
 		pool.Wait()
 		return
 	}
 	pool.Wait()
-	d.publishPushEvent(taskID, "completed", "", 0, 0, "")
+	d.publishPushEvent(taskID, mountName, "completed", "", 0, 0, "")
 }
 
-func (d *Daemon) publishPushEvent(taskID, state, file string, bytes, total int64, errMsg string) {
-	evtType := protocol.EventSyncProgress
-	switch state {
-	case "completed":
-		evtType = protocol.EventSyncCompleted
-	case "failed":
-		evtType = protocol.EventSyncFailed
-	}
-	d.eventMgr.Publish(&protocol.Event{
-		Type:      evtType,
-		Timestamp: time.Now().UnixMilli(),
-		Data: protocol.PushProgressData{
-			TaskID: taskID,
-			File:   file,
-			Bytes:  bytes,
-			Total:  total,
-			State:  state,
-			Error:  errMsg,
-		},
+func (d *Daemon) publishPushEvent(taskID, mount, state, file string, bytes, total int64, errMsg string) {
+	d.progress.Publish(&ProgressEntry{
+		TaskID:    taskID,
+		Mount:     mount,
+		Direction: "push",
+		File:      file,
+		Bytes:     bytes,
+		Total:     total,
+		State:     state,
+		Error:     errMsg,
 	})
 }
 
@@ -819,21 +820,22 @@ func (d *Daemon) runPullTask(ctx context.Context, taskID string, s *Session, sk 
 	}
 	fullRemotePath := config.ResolveFullPath(rootPath, params.Remote)
 
+	mountName := rc.Name
 	parentPath := d.dirOf(fullRemotePath)
 	baseName := baseOf(fullRemotePath)
 
 	resolver, ok := drv.(drive.PathResolver)
 	if !ok {
-		d.publishPushEvent(taskID, "failed", "", 0, 0, "driver does not support path resolution")
+		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, "driver does not support path resolution")
 		return
 	}
 
-	d.publishPushEvent(taskID, "started", "", 0, 0, "")
+	d.publishPushEvent(taskID, mountName, "started", "", 0, 0, "")
 
 	// Check if target is a directory
 	targetFid, err := resolver.ResolvePath(ctx, fullRemotePath)
 	if err != nil {
-		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("resolve path: %v", err))
+		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("resolve path: %v", err))
 		return
 	}
 
@@ -850,17 +852,17 @@ func (d *Daemon) runPullTask(ctx context.Context, taskID string, s *Session, sk 
 
 		pool := qryptsync.NewWorkerPool(drv, cipher, transfers, params.DryRun, params.Update)
 		pool.OnProgress = func(info qryptsync.ProgressInfo) {
-			d.publishPushEvent(taskID, "downloading", info.File, info.Bytes, info.Total, "")
+			d.publishPushEvent(taskID, mountName, "downloading", info.File, info.Bytes, info.Total, "")
 		}
 		pool.Start(ctx)
 
 		if err := qryptsync.ScanRemoteForDownload(ctx, targetFid, localPath, drv, cipher, pool); err != nil {
-			d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("scan: %v", err))
+			d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("scan: %v", err))
 			pool.Wait()
 			return
 		}
 		pool.Wait()
-		d.publishPushEvent(taskID, "completed", "", 0, 0, "")
+		d.publishPushEvent(taskID, mountName, "completed", "", 0, 0, "")
 		return
 	}
 
@@ -871,13 +873,13 @@ func (d *Daemon) runPullTask(ctx context.Context, taskID string, s *Session, sk 
 
 	parentFid, err := resolver.ResolvePath(ctx, parentPath)
 	if err != nil {
-		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("resolve parent: %v", err))
+		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("resolve parent: %v", err))
 		return
 	}
 
 	entries, err := drv.List(ctx, parentFid)
 	if err != nil {
-		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("list: %v", err))
+		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("list: %v", err))
 		return
 	}
 
@@ -892,13 +894,13 @@ func (d *Daemon) runPullTask(ctx context.Context, taskID string, s *Session, sk 
 		}
 	}
 	if !found {
-		d.publishPushEvent(taskID, "failed", "", 0, 0, fmt.Sprintf("file not found: %s", baseName))
+		d.publishPushEvent(taskID, mountName, "failed", "", 0, 0, fmt.Sprintf("file not found: %s", baseName))
 		return
 	}
 
 	pool := qryptsync.NewWorkerPool(drv, cipher, transfers, params.DryRun, params.Update)
 	pool.OnProgress = func(info qryptsync.ProgressInfo) {
-		d.publishPushEvent(taskID, "downloading", info.File, info.Bytes, info.Total, "")
+		d.publishPushEvent(taskID, mountName, "downloading", info.File, info.Bytes, info.Total, "")
 	}
 	pool.Start(ctx)
 	pool.Submit(qryptsync.TransferJob{
@@ -909,7 +911,7 @@ func (d *Daemon) runPullTask(ctx context.Context, taskID string, s *Session, sk 
 		Size:        targetEntry.Size,
 	})
 	pool.Wait()
-	d.publishPushEvent(taskID, "completed", "", 0, 0, "")
+	d.publishPushEvent(taskID, mountName, "completed", "", 0, 0, "")
 }
 
 // createRemoteDir recursively creates directories (like mkdir -p).
