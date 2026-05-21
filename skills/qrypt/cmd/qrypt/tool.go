@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"strconv"
 
@@ -11,13 +14,58 @@ import (
 )
 
 func runEncrypt(cmd *cobra.Command, args []string) {
+	if isFile, _ := cmd.Flags().GetBool("file"); isFile {
+		encryptFile(cmd, args[0])
+		return
+	}
 	cipher := loadCipherForTool(cmd)
 	name := args[0]
 	encName := cipher.EncryptSegment(name)
 	fmt.Printf("明文:  %s\n加密:  %s\n", name, encName)
 }
 
+func encryptFile(cmd *cobra.Command, path string) {
+	var r io.ReadCloser
+	var plainSize int64
+	if path == "-" {
+		r = io.NopCloser(os.Stdin)
+		plainSize = math.MaxInt64
+	} else {
+		f, err := os.Open(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "打开文件失败: %v\n", err)
+			os.Exit(1)
+		}
+		fi, err := f.Stat()
+		if err != nil {
+			f.Close()
+			fmt.Fprintf(os.Stderr, "获取文件信息失败: %v\n", err)
+			os.Exit(1)
+		}
+		r = f
+		plainSize = fi.Size()
+	}
+	defer r.Close()
+
+	cipher := loadCipherForTool(cmd)
+	var nonce [24]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		fmt.Fprintf(os.Stderr, "生成随机数失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	er := crypt.NewEncryptingReader(r, cipher, nonce, plainSize)
+	if _, err := io.Copy(os.Stdout, er); err != nil {
+		fmt.Fprintf(os.Stderr, "加密失败: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func runDecrypt(cmd *cobra.Command, args []string) {
+	if isFile, _ := cmd.Flags().GetBool("file"); isFile {
+		decryptFile(cmd, args[0])
+		return
+	}
 	cipher := loadCipherForTool(cmd)
 	encName := args[0]
 	plain, err := cipher.DecryptSegment(encName)
@@ -26,6 +74,47 @@ func runDecrypt(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("加密:  %s\n明文:  %s\n", encName, plain)
+}
+
+func decryptFile(cmd *cobra.Command, path string) {
+	var r io.ReadCloser
+	if path == "-" {
+		r = io.NopCloser(os.Stdin)
+	} else {
+		f, err := os.Open(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "打开文件失败: %v\n", err)
+			os.Exit(1)
+		}
+		r = f
+	}
+	defer r.Close()
+
+	header := make([]byte, crypt.FileHeaderSize)
+	if _, err := io.ReadFull(r, header); err != nil {
+		fmt.Fprintf(os.Stderr, "读取文件头失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	if string(header[:crypt.FileMagicSize]) != crypt.FileMagic {
+		fmt.Fprintf(os.Stderr, "无效的加密文件: 魔数不匹配\n")
+		os.Exit(1)
+	}
+
+	var nonce [24]byte
+	copy(nonce[:], header[crypt.FileMagicSize:])
+
+	cipher := loadCipherForTool(cmd)
+	dr, err := crypt.NewDecryptingReader(r, cipher, nonce)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建解密流失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	if _, err := io.Copy(os.Stdout, dr); err != nil {
+		fmt.Fprintf(os.Stderr, "解密失败: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runEncSize(cmd *cobra.Command, args []string) {

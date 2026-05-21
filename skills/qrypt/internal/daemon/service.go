@@ -667,13 +667,17 @@ func (d *Daemon) Find(ctx context.Context, params protocol.FindParams) (*protoco
 			return fmt.Errorf("resolve path: %w", err)
 		}
 
-		pattern := params.Pattern
-		if pattern == "" {
-			// No pattern — return everything
-			return d.walkEntries(ctx, drv, cipher, fid, fullPath, 0, params.MaxDepth, &result)
+			maxDepth := params.MaxDepth
+		if maxDepth == 0 {
+			maxDepth = -1 // default: unlimited
 		}
 
-		return d.walkAndMatch(ctx, drv, cipher, fid, fullPath, 0, params.MaxDepth, params.MaxMatches, pattern, params.CaseSensitive, &result)
+		pattern := params.Pattern
+		if pattern == "" {
+			return d.walkEntries(ctx, drv, cipher, fid, fullPath, 0, maxDepth, &result)
+		}
+
+		return d.walkAndMatch(ctx, drv, cipher, fid, fullPath, 0, maxDepth, params.MaxMatches, pattern, params.CaseSensitive, &result)
 	})
 	if err != nil {
 		return nil, err
