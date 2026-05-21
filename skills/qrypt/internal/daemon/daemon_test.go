@@ -140,7 +140,7 @@ func TestDaemonIPC_Move(t *testing.T) {
 	}
 }
 
-func TestDaemonIPC_FindFlat(t *testing.T) {
+func TestDaemonIPC_Find(t *testing.T) {
 	_, client, dataDir := newTestDaemon(t)
 	os.WriteFile(filepath.Join(dataDir, "a.txt"), []byte("x"), 0644)
 	os.WriteFile(filepath.Join(dataDir, "b.go"), []byte("y"), 0644)
@@ -152,6 +152,22 @@ func TestDaemonIPC_FindFlat(t *testing.T) {
 	unmarshalResult(t, resp, &result)
 	if result.Count != 1 {
 		t.Errorf("expected 1 match, got %d", result.Count)
+	}
+}
+
+func TestDaemonIPC_FindNested(t *testing.T) {
+	_, client, dataDir := newTestDaemon(t)
+	os.MkdirAll(filepath.Join(dataDir, "sub"), 0755)
+	os.WriteFile(filepath.Join(dataDir, "root.txt"), []byte("x"), 0644)
+	os.WriteFile(filepath.Join(dataDir, "sub", "deep.txt"), []byte("y"), 0644)
+
+	resp := rpcCall(t, client, "find", protocol.FindParams{
+		MountName: "test", Path: "/", Pattern: ".txt",
+	})
+	var result protocol.FindResult
+	unmarshalResult(t, resp, &result)
+	if result.Count != 2 {
+		t.Errorf("expected 2 matches, got %d", result.Count)
 	}
 }
 

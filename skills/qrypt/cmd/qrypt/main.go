@@ -152,17 +152,19 @@ func main() {
 	toolCmd.PersistentFlags().String("salt", "", "加密盐 (覆盖配置文件)")
 
 	var encryptCmd = &cobra.Command{
-		Use:   "encrypt <name>",
-		Short: "计算文件名的加密形式",
+		Use:   "encrypt (<name> | --file <path>)",
+		Short: "加密文件名或文件内容",
 		Args:  cobra.ExactArgs(1),
 		Run:   runEncrypt,
 	}
+	encryptCmd.Flags().Bool("file", false, "加密文件内容（而非文件名），输出加密流到 stdout")
 	var decryptCmd = &cobra.Command{
-		Use:   "decrypt <name>",
-		Short: "解密文件名",
+		Use:   "decrypt (<name> | --file <path>)",
+		Short: "解密文件名或文件内容",
 		Args:  cobra.ExactArgs(1),
 		Run:   runDecrypt,
 	}
+	decryptCmd.Flags().Bool("file", false, "解密文件内容（而非文件名），输出明文流到 stdout")
 	var encSizeCmd = &cobra.Command{
 		Use:   "enc-size <bytes>",
 		Short: "计算加密后的文件大小",
