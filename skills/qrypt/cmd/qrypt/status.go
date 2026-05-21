@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
+	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
 func runStatus(cmd *cobra.Command, args []string) {
@@ -49,6 +51,32 @@ func runStatus(cmd *cobra.Command, args []string) {
 	if daemon.IsDaemonRunning(daemon.FindSocketPath()) {
 		fmt.Println()
 		fmt.Println("运行状态:    daemon 运行中")
+
+		// Query active transfers
+		client, err := daemon.DialWS(daemon.FindSocketPath())
+		if err == nil {
+			resp, rpcErr := client.Call("active_transfers", nil)
+			if rpcErr == nil && resp.Error == nil {
+				data, _ := json.Marshal(resp.Result)
+				var atr protocol.ActiveTransfersResult
+				json.Unmarshal(data, &atr)
+				if len(atr.Transfers) > 0 {
+					fmt.Println()
+					fmt.Println("活跃传输:")
+					for _, t := range atr.Transfers {
+						dir := "上传"
+						if t.Direction == "pull" {
+							dir = "下载"
+						}
+						fmt.Printf("  %s [%s] %s: %s/%s (%d%%)\n",
+							t.TaskID[:min(8, len(t.TaskID))],
+							dir, t.File,
+							formatBytes(t.Bytes), formatBytes(t.Total), t.Progress)
+					}
+				}
+			}
+			client.Close()
+		}
 	} else {
 		fmt.Println()
 		fmt.Println("运行状态:    daemon 未运行 (运行 'qrypt mount' 启动)")
