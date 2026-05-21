@@ -51,6 +51,8 @@
   - 新增 daemon.CacheInvalidator（订阅 EventSyncCompleted 事件，转发驱逐）
   - mountBackend 接口新增 VFS() 方法暴露 CacheInvalidatable
   - MountManager 新增 ForEachRunningMount 安全遍历
+  - PushProgressData 新增 Mount 字段用于精准路由
+  - 含 Mount 字段的事件逐 mount 驱逐（精确）；无 Mount 字段的 fallback 到全量
 - [x] 4.2 `qrypt mount` 改为 daemon 别名
   - daemon 运行时: CLI 通过 WS RPC 委托 daemon 启停 FUSE
   - daemon 未运行: 降级到独立挂载模式（带 deprecation 警告）

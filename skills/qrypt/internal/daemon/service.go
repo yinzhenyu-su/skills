@@ -349,7 +349,7 @@ func (d *Daemon) pushSingleFile(ctx context.Context, taskID, mountName string, d
 	}
 
 	remoteFileName := baseOf(fullRemotePath)
-	uploader := 	qryptsync.NewUploader(drv, cipher)
+	uploader := qryptsync.NewUploader(drv, cipher)
 	req := qryptsync.Request{
 		Name:      remoteFileName,
 		ParentFid: parentFid,
