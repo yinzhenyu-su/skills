@@ -62,15 +62,17 @@ func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
 	pwd, _ := cmd.Flags().GetString("password")
 	salt, _ := cmd.Flags().GetString("salt")
 
-	// Determine password/encoding from command flag, first mount, or defaults
+	// Determine password/encoding/encryption from command flag, first mount, or defaults
 	encPass := pwd
 	filenameEnc := ""
+	filenameEncryption := ""
 	if len(cfg.Mounts) > 0 {
 		rc := cfg.MergeInstanceConfig(cfg.Mounts[0])
 		if encPass == "" {
 			encPass = rc.Encryption.Password
 		}
 		filenameEnc = rc.Encryption.FileNameEncoding
+		filenameEncryption = rc.Encryption.FileNameEncryption
 	}
 	if encPass == "" {
 		encPass = cfg.Defaults.Encryption.Password
@@ -81,6 +83,12 @@ func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
 	if filenameEnc == "" {
 		filenameEnc = "base32"
 	}
+	if filenameEncryption == "" {
+		filenameEncryption = cfg.Defaults.Encryption.FileNameEncryption
+	}
+	if filenameEncryption == "" {
+		filenameEncryption = "standard"
+	}
 
 	if encPass == "" {
 		fmt.Println("错误: 缺少加密密码 (配置文件或 --password 参数)")
@@ -90,7 +98,7 @@ func loadToolCfg(cmd *cobra.Command) (*config.Config, *crypt.RcloneCipher) {
 		cfg.Defaults.Encryption.Password = pwd
 	}
 
-	cipher, err := crypt.NewRcloneCipher(encPass, salt, filenameEnc)
+	cipher, err := crypt.NewRcloneCipher(encPass, salt, filenameEnc, filenameEncryption)
 	if err != nil {
 		fmt.Printf("加密引擎初始化失败: %v\n", err)
 		os.Exit(1)
@@ -182,7 +190,7 @@ func loadToolDriverForMount(cfg *config.Config, globalCipher *crypt.RcloneCipher
 	mountCipher := globalCipher
 	if rc.Encryption.Password != "" {
 		var cerr error
-		mountCipher, cerr = crypt.NewRcloneCipher(rc.Encryption.Password, rc.Encryption.Salt, rc.Encryption.FileNameEncoding)
+		mountCipher, cerr = crypt.NewRcloneCipher(rc.Encryption.Password, rc.Encryption.Salt, rc.Encryption.FileNameEncoding, rc.Encryption.FileNameEncryption)
 		if cerr != nil {
 			fmt.Printf("加密引擎初始化失败: %v\n", cerr)
 			os.Exit(1)
