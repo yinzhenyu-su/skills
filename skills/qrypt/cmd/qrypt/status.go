@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
+	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 )
 
 func runStatus(cmd *cobra.Command, args []string) {
@@ -45,12 +46,12 @@ func runStatus(cmd *cobra.Command, args []string) {
 		printCacheMetrics(cacheDir)
 	}
 
-	procRunning := checkQryptProcess()
-	fmt.Println()
-	if procRunning {
-		fmt.Println("运行状态:    运行中")
+	if daemon.IsDaemonRunning(daemon.FindSocketPath()) {
+		fmt.Println()
+		fmt.Println("运行状态:    daemon 运行中")
 	} else {
-		fmt.Println("运行状态:    未运行")
+		fmt.Println()
+		fmt.Println("运行状态:    daemon 未运行 (运行 'qrypt mount' 启动)")
 	}
 
 	if len(cfg.Mounts) > 0 {
@@ -90,12 +91,6 @@ func printCacheMetrics(cacheDir string) {
 	} else {
 		fmt.Printf("    staging:  无\n")
 	}
-}
-
-func checkQryptProcess() bool {
-	cmd := exec.Command("pgrep", "-f", "qrypt mount")
-	out, err := cmd.Output()
-	return err == nil && len(out) > 0
 }
 
 func countLines(path string) int {

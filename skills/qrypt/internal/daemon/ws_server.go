@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
@@ -28,18 +29,37 @@ type WSServer struct {
 	server   *http.Server
 	listener net.Listener
 	done     chan struct{}
+	stopped  chan struct{}
 	reqID    atomic.Int64
+	headless atomic.Bool
 
-	subsMu sync.Mutex
-	subs   map[string]*websocket.Conn
+	stopOnce sync.Once
+
+	subsMu     sync.Mutex
+	subs       map[string]*websocket.Conn
+	connCount  atomic.Int32
+	idleTimer  *time.Timer
+	idleMu     sync.Mutex
+}
+
+// SetHeadless marks the server as headless (no FUSE mount).
+// In headless mode, the server auto-exits after an idle timeout.
+func (s *WSServer) SetHeadless(v bool) {
+	s.headless.Store(v)
+}
+
+// Done returns a channel closed when the server has stopped.
+func (s *WSServer) Done() <-chan struct{} {
+	return s.stopped
 }
 
 func NewWSServer(daemon *Daemon, socketPath string) *WSServer {
 	return &WSServer{
-		daemon: daemon,
-		socket: socketPath,
-		done:   make(chan struct{}),
-		subs:   make(map[string]*websocket.Conn),
+		daemon:  daemon,
+		socket:  socketPath,
+		done:    make(chan struct{}),
+		stopped: make(chan struct{}),
+		subs:    make(map[string]*websocket.Conn),
 	}
 }
 
@@ -76,14 +96,38 @@ func (s *WSServer) Start(ctx context.Context) error {
 	return nil
 }
 
+// resetIdleTimer resets the idle shutdown timer for headless mode.
+// When no connections are active in headless mode, the server auto-exits after a timeout.
+func (s *WSServer) resetIdleTimer() {
+	if !s.headless.Load() {
+		return
+	}
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	if s.idleTimer != nil {
+		s.idleTimer.Stop()
+	}
+	if s.connCount.Load() == 0 {
+		const idleTimeout = 30 * time.Second
+		s.idleTimer = time.AfterFunc(idleTimeout, func() {
+			log.L.Infof("idle timeout: no connections for %v, shutting down\n", idleTimeout)
+			s.daemon.DaemonShutdown(context.Background())
+			s.Stop()
+		})
+	}
+}
+
 func (s *WSServer) Stop() {
-	if s.listener != nil {
-		s.listener.Close()
-	}
-	if s.server != nil {
-		s.server.Close()
-	}
-	close(s.done)
+	s.stopOnce.Do(func() {
+		if s.listener != nil {
+			s.listener.Close()
+		}
+		if s.server != nil {
+			s.server.Close()
+		}
+		close(s.done)
+		close(s.stopped)
+	})
 }
 
 func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +138,14 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		log.L.Errorf("WS accept failed: %v\n", err)
 		return
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "bye")
+
+	s.connCount.Add(1)
+	s.resetIdleTimer()
+	defer func() {
+		conn.Close(websocket.StatusNormalClosure, "bye")
+		s.connCount.Add(-1)
+		s.resetIdleTimer()
+	}()
 
 	ctx := r.Context()
 	subID := fmt.Sprintf("ws_%d", s.reqID.Add(1))
@@ -231,10 +282,7 @@ func (s *WSServer) streamCatFile(ctx context.Context, conn *websocket.Conn, req 
 		return
 	}
 
-	rootPath := "/"
-	if mountCfg != nil {
-		rootPath = config.RootPathForMount(*mountCfg)
-	}
+	rootPath := config.RootPathForMount(*mountCfg)
 	fullPath := config.ResolveFullPath(rootPath, params.Path)
 
 	parentPath := s.daemon.dirOf(fullPath)
@@ -527,6 +575,13 @@ func (s *WSServer) dispatch(ctx context.Context, req *protocol.Request) *protoco
 			return protocol.NewError(id, protocol.ErrCodeSync, err.Error())
 		}
 		return protocol.NewResult(id, result)
+
+	case "shutdown":
+		go func() {
+			s.daemon.DaemonShutdown(ctx)
+			s.Stop()
+		}()
+		return protocol.NewResult(id, map[string]string{"status": "shutdown"})
 
 	default:
 		return protocol.NewError(id, protocol.ErrCodeMethodNotFound,

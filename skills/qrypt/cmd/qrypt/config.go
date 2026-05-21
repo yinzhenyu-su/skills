@@ -1,14 +1,36 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
 
 func runConfig(cmd *cobra.Command, args []string) {
-	cfg, _ := loadToolCfg(cmd)
+	client, err := ensureDaemon()
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	resp, rpcErr := client.Call("get_config", nil)
+	if rpcErr != nil {
+		fmt.Printf("RPC 错误: %v\n", rpcErr)
+		os.Exit(1)
+	}
+	if resp.Error != nil {
+		fmt.Printf("获取配置失败: %s\n", resp.Error.Message)
+		os.Exit(1)
+	}
+
+	data, _ := json.Marshal(resp.Result)
+	var cfg config.Config
+	json.Unmarshal(data, &cfg)
+
 	fmt.Println("=== Qrypt 配置 ===")
 	fmt.Printf("版本:         %s\n", cfg.Version)
 	fmt.Printf("工作目录:     %s\n", config.WorkDir())

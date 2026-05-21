@@ -7,23 +7,17 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
 func runRm(cmd *cobra.Command, args []string) {
-	socketPath := daemon.FindSocketPath()
-	if !daemon.IsDaemonRunning(socketPath) {
-		fmt.Println("错误: qryptd 未运行，请先启动 qryptd")
-		fmt.Println("提示: 运行 qryptd 启动守护进程，以使用删除功能")
+	client, err := ensureDaemon()
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
-	runRmViaDaemon(cmd, args, socketPath)
-}
+	defer client.Close()
 
-func runRmViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
-	path := args[0]
-	mountName := resolveMount(cmd, &path)
 	recursive, _ := cmd.Flags().GetBool("recursive")
 	recursiveUpper, _ := cmd.Flags().GetBool("recursive-upper")
 	isRecursive := recursive || recursiveUpper
@@ -33,16 +27,9 @@ func runRmViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	password, _ := cmd.Flags().GetString("password")
 	salt, _ := cmd.Flags().GetString("salt")
 
-	client, err := daemon.DialWS(socketPath)
-	if err != nil {
-		fmt.Printf("无法连接到 qryptd: %v\n", err)
-		os.Exit(1)
-	}
-	defer client.Close()
-
 	for _, p := range args {
-		path = p
-		mountName = resolveMount(cmd, &path)
+		path := p
+		mountName := resolveMount(cmd, &path)
 
 		if interactive {
 			fmt.Printf("确认删除 %s? (y/N): ", path)
@@ -79,5 +66,3 @@ func runRmViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 		fmt.Printf("已删除: %s\n", path)
 	}
 }
-
-

@@ -3,12 +3,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
+	"github.com/yinzhenyu/skills/qrypt/internal/log"
 )
 
 func init() {
@@ -21,7 +26,8 @@ If no arguments and no flags are given, the default mount (or first enabled) is 
 Use --all to mount every enabled instance.
 Use <name> to mount a specific instance by name.
 
-FUSE flags (--cookie, --password, etc.) can only be used when mounting a single instance.`,
+This command starts the qrypt daemon automatically — no separate qryptd needed.
+Use --daemon for headless mode (daemon without FUSE mount).`,
 		Run: runMount,
 	}
 	mountCmd.Flags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
@@ -34,8 +40,9 @@ FUSE flags (--cookie, --password, etc.) can only be used when mounting a single 
 	mountCmd.Flags().StringP("root-path", "r", "", "网盘挂载路径")
 	mountCmd.Flags().String("log-level", "", "日志级别: debug, info, warn, error")
 	mountCmd.Flags().Bool("all", false, "挂载所有已启用的实例")
+	mountCmd.Flags().Bool("daemon", false, "守护进程模式（不挂载 FUSE，仅启动服务端）")
+	mountCmd.Flags().Bool("stop-daemon", false, "停止运行中的 daemon")
 
-	// Management subcommands
 	mountCmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "列出所有配置的挂载实例",
@@ -58,19 +65,169 @@ FUSE flags (--cookie, --password, etc.) can only be used when mounting a single 
 }
 
 func runMount(cmd *cobra.Command, args []string) {
+	if stop, _ := cmd.Flags().GetBool("stop-daemon"); stop {
+		stopRunningDaemon()
+		return
+	}
+
 	socketPath := daemon.FindSocketPath()
-	if !daemon.IsDaemonRunning(socketPath) {
-		fmt.Println("错误: qryptd 未运行，请先启动 qryptd")
-		fmt.Println("提示: 运行 qryptd 启动守护进程，以使用挂载功能")
+
+	// If daemon is already running, delegate via RPC
+	if daemon.IsDaemonRunning(socketPath) {
+		if daemonMode, _ := cmd.Flags().GetBool("daemon"); daemonMode {
+			fmt.Println("daemon 已经在运行中")
+			return
+		}
+		runMountViaDaemon(cmd, args, socketPath)
+		return
+	}
+
+	// --- No daemon running — start one directly ---
+
+	daemonMode, _ := cmd.Flags().GetBool("daemon")
+	configPath, _ := cmd.Flags().GetString("config")
+	logLevel, _ := cmd.Flags().GetString("log-level")
+
+	// Load config
+	cfgPath := configPath
+	if cfgPath == "" {
+		cfgPath = config.FindConfigFile()
+	}
+
+	var (
+		cfg       *config.Config
+		usedPath  string
+		loadErr   error
+		validRes  *config.ValidationResult
+	)
+
+	if cfgPath != "" {
+		usedPath = cfgPath
+		cfg, validRes, loadErr = config.LoadConfig(usedPath)
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "错误: 加载配置文件失败: %v\n", loadErr)
+			os.Exit(1)
+		}
+		if validRes != nil && !validRes.Valid {
+			for _, c := range validRes.Checks {
+				if c.Status == "error" {
+					fmt.Fprintf(os.Stderr, "  [%s] %s\n", c.Field, c.Message)
+				}
+			}
+			os.Exit(1)
+		}
+	} else {
+		if daemonMode {
+			fmt.Fprintf(os.Stderr, "错误: 未找到配置文件。请使用 --config 指定或创建 qrypt.toml\n")
+			os.Exit(1)
+		}
+		cfg = config.DefaultConfig()
+	}
+
+	// Override log level from flag
+	if logLevel != "" {
+		cfg.Log.Level = logLevel
+	}
+
+	// Init logger
+	rotateCfg := log.DefaultRotateConfig
+	if cfg.Log.MaxSize > 0 {
+		rotateCfg.MaxSize = cfg.Log.MaxSize
+	}
+	if cfg.Log.MaxBackups > 0 {
+		rotateCfg.MaxBackups = cfg.Log.MaxBackups
+	}
+	if cfg.Log.MaxAge > 0 {
+		rotateCfg.MaxAge = cfg.Log.MaxAge
+	}
+	if cfg.Log.Compress != nil {
+		rotateCfg.Compress = *cfg.Log.Compress
+	}
+	logger, err := log.New(cfg.Log.Level, cfg.Log.File, &rotateCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "日志初始化失败: %v\n", err)
 		os.Exit(1)
 	}
-	runMountViaDaemon(cmd, args, socketPath)
+	log.L = logger
+	defer logger.Close()
+
+	log.L.Infof("qrypt mount v%s starting...\n", version)
+
+	// Create daemon with all components
+	d := daemon.NewDaemonWithPath(cfg, usedPath, version)
+
+	// Create and start WS server
+	srv := daemon.NewWSServer(d, socketPath)
+	if daemonMode {
+		srv.SetHeadless(true)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := srv.Start(ctx); err != nil {
+		log.L.Errorf("启动服务器失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "错误: 启动服务器失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("daemon 正在监听 %s\n", socketPath)
+
+	// Start mounts (unless --daemon headless mode)
+	if !daemonMode {
+		targets := resolveMountTargets(cmd, args, cfg)
+		for _, m := range targets {
+			if err := d.Start(ctx, m.Name); err != nil {
+				log.L.Errorf("启动挂载 %s 失败: %v\n", m.Name, err)
+				fmt.Fprintf(os.Stderr, "  %s: 启动失败: %v\n", m.Name, err)
+			} else {
+				fmt.Printf("  %s: 已挂载\n", m.Name)
+			}
+		}
+	} else {
+		fmt.Println("守护进程模式（无 FUSE 挂载）")
+		fmt.Println("按 Ctrl+C 停止")
+	}
+
+	// Signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	select {
+	case <-sigChan:
+		fmt.Println("\n正在停止...")
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		d.DaemonShutdown(shutdownCtx)
+		srv.Stop()
+	case <-srv.Done():
+		// shutdown was initiated via RPC; already handled
+	}
+	log.L.Infof("daemon stopped\n")
+}
+
+func stopRunningDaemon() {
+	socketPath := daemon.FindSocketPath()
+	if !daemon.IsDaemonRunning(socketPath) {
+		fmt.Println("daemon 未在运行")
+		return
+	}
+	client, err := daemon.DialWS(socketPath)
+	if err != nil {
+		fmt.Printf("无法连接到 daemon: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+	_, rpcErr := client.Call("shutdown", nil)
+	if rpcErr != nil {
+		fmt.Printf("停止 daemon 失败: %v\n", rpcErr)
+		os.Exit(1)
+	}
+	fmt.Println("daemon 已停止")
 }
 
 func runMountViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	client, err := daemon.DialWS(socketPath)
 	if err != nil {
-		fmt.Printf("无法连接到 qryptd: %v\n", err)
+		fmt.Printf("无法连接到 daemon: %v\n", err)
 		os.Exit(1)
 	}
 	defer client.Close()
@@ -86,7 +243,7 @@ func runMountViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 			fmt.Printf("启动挂载失败: %s\n", resp.Error.Message)
 			os.Exit(1)
 		}
-		fmt.Println("已通过 qryptd 启动所有已启用挂载")
+		fmt.Println("已启动所有已启用挂载")
 		return
 	}
 
@@ -94,7 +251,6 @@ func runMountViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 	configPath, _ := cmd.Flags().GetString("config")
 	_, cfg, _, _ := config.LoadConfigAuto(configPath)
 	if cfg == nil {
-		// If config can't be loaded, ask daemon to start default
 		resp, rpcErr := client.Call("start", map[string]string{"name": ""})
 		if rpcErr != nil {
 			fmt.Printf("RPC 错误: %v\n", rpcErr)
@@ -104,7 +260,7 @@ func runMountViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 			fmt.Printf("启动挂载失败: %s\n", resp.Error.Message)
 			os.Exit(1)
 		}
-		fmt.Println("已通过 qryptd 启动默认挂载")
+		fmt.Println("已启动默认挂载")
 		return
 	}
 
@@ -124,7 +280,7 @@ func runMountViaDaemon(cmd *cobra.Command, args []string, socketPath string) {
 			fmt.Printf("  %s: 启动失败: %s\n", m.Name, resp.Error.Message)
 			continue
 		}
-		fmt.Printf("  %s: 已通过 qryptd 挂载\n", m.Name)
+		fmt.Printf("  %s: 已挂载\n", m.Name)
 	}
 }
 
@@ -162,5 +318,3 @@ func resolveMountTargets(cmd *cobra.Command, args []string, cfg *config.Config) 
 		return []*config.MountInstance{m}
 	}
 }
-
-

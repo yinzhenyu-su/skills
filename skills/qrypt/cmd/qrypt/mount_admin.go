@@ -6,21 +6,13 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
 func runMountList(cmd *cobra.Command, args []string) {
-	socketPath := daemon.FindSocketPath()
-	if !daemon.IsDaemonRunning(socketPath) {
-		fmt.Println("错误: qryptd 未运行，请先启动 qryptd")
-		fmt.Println("提示: 运行 qryptd 启动守护进程，以查看挂载列表")
-		os.Exit(1)
-	}
-
-	client, err := daemon.DialWS(socketPath)
+	client, err := ensureDaemon()
 	if err != nil {
-		fmt.Printf("无法连接到 qryptd: %v\n", err)
+		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
 	defer client.Close()
@@ -47,16 +39,9 @@ func runMountList(cmd *cobra.Command, args []string) {
 }
 
 func runMountStart(cmd *cobra.Command, args []string) {
-	socketPath := daemon.FindSocketPath()
-	if !daemon.IsDaemonRunning(socketPath) {
-		fmt.Println("错误: qryptd 未运行，请先启动 qryptd")
-		fmt.Println("提示: 运行 qryptd 启动守护进程，以管理挂载")
-		os.Exit(1)
-	}
-
-	client, err := daemon.DialWS(socketPath)
+	client, err := ensureDaemon()
 	if err != nil {
-		fmt.Printf("无法连接到 qryptd: %v\n", err)
+		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
 	defer client.Close()
@@ -70,20 +55,13 @@ func runMountStart(cmd *cobra.Command, args []string) {
 		fmt.Printf("启动失败: %s\n", resp.Error.Message)
 		os.Exit(1)
 	}
-	fmt.Printf("挂载实例 %q 已通过 qryptd 启动\n", args[0])
+	fmt.Printf("挂载实例 %q 已启动\n", args[0])
 }
 
 func runMountStop(cmd *cobra.Command, args []string) {
-	socketPath := daemon.FindSocketPath()
-	if !daemon.IsDaemonRunning(socketPath) {
-		fmt.Println("错误: qryptd 未运行，请先启动 qryptd")
-		fmt.Println("提示: 运行 qryptd 启动守护进程，以管理挂载")
-		os.Exit(1)
-	}
-
-	client, err := daemon.DialWS(socketPath)
+	client, err := ensureDaemon()
 	if err != nil {
-		fmt.Printf("无法连接到 qryptd: %v\n", err)
+		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
 	defer client.Close()
@@ -97,5 +75,5 @@ func runMountStop(cmd *cobra.Command, args []string) {
 		fmt.Printf("停止失败: %s\n", resp.Error.Message)
 		os.Exit(1)
 	}
-	fmt.Printf("挂载实例 %q 已通过 qryptd 停止\n", args[0])
+	fmt.Printf("挂载实例 %q 已停止\n", args[0])
 }

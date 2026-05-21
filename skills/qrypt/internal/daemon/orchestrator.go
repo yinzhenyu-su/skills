@@ -15,6 +15,7 @@ type Orchestrator struct {
 	cancel      context.CancelFunc
 	tokenBucket *RateLimiter
 	progressHub *ProgressHub
+	shutdownOnce sync.Once
 }
 
 // NewOrchestrator creates an orchestrator with nWorkers goroutines.
@@ -63,9 +64,11 @@ func (o *Orchestrator) Submit(fn func(ctx context.Context) error) bool {
 	}
 }
 
-// Shutdown waits for all workers to finish.
+// Shutdown waits for all workers to finish. Idempotent — safe to call multiple times.
 func (o *Orchestrator) Shutdown() {
-	o.cancel()
-	close(o.queue)
-	o.wg.Wait()
+	o.shutdownOnce.Do(func() {
+		o.cancel()
+		close(o.queue)
+		o.wg.Wait()
+	})
 }

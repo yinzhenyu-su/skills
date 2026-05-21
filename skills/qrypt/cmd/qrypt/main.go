@@ -8,6 +8,8 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
 
+var version = "dev"
+
 var rootCmd = &cobra.Command{
 	Use:   "qrypt",
 	Short: "Qrypt - Quark Drive Rclone-Compatible Crypt Mount Tool",
