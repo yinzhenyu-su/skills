@@ -43,5 +43,8 @@
   - daemon 未运行: 降级到独立挂载模式（带 deprecation 警告）
   - `mount list` 优先显示 daemon 实时状态（daemon 运行时）
   - `mount start/stop` 走 daemon RPC
-- [ ] 4.3 cat/find/cp 改为走 daemon
+- [x] 4.3 cat → daemon（find/cp 待完成）
+  - 新增 `cat_file` RPC method: daemon 读取+解密后通过 WebSocket binary frames 流式推送
+  - CLI `qrypt cat` 优先走 daemon，fallback 到 direct
+  - WSClient 新增 Conn() / Ctx() 方法支持 binary streaming
 - [ ] 4.4 回归测试

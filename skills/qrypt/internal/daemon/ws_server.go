@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
+	"github.com/yinzhenyu/skills/qrypt/internal/config"
+	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/drive"
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 	"nhooyr.io/websocket"
@@ -123,6 +128,12 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
+			// Binary streaming methods bypass normal dispatch.
+			if req.Method == "cat_file" {
+				s.streamCatFile(ctx, conn, &req)
+				continue
+			}
+
 			resp := s.dispatch(ctx, &req)
 			respData, err := json.Marshal(resp)
 			if err != nil {
@@ -168,6 +179,173 @@ func (s *WSServer) forwardEvents(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// streamCatFile reads a remote file, decrypts it, and streams the plaintext
+// as binary frames over the WebSocket connection. Finishes with a text EOF response.
+func (s *WSServer) streamCatFile(ctx context.Context, conn *websocket.Conn, req *protocol.Request) {
+	var params struct {
+		MountName string `json:"mount_name"`
+		Path      string `json:"path"`
+		Password  string `json:"password"`
+		Salt      string `json:"salt"`
+	}
+	if req.Params != nil {
+		if err := unmarshalParams(req.Params, &params); err != nil {
+			errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeInvalidReq, "invalid params: "+err.Error()))
+			conn.Write(ctx, websocket.MessageText, errResp)
+			return
+		}
+	}
+
+	name := s.daemon.resolveMountName(params.MountName)
+	mountCfg := config.FindMount(s.daemon.cfg, name)
+	if mountCfg == nil {
+		errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeMount, "mount not found"))
+		conn.Write(ctx, websocket.MessageText, errResp)
+		return
+	}
+	rc := s.daemon.cfg.MergeInstanceConfig(*mountCfg)
+
+	cipher, err := s.daemon.makeCipher(rc, params.Password, params.Salt)
+	if err != nil {
+		errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeInternal, err.Error()))
+		conn.Write(ctx, websocket.MessageText, errResp)
+		return
+	}
+
+	sk, _ := SessionKeyForMount(rc)
+	ses, err := s.daemon.sessionMgr.Acquire(ctx, sk, rc.Params)
+	if err != nil {
+		errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeInternal, "session: "+err.Error()))
+		conn.Write(ctx, websocket.MessageText, errResp)
+		return
+	}
+	defer s.daemon.sessionMgr.Release(ctx, sk)
+
+	drv := ses.Drv
+	resolver, ok := drv.(drive.PathResolver)
+	if !ok {
+		errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeInternal, "driver does not support path resolution"))
+		conn.Write(ctx, websocket.MessageText, errResp)
+		return
+	}
+
+	rootPath := "/"
+	if mountCfg != nil {
+		rootPath = config.RootPathForMount(*mountCfg)
+	}
+	fullPath := config.ResolveFullPath(rootPath, params.Path)
+
+	parentPath := s.daemon.dirOf(fullPath)
+	baseName := baseOf(fullPath)
+
+	parentFid, err := resolver.ResolvePath(ctx, parentPath)
+	if err != nil {
+		errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeInternal, fmt.Sprintf("resolve path: %v", err)))
+		conn.Write(ctx, websocket.MessageText, errResp)
+		return
+	}
+
+	entries, err := drv.List(ctx, parentFid)
+	if err != nil {
+		errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeInternal, fmt.Sprintf("list: %v", err)))
+		conn.Write(ctx, websocket.MessageText, errResp)
+		return
+	}
+
+	encName := cipher.EncryptSegment(baseName)
+	var targetEntry drive.Entry
+	found := false
+	for _, e := range entries {
+		if e.Name == encName {
+			targetEntry = e
+			found = true
+			break
+		}
+	}
+	if !found {
+		errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeInternal, "file not found"))
+		conn.Write(ctx, websocket.MessageText, errResp)
+		return
+	}
+	if targetEntry.IsDir {
+		errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeInternal, "is a directory"))
+		conn.Write(ctx, websocket.MessageText, errResp)
+		return
+	}
+
+	encSize := targetEntry.Size
+	headerSize := int64(crypt.FileHeaderSize)
+	if encSize <= headerSize {
+		// Empty file, send EOF directly
+		conn.Write(ctx, websocket.MessageText, []byte(`{"id":`+strconv.FormatInt(req.ID, 10)+`,"result":{"eof":true}}`))
+		return
+	}
+
+	header, err := drv.Read(ctx, targetEntry, 0, headerSize)
+	if err != nil {
+		errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeInternal, fmt.Sprintf("read header: %v", err)))
+		conn.Write(ctx, websocket.MessageText, errResp)
+		return
+	}
+	headerBytes := make([]byte, headerSize)
+	if _, err := io.ReadFull(header, headerBytes); err != nil {
+		header.Close()
+		errResp, _ := json.Marshal(protocol.NewError(req.ID, protocol.ErrCodeInternal, fmt.Sprintf("read header: %v", err)))
+		conn.Write(ctx, websocket.MessageText, errResp)
+		return
+	}
+	header.Close()
+
+	var fileNonce [crypt.FileNonceSize]byte
+	copy(fileNonce[:], headerBytes[crypt.FileMagicSize:])
+
+	bodySize := encSize - headerSize
+	const blocksPerChunk = 64
+	chunkEncBytes := int64(blocksPerChunk * crypt.BlockSize)
+	numChunks := int((bodySize + chunkEncBytes - 1) / chunkEncBytes)
+
+	for chunk := 0; chunk < numChunks; chunk++ {
+		off := headerSize + int64(chunk)*chunkEncBytes
+		sz := chunkEncBytes
+		if chunk == numChunks-1 {
+			sz = bodySize - int64(chunk)*chunkEncBytes
+		}
+
+		rc, err := drv.Read(ctx, targetEntry, off, sz)
+		if err != nil {
+			break
+		}
+		encData := make([]byte, sz)
+		if _, err := io.ReadFull(rc, encData); err != nil {
+			rc.Close()
+			break
+		}
+		rc.Close()
+
+		baseBlock := chunk * blocksPerChunk
+		pos := 0
+		for pos < len(encData) {
+			blockEnd := pos + crypt.BlockSize
+			if blockEnd > len(encData) {
+				blockEnd = len(encData)
+			}
+			plain, err := cipher.DecryptBlock(encData[pos:blockEnd], uint64(baseBlock+pos/crypt.BlockSize), fileNonce)
+			if err != nil {
+				conn.Write(ctx, websocket.MessageText, []byte(`{"id":`+strconv.FormatInt(req.ID, 10)+`,"error":{"code":-1,"message":"decrypt failed"}}`))
+				return
+			}
+			if err := conn.Write(ctx, websocket.MessageBinary, plain); err != nil {
+				return
+			}
+			pos = blockEnd
+		}
+	}
+
+	// Send EOF
+	eof, _ := json.Marshal(protocol.NewResult(req.ID, map[string]bool{"eof": true}))
+	conn.Write(ctx, websocket.MessageText, eof)
 }
 
 func (s *WSServer) dispatch(ctx context.Context, req *protocol.Request) *protocol.Response {

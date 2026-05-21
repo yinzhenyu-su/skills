@@ -61,6 +61,12 @@ func DialWS(socketPath string) (*WSClient, error) {
 	return c, nil
 }
 
+// Conn returns the underlying WebSocket connection (for binary streaming).
+func (c *WSClient) Conn() *websocket.Conn { return c.conn }
+
+// Ctx returns the client's context.
+func (c *WSClient) Ctx() context.Context { return c.ctx }
+
 // Close closes the connection.
 func (c *WSClient) Close() {
 	c.cancel()
