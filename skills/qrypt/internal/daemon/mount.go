@@ -16,6 +16,12 @@ import (
 type mountBackend interface {
 	mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drive.Driver, cipher *crypt.RcloneCipher, cacheMgr *cache.CacheManager) error
 	unmount() error
+	VFS() CacheInvalidatable
+}
+
+// CacheInvalidatable allows the daemon to evict VFS cache entries.
+type CacheInvalidatable interface {
+	InvalidateDirCache(path string)
 }
 
 // newMountBackend returns the appropriate backend for the current build.

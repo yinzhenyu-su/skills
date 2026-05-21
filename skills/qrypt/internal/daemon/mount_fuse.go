@@ -43,6 +43,10 @@ func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountC
 	return nil
 }
 
+func (fb *fuseMountBackend) VFS() CacheInvalidatable {
+	return fb.vfs
+}
+
 func (fb *fuseMountBackend) unmount() error {
 	if fb.vfs != nil {
 		fb.vfs.Shutdown()
