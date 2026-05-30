@@ -28,7 +28,7 @@ func (*QryptFS) Shutdown() {}
 func (*QryptFS) IsShuttingDown() bool { return false }
 
 // MountOptions returns macOS mount options.
-func MountOptions(allowOther bool) []string {
+func MountOptions(allowOther bool, _ string) []string {
 	opts := []string{"-o", "rw"}
 	if allowOther {
 		opts = append(opts, "-o", "allow_other")

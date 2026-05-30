@@ -6,6 +6,10 @@ version = "1"
 # 全局默认值（可被每个 [[mounts]] 的对应字段覆盖）
 [defaults]
 
+[defaults.mount]
+# macOS Finder 卷标（可选，默认 QryptDrive）
+volname = "QryptDrive"
+
 [defaults.sync]
 # 同步失败重试次数
 max_retries = 3
@@ -33,6 +37,8 @@ enabled = true
 default = true
 # 允许其他用户访问（需要 /etc/fuse.conf 配置）
 allow_other = false
+# macOS Finder 卷标（可选，覆盖 defaults.mount.volname）
+volname = "QryptDrive"
 
   [mounts.params]
   # Quark 网盘 Cookie（必填）

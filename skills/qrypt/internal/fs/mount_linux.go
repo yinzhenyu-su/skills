@@ -2,7 +2,7 @@
 
 package fs
 
-func MountOptions(allowOther bool) []string {
+func MountOptions(allowOther bool, _ string) []string {
 	opts := []string{
 		"-o", "rw",
 		"-o", "nonempty",
