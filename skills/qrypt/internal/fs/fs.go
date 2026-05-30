@@ -99,6 +99,9 @@ type QryptFS struct {
 	workerWg        sync.WaitGroup
 	maxRetries      int
 	writeBackDelay  time.Duration
+
+	syncDelayMu   sync.Mutex
+	syncTimers    map[string]*time.Timer // path → resettable upload timer
 }
 
 type FSOptions struct {
@@ -153,6 +156,7 @@ func NewFS(
 		memCache:        memCache,
 		maxRetries:      maxRetries,
 		writeBackDelay:  opts.WriteBackTimeout,
+		syncTimers:      make(map[string]*time.Timer),
 	}
 
 	rootName := ""
