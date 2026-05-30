@@ -295,6 +295,12 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 					fs.resolveConflict(entry.path, n, rf)
 				}
 			} else if isDirty {
+				// File has un-uploaded changes AND remote differs.
+				// Skip conflict if we recently uploaded — Quark API index
+				// may not have caught up yet (it shows the old fid).
+				if !n.lastUploadTime.IsZero() && time.Since(n.lastUploadTime) < 30*time.Second {
+					continue
+				}
 				fs.resolveConflict(entry.path, n, rf)
 			}
 		} else {
