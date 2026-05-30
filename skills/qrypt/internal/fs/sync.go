@@ -265,7 +265,7 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		}
 	}
 
-	uploadCtx, uploadCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	uploadCtx, uploadCancel := context.WithTimeout(drive.WithMtime(context.Background(), n.mtime), 30*time.Minute)
 	defer uploadCancel()
 	uploadReader := func() (io.ReadCloser, error) {
 		if snapPath == "" {

@@ -80,3 +80,14 @@ type Driver interface {
 	Meta
 	Reader
 }
+
+type mtimeKey struct{}
+
+func WithMtime(ctx context.Context, mtime time.Time) context.Context {
+	return context.WithValue(ctx, mtimeKey{}, mtime)
+}
+
+func MtimeFromContext(ctx context.Context) (time.Time, bool) {
+	mtime, ok := ctx.Value(mtimeKey{}).(time.Time)
+	return mtime, ok
+}
