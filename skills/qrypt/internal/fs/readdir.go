@@ -298,22 +298,13 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 						fs.cacheMgr.RemoveChunksByFid(fid)
 					}
 				} else {
-					if !n.lastUploadTime.IsZero() && time.Since(n.lastUploadTime) < 30*time.Second {
-						continue
-					}
-					fs.resolveConflict(entry.path, n, rf)
-				}
-			} else if isDirty {
-				if !n.lastUploadTime.IsZero() && time.Since(n.lastUploadTime) < 30*time.Second {
 					continue
 				}
-				fs.resolveConflict(entry.path, n, rf)
-			}
-		} else {
-			if !lastUpload.IsZero() && time.Since(lastUpload) < 30*time.Second {
+			} else if isDirty {
 				continue
 			}
-			fs.resolveConflict(entry.path, n, rf)
+		} else {
+			continue
 		}
 	}
 

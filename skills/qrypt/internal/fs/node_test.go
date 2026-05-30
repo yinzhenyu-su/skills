@@ -114,29 +114,10 @@ func TestNodeFields(t *testing.T) {
 	n.mu.RUnlock()
 }
 
-func TestNodeUploading_Default(t *testing.T) {
-	n := newNode("fid_u1", "p", "u1.txt", "/u1.txt", false)
-	if atomic.LoadInt32(&n.uploading) != 0 {
-		t.Error("uploading should be 0 initially")
-	}
-}
-
 func TestNodeUploadingChildren_Default(t *testing.T) {
 	n := newNode("fid_uc1", "p", "dir", "/dir", true)
 	if atomic.LoadInt32(&n.uploadingChildren) != 0 {
 		t.Error("uploadingChildren should be 0 initially")
-	}
-}
-
-func TestNodeUploading_SetAndClear(t *testing.T) {
-	n := newNode("fid_us", "p", "us.txt", "/us.txt", false)
-	atomic.StoreInt32(&n.uploading, 1)
-	if atomic.LoadInt32(&n.uploading) != 1 {
-		t.Error("uploading should be 1 after Store")
-	}
-	atomic.StoreInt32(&n.uploading, 0)
-	if atomic.LoadInt32(&n.uploading) != 0 {
-		t.Error("uploading should be 0 after clear")
 	}
 }
 

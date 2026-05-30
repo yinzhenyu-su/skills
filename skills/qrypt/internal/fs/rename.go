@@ -33,18 +33,8 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 		return errc
 	}
 
-	if atomic.LoadInt32(&oldNode.uploading) == 1 {
-		return -fuse.EBUSY
-	}
 	if oldNode.isFolder && atomic.LoadInt32(&oldNode.uploadingChildren) > 0 {
 		return -fuse.EBUSY
-	}
-
-	// If the destination path already exists and is uploading, refuse.
-	if dstNode, dstErr := fs.lookup(newPath); dstErr == 0 {
-		if atomic.LoadInt32(&dstNode.uploading) == 1 {
-			return -fuse.EBUSY
-		}
 	}
 
 	oldParent := filepath.Dir(oldPath)

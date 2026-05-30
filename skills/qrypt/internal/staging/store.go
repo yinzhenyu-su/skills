@@ -322,6 +322,28 @@ func (s *Store) Truncate(path string, size int64) error {
 	return os.Truncate(path, size)
 }
 
+func (s *Store) Snapshot(path string) (string, error) {
+	if err := s.flushBuf(path); err != nil {
+		return "", err
+	}
+	fid := FidFromPath(path)
+	s.pages.Delete(fid)
+
+	snapPath := path + ".snap"
+	if err := os.Rename(path, snapPath); err != nil {
+		return "", err
+	}
+	if err := s.Ensure(path); err != nil {
+		os.Rename(snapPath, path)
+		return "", err
+	}
+	return snapPath, nil
+}
+
+func (s *Store) ReleaseSnapshot(snapPath string) error {
+	return os.Remove(snapPath)
+}
+
 func (s *Store) Remove(path string) error {
 	if path == "" {
 		return nil
