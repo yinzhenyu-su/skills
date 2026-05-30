@@ -62,6 +62,8 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o qrypt-linux ./cmd/qrypt
 
 ### 构建变体对比
 
+> FUSE 相关文件通过 `//go:build !nofuse` 编译标签排除，`go build -tags nofuse` 可彻底剥离 FUSE 依赖（`mount` 命令不可用，仅 CLI 操作）。
+
 | 场景 | mount 命令 | 其他命令 | 依赖 |
 |------|-----------|---------|------|
 | macOS 原生 | ✅ | ✅ | macFUSE |
