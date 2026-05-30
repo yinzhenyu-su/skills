@@ -64,33 +64,118 @@ cat ~/Qrypt/race.txt
 
 ---
 
-### 2. 上传期间并发写入（COW Snapshot 验证）
+### 2. 同一文件连续编辑 — 模拟编辑器行为
 
-验证 COW snapshot：上传期间写入不受影响，上传完成后重新入队。
+核心场景：编辑器连续保存同一文件（如 IDE 自动保存、vim 的 backup copy）。
+
+#### 2a. 快速连续保存（间隔 < timer）
+
+每次保存都在 timer 窗口内，timer 被不断重置，只触发一次上传。
 
 ```bash
-# 第一阶段：建立远端正文件
-echo "phase1_base" > ~/Qrypt/cow_test.txt
+echo "" > ~/.qrypt/qrypt.log
+for i in $(seq 1 30); do
+  echo "edit_${i}_$(date +%s%N)" > ~/Qrypt/continuous_edit.txt
+  sleep 0.5
+done
 sleep 8
-grep -c "PostUpload.*cow_test" ~/.qrypt/qrypt.log
+grep -c "syncFile: starting sync for /continuous_edit.txt" ~/.qrypt/qrypt.log
 # 预期: 1
-
-# 第二阶段：在 timer 触发窗口内连续写入
-echo "phase2_a" > ~/Qrypt/cow_test.txt
-sleep 1
-echo "phase2_b" > ~/Qrypt/cow_test.txt
-sleep 1
-echo "phase2_c" > ~/Qrypt/cow_test.txt
-sleep 1
-echo "phase2_d" > ~/Qrypt/cow_test.txt
-sleep 8
-grep -c "PostUpload.*cow_test" ~/.qrypt/qrypt.log
-# 预期: 2（第一阶段 + 第二阶段各一次）
-cat ~/Qrypt/cow_test.txt
-# 预期: "phase2_d"（最后一次写入）
+cat ~/Qrypt/continuous_edit.txt
+# 预期: "edit_30_..."（最后一次编辑内容）
 ```
 
-关键：在 timer 触发时间内持续写入。旧代码会上传"正在写"的不一致数据，新代码的 COW snapshot 保证上传内容是触发 timer 时刻的冻结快照。
+#### 2b. 慢速 + 快速交替（跨越 timer 边界）
+
+编辑节奏跨越 timer 触发点：部分编辑被合并，部分触发新 upload。
+
+```bash
+echo "=== Phase 1: rapid edits ==="
+for i in $(seq 1 5); do
+  echo "rapid_${i}" > ~/Qrypt/mixed_edit.txt
+  sleep 0.3
+done
+echo "=== Wait for timer ==="
+sleep 6  # timer 触发，上传 "rapid_5"
+echo "=== Phase 2: slow edits ==="
+for i in $(seq 1 3); do
+  echo "slow_${i}" > ~/Qrypt/mixed_edit.txt
+  sleep 2
+done
+echo "=== Wait for timer ==="
+sleep 6  # timer 触发，上传 "slow_3"
+echo "=== Phase 3: rapid again ==="
+for i in $(seq 1 5); do
+  echo "rapid2_${i}" > ~/Qrypt/mixed_edit.txt
+  sleep 0.3
+done
+sleep 8
+
+grep -c "syncFile: starting sync for /mixed_edit.txt" ~/.qrypt/qrypt.log
+# 预期: 3（phase1→timer→phase2→timer→phase3→timer）
+# 注意: 旧版 EBUSY 会让 phase2 写入失败，新版 COW 保证全部成功
+cat ~/Qrypt/mixed_edit.txt
+# 预期: "rapid2_5"
+```
+
+#### 2c. 编辑 + 读取验证（数据一致性）
+
+写入后立即读取，确认不会读到中间状态。
+
+```bash
+for i in $(seq 1 20); do
+  content="consistent_write_${i}_$(date +%s%N)"
+  echo "$content" > ~/Qrypt/consistency.txt
+  read_back=$(cat ~/Qrypt/consistency.txt)
+  if [ "$content" != "$read_back" ]; then
+    echo "MISMATCH at iteration $i: wrote '$content' read '$read_back'"
+    break
+  fi
+done
+echo "Done 20 iterations without mismatch"
+# 预期: 无 MISMATCH
+```
+
+#### 2d. 编辑 + 删除 + 重建同名文件
+
+模拟用户：打开文件 → 写 → 删 → 再创建同名文件。
+
+```bash
+for cycle in $(seq 1 5); do
+  echo "cycle_${cycle}_v1" > ~/Qrypt/recreate.txt
+  sleep 1
+  rm ~/Qrypt/recreate.txt
+  sleep 0.5
+  echo "cycle_${cycle}_v2" > ~/Qrypt/recreate.txt
+  sleep 1
+done
+sleep 10
+ls ~/Qrypt/*Conflict* ~/Qrypt/*\(1\)* 2>&1
+# 预期: "No matches found"
+cat ~/Qrypt/recreate.txt
+# 预期: "cycle_5_v2"
+```
+
+#### 2e. 编辑期间并发读 + ls
+
+模拟用户：编辑文件的同时其他进程在读取目录。
+
+```bash
+for i in $(seq 1 10); do
+  echo "concurrent_${i}" > ~/Qrypt/concurrent_edit.txt
+  # 并发触发读操作
+  cat ~/Qrypt/concurrent_edit.txt > /dev/null &
+  ls ~/Qrypt/ > /dev/null &
+  ls -la ~/Qrypt/concurrent_edit.txt > /dev/null &
+  wait
+  sleep 0.5
+done
+sleep 8
+grep -c "syncFile: starting sync for /concurrent_edit.txt" ~/.qrypt/qrypt.log
+# 预期: 1 或 2（取决于是否跨越 timer 边界）
+ls ~/Qrypt/*Conflict* 2>&1
+# 预期: "No matches found"
+
 
 ---
 
