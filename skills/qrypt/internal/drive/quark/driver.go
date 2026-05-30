@@ -287,12 +287,15 @@ func (d *QuarkDriver) Remove(ctx context.Context, entry drive.Entry) error {
 func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
 	d.deleteExistingFileByName(parentID, name)
 
-	now := time.Now().UnixMilli()
+	mtime := time.Now()
+	if mt, ok := drive.MtimeFromContext(ctx); ok {
+		mtime = mt
+	}
 	preData := map[string]interface{}{
 		"ccp_hash_update": true,
 		"file_name":       name,
-		"l_created_at":    now,
-		"l_updated_at":    now,
+		"l_created_at":    mtime.UnixMilli(),
+		"l_updated_at":    mtime.UnixMilli(),
 		"pdir_fid":        parentID,
 		"size":            size,
 		"format_type":     0,
