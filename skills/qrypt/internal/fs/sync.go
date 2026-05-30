@@ -325,6 +325,17 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		n.mu.RUnlock()
 	}
 
+	// Delete previous uploaded file by its known fid (not by name listing).
+	// Quark API index delay means deleteExistingFileByName (inside Put) may
+	// not find the old file, causing the server to auto-rename to name(1).
+	if oldUploadedFid != "" && !strings.HasPrefix(oldUploadedFid, "local_") {
+		if w, ok := fs.drv.(drive.Writer); ok {
+			if err := w.Remove(context.Background(), drive.Entry{ID: oldUploadedFid}); err != nil {
+				log.L.Warnf("syncFile: remove old file %s: %v", oldUploadedFid, err)
+			}
+		}
+	}
+
 	uploadCtx, uploadCancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer uploadCancel()
 	result, err := fs.uploader.Upload(uploadCtx, syncpkg.Request{
