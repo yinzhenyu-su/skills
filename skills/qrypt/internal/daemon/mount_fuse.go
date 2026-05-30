@@ -33,7 +33,7 @@ func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountC
 	})
 
 	fb.host = fuse.NewFileSystemHost(fb.vfs)
-	options := fs.MountOptions(rc.AllowOther)
+	options := fs.MountOptions(rc.AllowOther, rc.VolName)
 
 	go func() {
 		fb.host.Mount(rc.MountPoint, options)

@@ -51,6 +51,7 @@ type DefaultsConfig struct {
 	Encryption EncryptionConfig `toml:"encryption"`
 	Sync       SyncConfig       `toml:"sync"`
 	Cache      CacheConfig      `toml:"cache"`
+	Mount      MountConfig      `toml:"mount"`
 }
 
 // MountInstance declares one cloud drive mount.
@@ -61,6 +62,7 @@ type MountInstance struct {
 	Enabled    *bool       `toml:"enabled"`     // nil = true
 	Default    bool        `toml:"default"`     // true = selection target when --mount omitted
 	AllowOther bool        `toml:"allow_other"`
+	VolName    string      `toml:"volname"`     // macOS Finder volume name (default: QryptDrive)
 
 	Params     MountParams        `toml:"params"`
 	Encryption *EncryptionConfig  `toml:"encryption"` // nil = use defaults
@@ -88,6 +90,7 @@ type ResolvedMountConfig struct {
 	Type       string
 	MountPoint string
 	AllowOther bool
+	VolName    string
 	Enabled    bool
 	Params     MountParams
 
@@ -140,6 +143,7 @@ type CacheConfig struct {
 type MountConfig struct {
 	Point      string
 	AllowOther bool
+	VolName    string `toml:"volname"`
 }
 
 type SyncConfig struct {
@@ -209,11 +213,20 @@ func (c *Config) MergeInstanceConfig(m MountInstance) *ResolvedMountConfig {
 
 	cacheDir := filepath.Join(WorkDir(), "cache", m.Name)
 
+	volName := m.VolName
+	if volName == "" {
+		volName = c.Defaults.Mount.VolName
+	}
+	if volName == "" {
+		volName = "QryptDrive"
+	}
+
 	return &ResolvedMountConfig{
 		Name:       m.Name,
 		Type:       m.Type,
 		MountPoint: ExpandHome(m.MountPoint),
 		AllowOther: m.AllowOther,
+		VolName:    volName,
 		Enabled:    enabled,
 		Params:     m.Params,
 		Encryption: enc,
