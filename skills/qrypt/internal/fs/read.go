@@ -227,9 +227,29 @@ func (fs *QryptFS) fetchBatch(n *Node, batchIdx uint64) error {
 		if strings.Contains(err.Error(), "416") {
 			return nil
 		}
+		// If file is not found (404 concurrency race), the file was likely
+		// replaced by a concurrent upload. Retry with the latest fid.
+		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "21001") {
+			n.mu.RLock()
+			newFid := n.fid
+			n.mu.RUnlock()
+			if newFid != fid {
+				log.L.Debugf("fetchBatch: retrying %s with updated fid %s (was %s)\n", fid, newFid, fid)
+				n.mu.RLock()
+				encSize = n.encSize
+				n.mu.RUnlock()
+				entry.ID = newFid
+				rc, err = fs.drv.Read(context.Background(), entry, pStart, batchSize)
+				if err == nil {
+					goto processBatch
+				}
+			}
+		}
 		log.L.Errorf("fetchBatch: Read failed for %s: %v\n", fid, err)
 		return err
 	}
+
+processBatch:
 	defer rc.Close()
 
 	if pStart == 0 {

@@ -430,6 +430,9 @@ func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snap
 	if oldFid != "" && oldFid != newFid {
 		log.L.Debugf("syncFilePostUpload: replacing fid index %s -> %s for %s\n", oldFid, newFid, path)
 		fs.fidNodes.Delete(oldFid)
+		if fs.cacheMgr != nil {
+			fs.cacheMgr.RemoveChunksByFid(oldFid)
+		}
 	}
 	if newFid != "" && !strings.HasPrefix(newFid, "local_") {
 		fs.fidNodes.Store(newFid, n)
