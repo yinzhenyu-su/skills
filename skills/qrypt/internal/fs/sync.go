@@ -72,32 +72,36 @@ func (fs *QryptFS) enqueueSync(n *Node) {
 func (fs *QryptFS) enqueueSyncDelay(n *Node, delay time.Duration) {
 	n.mu.RLock()
 	isNewLocal := strings.HasPrefix(n.fid, "local_")
-	if (!n.isDirty && !isNewLocal) || n.syncQueued {
+	if !n.isDirty && !isNewLocal {
 		n.mu.RUnlock()
 		return
 	}
 	n.mu.RUnlock()
 
-	n.mu.Lock()
-	if n.syncQueued {
-		n.mu.Unlock()
-		return
-	}
-	n.syncQueued = true
-	n.mu.Unlock()
-
 	if delay > 0 {
-		go func() {
-			time.Sleep(delay)
+		n.mu.Lock()
+		n.syncQueued = true
+		n.mu.Unlock()
+
+		path := n.currentPath
+		fs.syncDelayMu.Lock()
+		if t, ok := fs.syncTimers[path]; ok {
+			t.Stop()
+		}
+		fs.syncTimers[path] = time.AfterFunc(delay, func() {
+			fs.syncDelayMu.Lock()
+			delete(fs.syncTimers, path)
+			fs.syncDelayMu.Unlock()
 			if fs.IsShuttingDown() {
-				n.mu.Lock()
-				n.syncQueued = false
-				n.mu.Unlock()
 				return
 			}
 			fs.enqueueNode(n)
-		}()
+		})
+		fs.syncDelayMu.Unlock()
 	} else {
+		n.mu.Lock()
+		n.syncQueued = true
+		n.mu.Unlock()
 		fs.enqueueNode(n)
 	}
 }
