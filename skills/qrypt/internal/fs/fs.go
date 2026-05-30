@@ -95,15 +95,17 @@ type QryptFS struct {
 	uploadQueue   UploadQueue // optional: replaces uploadChan when set
 	metadataOpChan chan metadataTask
 
-	shuttingDown int32
-	workerWg     sync.WaitGroup
-	maxRetries   int
+	shuttingDown    int32
+	workerWg        sync.WaitGroup
+	maxRetries      int
+	writeBackDelay  time.Duration
 }
 
 type FSOptions struct {
 	MaxRetries        int
 	ConcurrentUploads int
 	MemCacheSizeMB    int
+	WriteBackTimeout  time.Duration // 0 means immediate
 }
 
 func NewFS(
@@ -138,18 +140,19 @@ func NewFS(
 	uploader := syncpkg.NewUploader(drv, cipher)
 
 	fs := &QryptFS{
-		drv:            drv,
-		cipher:         cipher,
-		cacheMgr:       cacheMgr,
-		staging:        stg,
-		rootFid:        rootFid,
-		uploader:       uploader,
-		uploadChan:     make(chan syncTask, 1000),
-		metadataOpChan: make(chan metadataTask, 100000),
-		prefetchSem:    make(chan struct{}, 30),
-		lruStop:        make(chan struct{}),
-		memCache:       memCache,
-		maxRetries:     maxRetries,
+		drv:             drv,
+		cipher:          cipher,
+		cacheMgr:        cacheMgr,
+		staging:         stg,
+		rootFid:         rootFid,
+		uploader:        uploader,
+		uploadChan:      make(chan syncTask, 1000),
+		metadataOpChan:  make(chan metadataTask, 100000),
+		prefetchSem:     make(chan struct{}, 30),
+		lruStop:         make(chan struct{}),
+		memCache:        memCache,
+		maxRetries:      maxRetries,
+		writeBackDelay:  opts.WriteBackTimeout,
 	}
 
 	rootName := ""

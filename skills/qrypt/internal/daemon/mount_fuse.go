@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
 
@@ -26,10 +27,14 @@ func newPlatformMountBackend() mountBackend {
 
 func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drive.Driver, cipher *crypt.RcloneCipher, cacheMgr *cache.CacheManager) error {
 	rootFid := getRootFid(ctx, drv, rc)
+
+	writeBackDelay, _ := time.ParseDuration(rc.Sync.WriteBackTimeout)
+
 	fb.vfs = fs.NewFS(drv, cipher, cacheMgr, rootFid, fs.FSOptions{
 		MaxRetries:        rc.Sync.MaxRetries,
 		ConcurrentUploads: rc.Sync.ConcurrentUploads,
 		MemCacheSizeMB:    rc.Cache.MemCacheSizeMB,
+		WriteBackTimeout:  writeBackDelay,
 	})
 
 	fb.host = fuse.NewFileSystemHost(fb.vfs)

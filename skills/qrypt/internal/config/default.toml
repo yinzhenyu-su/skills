@@ -17,6 +17,8 @@ max_retries = 3
 concurrent_uploads = 3
 # 目录列表缓存时间 (支持 s, m, h)
 dir_cache_ttl = "5m"
+# FUSE 写入后延迟上传时间 (0s=立即, 5s=写入停止后等5秒再上传)
+write_back_timeout = "0s"
 
 [defaults.cache]
 # 最大缓存大小 (支持 KB, MB, GB, TB)

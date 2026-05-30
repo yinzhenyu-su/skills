@@ -150,6 +150,7 @@ type SyncConfig struct {
 	MaxRetries        int    `toml:"max_retries"`
 	ConcurrentUploads int    `toml:"concurrent_uploads"`
 	DirCacheTTL       string `toml:"dir_cache_ttl"`
+	WriteBackTimeout  string `toml:"write_back_timeout"` // FUSE 写入后延迟上传时间 (e.g. "5s", "0s"=立即)
 }
 
 type LogConfig struct {
@@ -175,6 +176,7 @@ func DefaultConfig() *Config {
 				MaxRetries:        3,
 				ConcurrentUploads: 3,
 				DirCacheTTL:       "5m",
+				WriteBackTimeout:  "0s",
 			},
 			Cache: CacheConfig{
 				MaxSize: "10GB",

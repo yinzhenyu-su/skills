@@ -268,7 +268,7 @@ func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 		if localPath != "" && fs.staging != nil {
 			fs.staging.Sync(localPath)
 		}
-		fs.enqueueSyncDelay(node, 200*time.Millisecond)
+		fs.enqueueSyncDelay(node, fs.writeBackDelay)
 	}
 	return 0
 }
