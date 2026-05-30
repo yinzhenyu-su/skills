@@ -7,9 +7,10 @@ metadata:
       bins: [go, nohup]
 ---
 
-# Qrypt FUSE Mount Testing
+# Qrypt FUSE Mount Stress Testing
 
-验证 qrypt 的真实挂载操作，确保修改后的代码在 Quark API 实际环境下正常工作。
+验证 qrypt FUSE 挂载在高负载、并发、边界条件下的正确性。
+所有测试在真实 Quark API 环境下运行，覆盖 timer、COW snapshot、并发写入、文件操作竞态等核心路径。
 
 ## 构建与挂载
 
@@ -28,11 +29,8 @@ nohup ./qrypt mount quark > /tmp/qrypt-mount.log 2>&1 &
 sleep 8
 ls ~/Qrypt/
 # 预期: dist (或其他网盘文件)
-```
 
-## 日志
-
-```bash
+# 日志
 tail -f ~/.qrypt/qrypt.log
 ```
 
@@ -42,11 +40,13 @@ tail -f ~/.qrypt/qrypt.log
 echo "" > ~/.qrypt/qrypt.log
 ```
 
+---
+
 ## 测试场景
 
 ### 1. Debounce Timer — 快速连续写入
 
-验证 `write_back_timeout`（默认 5s）只触发一次上传:
+验证 `write_back_timeout`（默认 5s）只触发一次上传。
 
 ```bash
 for i in $(seq 1 20); do
@@ -54,135 +54,301 @@ for i in $(seq 1 20); do
   sleep 0.3
 done
 sleep 8
-tail -5 ~/.qrypt/qrypt.log | grep "syncFile"
-# 预期: 只有 1 行 "syncFile: starting sync for /race.txt"
+grep -c "syncFile: starting sync for /race.txt" ~/.qrypt/qrypt.log
+# 预期: 1
+cat ~/Qrypt/race.txt
+# 预期: "write_20"
 ```
 
-每 0.3s 写一次，持续 6s。timer 被不断重置，最终只触发一次上传。
+每 0.3s 写一次，持续 6s。timer 被不断重置，最终只触发一次上传。确认最终内容是最后一次写入的。
 
-### 2. 写入 + 重命名 — Timer 迁移
+---
 
-验证 `write → rename` 后 timer 迁移到新路径:
+### 2. 上传期间并发写入（COW Snapshot 验证）
+
+验证 COW snapshot：上传期间写入不受影响，上传完成后重新入队。
 
 ```bash
-echo "content" > ~/Qrypt/migrate.txt
-sleep 2
-mv ~/Qrypt/migrate.txt ~/Qrypt/migrated.txt
+# 第一阶段：建立远端正文件
+echo "phase1_base" > ~/Qrypt/cow_test.txt
 sleep 8
-tail -5 ~/.qrypt/qrypt.log | grep "syncFile"
-# 预期: "syncFile: starting sync for /migrated.txt"（新路径）
-cat ~/Qrypt/migrated.txt
-# 预期: "content"
+grep -c "PostUpload.*cow_test" ~/.qrypt/qrypt.log
+# 预期: 1
+
+# 第二阶段：在 timer 触发窗口内连续写入
+echo "phase2_a" > ~/Qrypt/cow_test.txt
+sleep 1
+echo "phase2_b" > ~/Qrypt/cow_test.txt
+sleep 1
+echo "phase2_c" > ~/Qrypt/cow_test.txt
+sleep 1
+echo "phase2_d" > ~/Qrypt/cow_test.txt
+sleep 8
+grep -c "PostUpload.*cow_test" ~/.qrypt/qrypt.log
+# 预期: 2（第一阶段 + 第二阶段各一次）
+cat ~/Qrypt/cow_test.txt
+# 预期: "phase2_d"（最后一次写入）
 ```
 
-### 3. 写入 + 删除 — Timer 取消
+关键：在 timer 触发时间内持续写入。旧代码会上传"正在写"的不一致数据，新代码的 COW snapshot 保证上传内容是触发 timer 时刻的冻结快照。
+
+---
+
+### 3. 写入 → 上传完成 → 再次写入 + 并发 ls（旧版最易触发 conflict 的场景）
 
 ```bash
-echo "data" > ~/Qrypt/cancel.txt
-sleep 2
-rm ~/Qrypt/cancel.txt
+for j in $(seq 1 5); do
+  echo "v1_${j}" > ~/Qrypt/cycle_test.txt
+  sleep 6
+  for k in $(seq 1 10); do
+    echo "v2_${j}_${k}" > ~/Qrypt/cycle_test.txt
+    ls ~/Qrypt/ > /dev/null &
+    ls ~/Qrypt/cycle_test.txt > /dev/null &
+  done
+  wait
+  sleep 6
+done
+
+ls ~/Qrypt/*Conflict* ~/Qrypt/*\(1\)* 2>&1
+# 预期: "No matches found"
+grep -c resolveConflict ~/.qrypt/qrypt.log
+# 预期: 0
+```
+
+5 轮 × 10 次快速写入 + 并发 ls 触发 MergeRemoteChanges。
+验证无 `[Local Conflict]`、无 `name(1)`、无 `resolveConflict`。
+
+---
+
+### 4. 重命名链 — 连续三次重命名
+
+```bash
+echo "final" > ~/Qrypt/rename_chain.txt
+mv ~/Qrypt/rename_chain.txt ~/Qrypt/rc_a.txt
+mv ~/Qrypt/rc_a.txt ~/Qrypt/rc_b.txt
+mv ~/Qrypt/rc_b.txt ~/Qrypt/rc_c.txt
 sleep 8
-tail -5 ~/.qrypt/qrypt.log | grep "syncFile"
-# 预期: 没有 /cancel.txt 的 syncFile
-ls ~/Qrypt/cancel.txt 2>&1
+grep -c "syncFile: starting sync for /rc_c.txt" ~/.qrypt/qrypt.log
+# 预期: 1
+grep "syncFile: starting sync" ~/.qrypt/qrypt.log | grep rc_
+# 预期: 只有 /rc_c.txt 的 syncFile
+cat ~/Qrypt/rc_c.txt
+# 预期: "final"
+```
+
+---
+
+### 5. 写入 + 删除 — Timer 取消
+
+```bash
+echo "cancel_me" > ~/Qrypt/cancel_me.txt
+sleep 2
+rm ~/Qrypt/cancel_me.txt
+sleep 8
+grep -c "syncFile: starting sync for /cancel_me.txt" ~/.qrypt/qrypt.log
+# 预期: 0
+ls ~/Qrypt/cancel_me.txt 2>&1
 # 预期: "No such file"
 ```
 
-### 4. 写入 → 上传完成 → 再次写入（最可能触发冲突的场景）
-
-这是之前最容易出现 `[Local Conflict]` 和 `name(1)` 的场景:
-
-```bash
-for j in $(seq 1 3); do
-  echo "v1_${j}" > ~/Qrypt/worstcase.txt
-  sleep 6    # 等第一次上传完成
-  for k in $(seq 1 10); do
-    echo "v2_${j}_${k}" > ~/Qrypt/worstcase.txt
-    ls ~/Qrypt/ > /dev/null    # 触发 MergeRemoteChanges
-  done
-  sleep 6
-done
-```
-
-验证:
-
-```bash
-ls ~/Qrypt/*Conflict* ~/Qrypt/*\(1\)* 2>&1
-# 预期: "No matches found"（无冲突文件）
-
-tail -10 ~/.qrypt/qrypt.log | grep -E "syncFile|resolveConflict"
-# 预期: 只有 syncFile 行，没有 resolveConflict 行
-
-cat ~/Qrypt/worstcase.txt
-# 预期: "v2_3_10"（最后一次写入的内容）
-```
-
-### 5. 重命名链 — 连续三次重命名
-
-```bash
-echo "final" > ~/Qrypt/a.txt
-mv ~/Qrypt/a.txt ~/Qrypt/b.txt
-mv ~/Qrypt/b.txt ~/Qrypt/c.txt
-mv ~/Qrypt/c.txt ~/Qrypt/d.txt
-sleep 8
-tail -5 ~/.qrypt/qrypt.log | grep "syncFile"
-# 预期: only "syncFile: starting sync for /d.txt"
-cat ~/Qrypt/d.txt
-# 预期: "final"
-```
+---
 
 ### 6. 写入 + 目录重命名 — 子文件 timer 迁移
 
 ```bash
-mkdir ~/Qrypt/mydir
-echo "nested" > ~/Qrypt/mydir/f.txt
+mkdir -p ~/Qrypt/nested_dir
+echo "nested content" > ~/Qrypt/nested_dir/f.txt
 sleep 2
-mv ~/Qrypt/mydir ~/Qrypt/newdir
+mv ~/Qrypt/nested_dir ~/Qrypt/renamed_dir
 sleep 8
-tail -5 ~/.qrypt/qrypt.log | grep "syncFile"
-# 预期: "syncFile: starting sync for /newdir/f.txt"
-cat ~/Qrypt/newdir/f.txt
-# 预期: "nested"
+grep -c "syncFile: starting sync for /renamed_dir/f.txt" ~/.qrypt/qrypt.log
+# 预期: 1
+grep "syncFile: starting sync for /nested_dir/f.txt" ~/.qrypt/qrypt.log
+# 预期: 无输出
+cat ~/Qrypt/renamed_dir/f.txt
+# 预期: "nested content"
 ```
 
-### 7. 混合操作（高负载）
+---
+
+### 7. 多文件并发写入
+
+验证多个文件同时写入时各自独立触发 timer，互不干扰。
+
+```bash
+for i in $(seq 1 10); do
+  (
+    echo "concurrent_file_${i}" > ~/Qrypt/conc_${i}.txt
+  ) &
+done
+wait
+sleep 8
+for i in $(seq 1 10); do
+  grep -c "syncFile: starting sync for /conc_${i}.txt" ~/.qrypt/qrypt.log
+done
+# 预期: 每行 1
+for i in $(seq 1 10); do
+  cat ~/Qrypt/conc_${i}.txt
+done
+# 预期: "concurrent_file_${i}"
+```
+
+---
+
+### 8. 大文件分块上传
+
+```bash
+dd if=/dev/urandom of=/tmp/qrypt_large_test.bin bs=1M count=20 2>/dev/null
+cp /tmp/qrypt_large_test.bin ~/Qrypt/large.bin
+sleep 15
+grep -c "PostUpload.*large.bin" ~/.qrypt/qrypt.log
+# 预期: 1
+diff <(xxd ~/Qrypt/large.bin) <(xxd /tmp/qrypt_large_test.bin)
+# 预期: 无差异
+rm /tmp/qrypt_large_test.bin
+```
+
+---
+
+### 9. 极端操作竞态 — write / rename / delete / recreate 循环
+
+```bash
+for i in $(seq 1 20); do
+  echo "content_${i}" > ~/Qrypt/race_dir/race_file_${i}.txt 2>/dev/null || mkdir -p ~/Qrypt/race_dir && echo "content_${i}" > ~/Qrypt/race_dir/race_file_${i}.txt
+done
+sleep 1
+for i in $(seq 1 20); do
+  mv ~/Qrypt/race_dir/race_file_${i}.txt ~/Qrypt/race_dir/moved_${i}.txt 2>/dev/null
+done
+sleep 1
+for i in $(seq 1 20); do
+  rm ~/Qrypt/race_dir/moved_${i}.txt 2>/dev/null
+done
+sleep 1
+for i in $(seq 1 20); do
+  echo "recreated_${i}" > ~/Qrypt/race_dir/recreated_${i}.txt 2>/dev/null || mkdir -p ~/Qrypt/race_dir && echo "recreated_${i}" > ~/Qrypt/race_dir/recreated_${i}.txt
+done
+sleep 10
+ls ~/Qrypt/race_dir/ | wc -l
+# 预期: 20（recreated 文件）
+ls ~/Qrypt/*Conflict* 2>&1
+# 预期: "No matches found"
+rm -rf ~/Qrypt/race_dir
+```
+
+---
+
+### 10. 混合操作（高负载综合场景）
 
 ```bash
 echo "" > ~/.qrypt/qrypt.log
-for i in $(seq 1 5); do
-  echo "round${i}" > ~/Qrypt/stress.txt
+for i in $(seq 1 10); do
+  echo "round${i}" > ~/Qrypt/mixed_write.txt
   ls ~/Qrypt/ > /dev/null
-  mv ~/Qrypt/stress.txt ~/Qrypt/renamed.txt
+  mv ~/Qrypt/mixed_write.txt ~/Qrypt/mixed_renamed.txt 2>/dev/null
   ls ~/Qrypt/ > /dev/null
-  echo "round${i}_v2" > ~/Qrypt/renamed.txt
-  ls ~/Qrypt/ > /dev/null
+  echo "round${i}_v2" > ~/Qrypt/mixed_renamed.txt
+  ls ~/Qrypt/mixed_renamed.txt > /dev/null &
+  ls ~/Qrypt/ > /dev/null &
+  wait
 done
-sleep 12
-tail -10 ~/.qrypt/qrypt.log | grep -E "syncFile|resolveConflict"
-ls ~/Qrypt/*Conflict* ~/Qrypt/*\(1\)* 2>&1
+sleep 15
+grep -c "syncFile: starting sync" ~/.qrypt/qrypt.log
+# 预期: 1（所有操作被 timer 合并为一次上传）
+tail -5 ~/.qrypt/qrypt.log | grep "PostUpload"
+cat ~/Qrypt/mixed_renamed.txt
+# 预期: "round10_v2"
 ```
 
+---
+
+### 11. 挂载状态保持 — 长时间运行
+
+```bash
+for i in $(seq 1 60); do
+  echo "heartbeat_${i}" > ~/Qrypt/heartbeat.txt
+  ls ~/Qrypt/ > /dev/null
+  sleep 2
+done
+grep -c "syncFile: starting sync for /heartbeat.txt" ~/.qrypt/qrypt.log
+# 预期: ~12（60次写入 ÷ 5s timer ≈ 12次上传）
+grep -E "error|panic|shutdown" ~/.qrypt/qrypt.log
+# 预期: 无
+```
+
+---
+
+### 12. 内容一致性 — 随机写入模式
+
+模拟真实编辑器行为：多次局部写入 + 读取验证。
+
+```bash
+python3 -c "
+import os, time
+path = os.path.expanduser('~/Qrypt/random_write.txt')
+
+# 多轮写入，模拟编辑器
+blocks = [b'A'*100, b'B'*200, b'C'*300, b'D'*400, b'E'*500]
+with open(path, 'wb') as f:
+    f.write(b'initial_content')
+time.sleep(2)
+
+for i, block in enumerate(blocks):
+    with open(path, 'r+b') as f:
+        f.seek(0)
+        f.write(block)
+    time.sleep(0.5)
+
+time.sleep(10)
+
+with open(path, 'rb') as f:
+    content = f.read()
+assert content.startswith(b'E'*500), f'Content mismatch, got {len(content)} bytes'
+print('Content OK:', len(content), 'bytes')
+"
+```
+
+---
+
 ## 验证检查清单
+
+每次测试完成后使用以下清单确认：
 
 | 检查项 | 命令 | 预期 |
 |--------|------|------|
 | 无 `[Local Conflict]` 文件 | `ls ~/Qrypt/*Conflict*` | `No matches found` |
 | 无 `name(1)` 重复文件 | `ls ~/Qrypt/*\(1\)*` | `No matches found` |
 | 无 `resolveConflict` 日志 | `grep resolveConflict ~/.qrypt/qrypt.log` | 无输出 |
-| 无 `resource busy` | `grep "resource busy" /tmp/qrypt-mount.log` | 无输出（旧行为，新代码已去除） |
-| 上传成功 | `grep "PostUpload" ~/.qrypt/qrypt.log` | 有 `replacing fid index` 行 |
-| 内容正确 | `cat ~/Qrypt/<file>` | 最后一次写入的内容 |
+| 无 panic | `grep -i panic ~/.qrypt/qrypt.log` | 无输出 |
+| 无上传错误 | `grep "upload failed\|upload error" ~/.qrypt/qrypt.log` | 无输出 |
+| 上传成功计数 | `grep -c "PostUpload" ~/.qrypt/qrypt.log` | ≥ 预期次数 |
+| 内容正确 | `cat ~/Qrypt/test_file.txt` | 最后一次写入的内容 |
+| 无孤儿 snapshot 文件 | `ls ~/.qrypt/cache/quark/staging/*.snap 2>&1` | `No matches found` |
+
+## 一次性快速验证
+
+```bash
+echo "" > ~/.qrypt/qrypt.log
+echo "=== 1. Debounce ===" && for i in $(seq 1 10); do echo "w${i}" > ~/Qrypt/quick.txt; sleep 0.2; done && \
+echo "=== 2. Rename ===" && mv ~/Qrypt/quick.txt ~/Qrypt/quick_renamed.txt && \
+echo "=== 3. Delete ===" && rm -f ~/Qrypt/quick_renamed.txt && \
+echo "=== 4. Wait ===" && sleep 10 && \
+echo "=== Result ===" && grep "syncFile" ~/.qrypt/qrypt.log | grep -v "PostUpload" && \
+ls ~/Qrypt/*Conflict* ~/Qrypt/*\(1\)* 2>&1 || true && \
+echo "=== Clean ===" && echo "done"
+```
 
 ## 清理
 
 ```bash
-rm -f ~/Qrypt/race.txt ~/Qrypt/migrate.txt ~/Qrypt/migrated.txt ~/Qrypt/cancel.txt ~/Qrypt/worstcase.txt ~/Qrypt/a.txt ~/Qrypt/b.txt ~/Qrypt/c.txt ~/Qrypt/d.txt ~/Qrypt/stress.txt ~/Qrypt/renamed.txt
-rm -rf ~/Qrypt/mydir ~/Qrypt/newdir 2>/dev/null
+rm -f ~/Qrypt/*.txt ~/Qrypt/*.bin ~/Qrypt/*Conflict*
+rm -rf ~/Qrypt/race_dir 2>/dev/null
+rm -f ~/.qrypt/cache/quark/staging/*.snap 2>/dev/null
 ```
 
 ## 注意事项
 
-- `write_back_timeout` 在 `qrypt.toml` 中配置（默认 `5s`），测试中的 `sleep` 时间需对应调整
-- Quark API 可能有索引延迟（30s 窗口），新代码用 fid 直删避免依赖 List 目录
-- 测试在真实网盘环境下运行，会实际创建和删除文件，不要在重要目录下测试
-- 测试完成后确认 `ls ~/Qrypt/` 只含预期文件
+- `write_back_timeout` 在 `qrypt.toml` 中配置（默认 `5s`），测试中的 `sleep` 时间需对应调整（默认 5s 的 timer 需 sleep ≥ 6s）
+- 所有测试在真实网盘环境下运行，会实际创建和删除文件，不要在包含重要数据的目录下测试
+- 测试完成后确认 `ls ~/Qrypt/` 只含预期文件（通常是 `dist`）
+- 如果测试失败，先检查 `~/.qrypt/qrypt.log` 中的错误日志，再检查 `/tmp/qrypt-mount.log` 中的进程输出
