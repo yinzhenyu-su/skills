@@ -80,12 +80,18 @@ func (fs *QryptFS) replaceNodePath(oldPath, newPath string, n *Node) {
 
 	n.mu.Lock()
 	n.currentPath = newPath
+	isDirty := n.isDirty
 	if n.isFolder && n.children == nil {
 		n.children = make(map[string]*Node)
 	}
 	n.mu.Unlock()
 
 	fs.nodes.Store(newPath, n)
+
+	if isDirty && oldPath != newPath {
+		fs.cancelSyncTimer(oldPath)
+		fs.enqueueSyncDelay(n, fs.writeBackDelay)
+	}
 
 	if oldPath != newPath {
 		parentPath := filepath.Dir(newPath)
@@ -103,6 +109,7 @@ func (fs *QryptFS) replaceNodePath(oldPath, newPath string, n *Node) {
 
 func (fs *QryptFS) deleteNodePath(path string, n *Node) {
 	path = filepath.Clean(path)
+	fs.cancelSyncTimer(path)
 	log.L.Debugf("deleteNodePath: path=%s fid=%s isFolder=%v\n", path, n.fid, n.isFolder)
 	fs.nodes.Delete(path)
 

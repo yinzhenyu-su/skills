@@ -110,6 +110,15 @@ func (fs *QryptFS) enqueueSyncDelay(n *Node, delay time.Duration) {
 	}
 }
 
+func (fs *QryptFS) cancelSyncTimer(path string) {
+	fs.syncDelayMu.Lock()
+	if t, ok := fs.syncTimers[path]; ok {
+		t.Stop()
+		delete(fs.syncTimers, path)
+	}
+	fs.syncDelayMu.Unlock()
+}
+
 func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 	log.L.Infof("syncFile: starting sync for %s\n", path)
 
