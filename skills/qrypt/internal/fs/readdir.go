@@ -260,10 +260,16 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		if !strings.HasPrefix(fid, "local_") {
 			if rf.ID != fid {
 				if !isDirty {
-					n.mu.Lock()
-					n.fid = rf.ID
-					n.source = "remote"
-					n.mu.Unlock()
+					// Skip fid update if we recently uploaded — Quark API
+					// index may not have caught up yet (stale listing).
+					if !lastUpload.IsZero() && time.Since(lastUpload) < 30*time.Second {
+						// index delay — keep our current fid
+					} else {
+						n.mu.Lock()
+						n.fid = rf.ID
+						n.source = "remote"
+						n.mu.Unlock()
+					}
 				}
 			}
 
@@ -292,12 +298,12 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 						fs.cacheMgr.RemoveChunksByFid(fid)
 					}
 				} else {
+					if !n.lastUploadTime.IsZero() && time.Since(n.lastUploadTime) < 30*time.Second {
+						continue
+					}
 					fs.resolveConflict(entry.path, n, rf)
 				}
 			} else if isDirty {
-				// File has un-uploaded changes AND remote differs.
-				// Skip conflict if we recently uploaded — Quark API index
-				// may not have caught up yet (it shows the old fid).
 				if !n.lastUploadTime.IsZero() && time.Since(n.lastUploadTime) < 30*time.Second {
 					continue
 				}
