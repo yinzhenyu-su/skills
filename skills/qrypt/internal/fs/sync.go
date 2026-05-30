@@ -295,22 +295,16 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		}
 	}
 
-	if !strings.HasPrefix(fid, "local_") && !strings.HasPrefix(currentFid, "local_") {
+	if !strings.HasPrefix(fid, "local_") && !strings.HasPrefix(currentFid, "local_") &&
+		(lastUpload.IsZero() || time.Since(lastUpload) > 30*time.Second) {
 		rf, err := fs.fileExistsOnServerDetailed(currentFid, parentFid)
 		if err != nil {
 			return fmt.Errorf("pre-upload check failed: %v", err)
 		}
 		if rf == nil {
-			files, err := fs.drv.List(context.Background(), parentFid)
-			if err == nil {
-				for _, f := range files {
-					decName, _ := fs.cipher.DecryptSegment(f.Name)
-					if decName == snapshotName {
-						fs.resolveConflict(path, n, f)
-						return nil
-					}
-				}
-			}
+			// File not found in listing — likely Quark API index delay.
+			 // Don't resolve conflict; the fid-based delete + upload below
+			// will handle it.  Reset to local_ so upload proceeds.
 			fid = "local_" + n.name
 		}
 	}
