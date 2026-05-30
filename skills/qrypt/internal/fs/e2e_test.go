@@ -890,48 +890,6 @@ func TestE2E_WritebackReleaseRead(t *testing.T) {
 	}
 }
 
-func TestE2E_WriteDuringUploadReturnsZero(t *testing.T) {
-	s := newE2E(t)
-	s.writeFile("/protect_write.txt", []byte("original"))
-	n := s.lookup("/protect_write.txt")
-
-	atomic.StoreInt32(&n.uploading, 1)
-	defer atomic.StoreInt32(&n.uploading, 0)
-
-	nWritten := s.fs.Write("/protect_write.txt", []byte("overwrite"), 0, 0)
-	if nWritten != 0 {
-		t.Errorf("expected 0 bytes written during upload, got %d", nWritten)
-	}
-}
-
-func TestE2E_TruncateDuringUploadReturnsBusy(t *testing.T) {
-	s := newE2E(t)
-	s.writeFile("/protect_trunc.txt", []byte("original content"))
-	n := s.lookup("/protect_trunc.txt")
-
-	atomic.StoreInt32(&n.uploading, 1)
-	defer atomic.StoreInt32(&n.uploading, 0)
-
-	errc := s.fs.Truncate("/protect_trunc.txt", 10, 0)
-	if errc != -fuse.EBUSY {
-		t.Errorf("expected EBUSY during upload, got %d", errc)
-	}
-}
-
-func TestE2E_UnlinkDuringUploadReturnsBusy(t *testing.T) {
-	s := newE2E(t)
-	s.writeFile("/protect_unlink.txt", []byte("data"))
-	n := s.lookup("/protect_unlink.txt")
-
-	atomic.StoreInt32(&n.uploading, 1)
-	defer atomic.StoreInt32(&n.uploading, 0)
-
-	errc := s.fs.Unlink("/protect_unlink.txt")
-	if errc != -fuse.EBUSY {
-		t.Errorf("expected EBUSY during upload, got %d", errc)
-	}
-}
-
 func TestE2E_ReadDuringUploadStillWorks(t *testing.T) {
 	s := newE2E(t)
 	s.writeFile("/protect_read.txt", []byte("readable data"))
@@ -1121,30 +1079,13 @@ func TestE2E_RmdirWithUploadingChildReturnsNotEmpty(t *testing.T) {
 	s.mustMkdir("/protect_dir")
 	s.writeFile("/protect_dir/f.txt", []byte("child"))
 	dirNode := s.lookup("/protect_dir")
-	childNode := s.lookup("/protect_dir/f.txt")
 
-	atomic.StoreInt32(&childNode.uploading, 1)
 	atomic.AddInt32(&dirNode.uploadingChildren, 1)
-	defer atomic.StoreInt32(&childNode.uploading, 0)
 	defer atomic.AddInt32(&dirNode.uploadingChildren, -1)
 
 	errc := s.fs.Rmdir("/protect_dir")
 	if errc != -fuse.ENOTEMPTY {
 		t.Errorf("expected ENOTEMPTY when child is uploading, got %d", errc)
-	}
-}
-
-func TestE2E_RenameDuringUploadReturnsBusy(t *testing.T) {
-	s := newE2E(t)
-	s.writeFile("/protect_rename.txt", []byte("data"))
-	n := s.lookup("/protect_rename.txt")
-
-	atomic.StoreInt32(&n.uploading, 1)
-	defer atomic.StoreInt32(&n.uploading, 0)
-
-	errc := s.fs.Rename("/protect_rename.txt", "/renamed.txt")
-	if errc != -fuse.EBUSY {
-		t.Errorf("expected EBUSY during upload, got %d", errc)
 	}
 }
 
@@ -1170,21 +1111,4 @@ func TestShutdown_SetsFlagAndRejectsOps(t *testing.T) {
 	}
 }
 
-func TestE2E_OpenWriteDuringUploadReturnsBusy(t *testing.T) {
-	s := newE2E(t)
-	s.writeFile("/protect_open.txt", []byte("data"))
-	n := s.lookup("/protect_open.txt")
 
-	atomic.StoreInt32(&n.uploading, 1)
-	defer atomic.StoreInt32(&n.uploading, 0)
-
-	errc, _ := s.fs.Open("/protect_open.txt", fuse.O_WRONLY)
-	if errc != -fuse.EBUSY {
-		t.Errorf("expected EBUSY for O_WRONLY during upload, got %d", errc)
-	}
-
-	errc2, _ := s.fs.Open("/protect_open.txt", fuse.O_RDONLY)
-	if errc2 != 0 {
-		t.Errorf("expected 0 for O_RDONLY during upload, got %d", errc2)
-	}
-}

@@ -32,10 +32,6 @@ func (fs *QryptFS) Unlink(path string) (errc int) {
 		return -fuse.EISDIR
 	}
 
-	if atomic.LoadInt32(&n.uploading) == 1 {
-		return -fuse.EBUSY
-	}
-
 	n.mu.Lock()
 	fid := n.fid
 	parentFid := n.parentFid
