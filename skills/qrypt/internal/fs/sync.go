@@ -95,7 +95,11 @@ func (fs *QryptFS) enqueueSyncDelay(n *Node, delay time.Duration) {
 			if fs.IsShuttingDown() {
 				return
 			}
-			fs.enqueueNode(n)
+			// Look up current node by path — the node may have been
+			// recreated by MergeRemoteChanges since the timer was set.
+			if node, _ := fs.nodes.Load(path); node != nil {
+				fs.enqueueNode(node.(*Node))
+			}
 		})
 		fs.syncDelayMu.Unlock()
 	} else {
