@@ -3,6 +3,7 @@ package fs
 import (
 	"bytes"
 	"math/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,6 +23,10 @@ type e2eSuite struct {
 }
 
 func newE2E(t *testing.T) *e2eSuite {
+	return newE2EWithOpts(t, FSOptions{MaxRetries: 3, ConcurrentUploads: 3})
+}
+
+func newE2EWithOpts(t *testing.T, opts FSOptions) *e2eSuite {
 	t.Helper()
 	logger, _ := log.New("off", "", nil)
 	log.L = logger
@@ -36,13 +41,56 @@ func newE2E(t *testing.T) *e2eSuite {
 	cph, _ := crypt.NewRcloneCipher("e2etest", "")
 
 	drv := quarkmock.NewDriver()
-	fs := NewFS(drv, cph, cm, "0", FSOptions{MaxRetries: 3, ConcurrentUploads: 3})
+	fs := NewFS(drv, cph, cm, "0", opts)
 	fs.memCache = memCache
 
 	fs.storeNode("/", &Node{
 		fid: "0", name: "", currentPath: "/", isFolder: true, source: "remote",
 	})
 	return &e2eSuite{t: t, fs: fs}
+}
+
+func (s *e2eSuite) hasTimer(path string) bool {
+	s.fs.syncDelayMu.Lock()
+	defer s.fs.syncDelayMu.Unlock()
+	_, ok := s.fs.syncTimers[path]
+	return ok
+}
+
+func (s *e2eSuite) timerCount() int {
+	s.fs.syncDelayMu.Lock()
+	defer s.fs.syncDelayMu.Unlock()
+	return len(s.fs.syncTimers)
+}
+
+func (s *e2eSuite) waitForTimer(path string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !s.hasTimer(path) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.t.Fatalf("timer for %s did not fire within %v", path, timeout)
+}
+
+func (s *e2eSuite) waitForUpload(path string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		n, errc := s.fs.lookup(path)
+		if errc != 0 {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		n.mu.RLock()
+		fid := n.fid
+		n.mu.RUnlock()
+		if !strings.HasPrefix(fid, "local_") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.t.Fatalf("upload not completed within %v for %s", timeout, path)
 }
 
 func (s *e2eSuite) lookup(path string) *Node {
@@ -886,15 +934,185 @@ func TestE2E_UnlinkDuringUploadReturnsBusy(t *testing.T) {
 
 func TestE2E_ReadDuringUploadStillWorks(t *testing.T) {
 	s := newE2E(t)
-	s.writeFile("/protect_read.txt", []byte("readable content"))
-	n := s.lookup("/protect_read.txt")
+	s.writeFile("/protect_read.txt", []byte("readable data"))
 
-	atomic.StoreInt32(&n.uploading, 1)
-	defer atomic.StoreInt32(&n.uploading, 0)
+	s.fs.syncDelayMu.Lock()
+	for path, tmr := range s.fs.syncTimers {
+		tmr.Stop()
+		delete(s.fs.syncTimers, path)
+	}
+	s.fs.syncDelayMu.Unlock()
 
-	got := s.mustRead("/protect_read.txt", 20, 0)
-	if string(got) != "readable content" {
-		t.Errorf("expected 'readable content', got %q", string(got))
+	got := s.mustRead("/protect_read.txt", 100, 0)
+	if string(got) != "readable data" {
+		t.Errorf("got %q, want %q", string(got), "readable data")
+	}
+}
+
+func TestE2E_SyncTimerMigrateOnRename(t *testing.T) {
+	s := newE2EWithOpts(t, FSOptions{
+		MaxRetries: 3, ConcurrentUploads: 3,
+		WriteBackTimeout: 100 * time.Millisecond,
+	})
+
+	s.writeFile("/old.txt", []byte("rename me"))
+
+	if !s.hasTimer("/old.txt") {
+		t.Fatal("timer should exist after write")
+	}
+
+	errc := s.fs.Rename("/old.txt", "/new.txt")
+	if errc != 0 {
+		t.Fatalf("Rename: errc=%d", errc)
+	}
+
+	if s.hasTimer("/old.txt") {
+		t.Error("old path timer should be removed after rename")
+	}
+	if !s.hasTimer("/new.txt") {
+		t.Error("new path timer should be created after rename")
+	}
+
+	s.waitForTimer("/new.txt", 2*time.Second)
+	s.waitForUpload("/new.txt", 2*time.Second)
+
+	got := s.mustRead("/new.txt", 20, 0)
+	if string(got) != "rename me" {
+		t.Errorf("content after rename: got %q, want %q", string(got), "rename me")
+	}
+}
+
+func TestE2E_SyncTimerCancelOnUnlink(t *testing.T) {
+	s := newE2EWithOpts(t, FSOptions{
+		MaxRetries: 3, ConcurrentUploads: 3,
+		WriteBackTimeout: 100 * time.Millisecond,
+	})
+
+	s.writeFile("/cancel.txt", []byte("to be deleted"))
+
+	if !s.hasTimer("/cancel.txt") {
+		t.Fatal("timer should exist after write")
+	}
+
+	s.mustUnlink("/cancel.txt")
+
+	if s.hasTimer("/cancel.txt") {
+		t.Error("timer should be cancelled after unlink")
+	}
+}
+
+func TestE2E_SyncTimerRenameThenDelete(t *testing.T) {
+	s := newE2EWithOpts(t, FSOptions{
+		MaxRetries: 3, ConcurrentUploads: 3,
+		WriteBackTimeout: 100 * time.Millisecond,
+	})
+
+	s.writeFile("/stage.txt", []byte("data"))
+
+	s.fs.Rename("/stage.txt", "/stage2.txt")
+
+	if !s.hasTimer("/stage2.txt") {
+		t.Fatal("timer should move to /stage2.txt after rename")
+	}
+
+	s.mustUnlink("/stage2.txt")
+
+	if s.hasTimer("/stage2.txt") {
+		t.Error("timer should be cancelled after unlink")
+	}
+}
+
+func TestE2E_SyncTimerRenameDirChildren(t *testing.T) {
+	s := newE2EWithOpts(t, FSOptions{
+		MaxRetries: 3, ConcurrentUploads: 3,
+		WriteBackTimeout: 100 * time.Millisecond,
+	})
+
+	s.mustMkdir("/mydir")
+	s.writeFile("/mydir/f.txt", []byte("nested data"))
+
+	if !s.hasTimer("/mydir/f.txt") {
+		t.Fatal("timer should exist for child after write")
+	}
+
+	errc := s.fs.Rename("/mydir", "/newdir")
+	if errc != 0 {
+		t.Fatalf("Rename dir: errc=%d", errc)
+	}
+
+	if s.hasTimer("/mydir/f.txt") {
+		t.Error("old child path timer should be removed after dir rename")
+	}
+	if !s.hasTimer("/newdir/f.txt") {
+		t.Error("new child path timer should exist after dir rename")
+	}
+
+	s.waitForTimer("/newdir/f.txt", 2*time.Second)
+	s.waitForUpload("/newdir/f.txt", 2*time.Second)
+
+	got := s.mustRead("/newdir/f.txt", 20, 0)
+	if string(got) != "nested data" {
+		t.Errorf("content after dir rename: got %q, want %q", string(got), "nested data")
+	}
+}
+
+func TestE2E_SyncTimerRenameThenWriteDedup(t *testing.T) {
+	s := newE2EWithOpts(t, FSOptions{
+		MaxRetries: 3, ConcurrentUploads: 3,
+		WriteBackTimeout: 100 * time.Millisecond,
+	})
+
+	s.writeFile("/v1.txt", []byte("version1"))
+	s.fs.Rename("/v1.txt", "/v2.txt")
+
+	if cnt := s.timerCount(); cnt != 1 {
+		t.Fatalf("expected 1 timer after rename, got %d", cnt)
+	}
+
+	s.mustWrite("/v2.txt", []byte("version2"), 0)
+	s.fs.Release("/v2.txt", 0)
+
+	if cnt := s.timerCount(); cnt != 1 {
+		t.Fatalf("expected 1 timer after write, got %d", cnt)
+	}
+	if !s.hasTimer("/v2.txt") {
+		t.Error("timer should be at /v2.txt")
+	}
+
+	s.waitForTimer("/v2.txt", 2*time.Second)
+	s.waitForUpload("/v2.txt", 2*time.Second)
+
+	got := s.mustRead("/v2.txt", 20, 0)
+	if string(got) != "version2" {
+		t.Errorf("got %q, want %q", string(got), "version2")
+	}
+}
+
+func TestE2E_SyncTimerMultipleRenames(t *testing.T) {
+	s := newE2EWithOpts(t, FSOptions{
+		MaxRetries: 3, ConcurrentUploads: 3,
+		WriteBackTimeout: 100 * time.Millisecond,
+	})
+
+	s.writeFile("/a.txt", []byte("final"))
+
+	s.fs.Rename("/a.txt", "/b.txt")
+	s.fs.Rename("/b.txt", "/c.txt")
+	s.fs.Rename("/c.txt", "/d.txt")
+
+	if cnt := s.timerCount(); cnt != 1 {
+		t.Fatalf("expected 1 timer after triple rename, got %d", cnt)
+	}
+	if !s.hasTimer("/d.txt") {
+		t.Error("timer should be at final path /d.txt")
+	}
+
+	s.waitForTimer("/d.txt", 2*time.Second)
+	s.waitForUpload("/d.txt", 2*time.Second)
+
+	got := s.mustRead("/d.txt", 20, 0)
+	if string(got) != "final" {
+		t.Errorf("got %q, want %q", string(got), "final")
 	}
 }
 
