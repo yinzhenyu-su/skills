@@ -269,7 +269,8 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 	// │ time), producing false positives with clock skew. The two    │
 	// │ fid-based checks above catch every legitimate conflict.      │
 	// └──────────────────────────────────────────────────────────────┘
-	if !strings.HasPrefix(fid, "local_") && !strings.HasPrefix(currentFid, "local_") {
+	if !strings.HasPrefix(fid, "local_") && !strings.HasPrefix(currentFid, "local_") &&
+		(lastUpload.IsZero() || time.Since(lastUpload) > 30*time.Second) {
 		files, listErr := fs.drv.List(context.Background(), parentFid)
 		if listErr == nil {
 			for _, f := range files {
