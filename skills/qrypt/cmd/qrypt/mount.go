@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -88,40 +89,36 @@ func runMount(cmd *cobra.Command, args []string) {
 	configPath, _ := cmd.Flags().GetString("config")
 	logLevel, _ := cmd.Flags().GetString("log-level")
 
-	// Load config
+	// Load config (capture errors instead of os.Exit)
 	cfgPath := configPath
 	if cfgPath == "" {
 		cfgPath = config.FindConfigFile()
 	}
 
 	var (
-		cfg       *config.Config
-		usedPath  string
-		loadErr   error
-		validRes  *config.ValidationResult
+		cfg          *config.Config
+		usedPath     string
+		startupErrs  []string
 	)
 
+	cfg = config.DefaultConfig()
 	if cfgPath != "" {
 		usedPath = cfgPath
-		cfg, validRes, loadErr = config.LoadConfig(usedPath)
-		if loadErr != nil {
-			fmt.Fprintf(os.Stderr, "错误: 加载配置文件失败: %v\n", loadErr)
-			os.Exit(1)
-		}
-		if validRes != nil && !validRes.Valid {
+		if loadedCfg, validRes, loadErr := config.LoadConfig(usedPath); loadErr != nil {
+			startupErrs = append(startupErrs, fmt.Sprintf("加载配置文件失败: %v", loadErr))
+		} else if validRes != nil && !validRes.Valid {
+			var msgs []string
 			for _, c := range validRes.Checks {
 				if c.Status == "error" {
-					fmt.Fprintf(os.Stderr, "  [%s] %s\n", c.Field, c.Message)
+					msgs = append(msgs, fmt.Sprintf("[%s] %s", c.Field, c.Message))
 				}
 			}
-			os.Exit(1)
+			startupErrs = append(startupErrs, "配置文件校验失败:\n"+strings.Join(msgs, "\n"))
+		} else {
+			cfg = loadedCfg
 		}
-	} else {
-		if daemonMode {
-			fmt.Fprintf(os.Stderr, "错误: 未找到配置文件。请使用 --config 指定或创建 qrypt.toml\n")
-			os.Exit(1)
-		}
-		cfg = config.DefaultConfig()
+	} else if daemonMode {
+		startupErrs = append(startupErrs, "未找到配置文件。请使用 --config 指定或创建 qrypt.toml")
 	}
 
 	// Override log level from flag
@@ -129,7 +126,7 @@ func runMount(cmd *cobra.Command, args []string) {
 		cfg.Log.Level = logLevel
 	}
 
-	// Init logger
+	// Init logger (fallback on failure)
 	rotateCfg := log.DefaultRotateConfig
 	if cfg.Log.MaxSize > 0 {
 		rotateCfg.MaxSize = cfg.Log.MaxSize
@@ -145,32 +142,45 @@ func runMount(cmd *cobra.Command, args []string) {
 	}
 	logger, err := log.New(cfg.Log.Level, cfg.Log.File, &rotateCfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "日志初始化失败: %v\n", err)
-		os.Exit(1)
+		startupErrs = append(startupErrs, fmt.Sprintf("日志初始化失败: %v", err))
+	} else {
+		log.L = logger
+		defer logger.Close()
 	}
-	log.L = logger
-	defer logger.Close()
 
 	log.L.Infof("qrypt mount v%s starting...\n", version)
 
 	// Create daemon with all components
 	d := daemon.NewDaemonWithPath(cfg, usedPath, version)
 
-	// Create and start WS server
+	// Store startup errors in daemon so they can be served via WS
+	if len(startupErrs) > 0 {
+		d.SetStartupError(strings.Join(startupErrs, "; "))
+	}
+
+	// Start WS server early, before any fatal error, so client can query startup status
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	srv := daemon.NewWSServer(d, socketPath)
 	if daemonMode {
 		srv.SetHeadless(true)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	if err := srv.Start(ctx); err != nil {
-		log.L.Errorf("启动服务器失败: %v\n", err)
 		fmt.Fprintf(os.Stderr, "错误: 启动服务器失败: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("daemon 正在监听 %s\n", socketPath)
+
+	// If startup failed, keep WS alive briefly for client to read error via RPC, then exit
+	if len(startupErrs) > 0 {
+		for _, e := range startupErrs {
+			fmt.Fprintln(os.Stderr, e)
+		}
+		time.Sleep(5 * time.Second)
+		return
+	}
 
 	// Start mounts (unless --daemon headless mode)
 	if !daemonMode {

@@ -39,7 +39,7 @@ func NewDaemon(cfg *config.Config, version string) *Daemon {
 	sm := NewSessionManager()
 	em := NewEventManager()
 	ph := NewProgressHub(em)
-	mm := NewMountManager(cfg, sm)
+	mm := NewMountManager(cfg, sm, em)
 	orch := NewOrchestrator(3, NewRateLimiter(0), ph)
 	mm.SetOrchestrator(orch)
 	d := &Daemon{
@@ -59,7 +59,7 @@ func NewDaemonWithPath(cfg *config.Config, cfgPath, version string) *Daemon {
 	sm := NewSessionManager()
 	em := NewEventManager()
 	ph := NewProgressHub(em)
-	mm := NewMountManager(cfg, sm)
+	mm := NewMountManager(cfg, sm, em)
 	orch := NewOrchestrator(3, NewRateLimiter(0), ph)
 	mm.SetOrchestrator(orch)
 	d := &Daemon{
@@ -104,6 +104,14 @@ func deriveState(mounts []MountSummary) protocol.MountState {
 	default:
 		return protocol.MountStateUnmounted
 	}
+}
+
+// SetStartupError records a startup error in the daemon and marks it as errored.
+func (d *Daemon) SetStartupError(errMsg string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.mountState = protocol.MountStateError
+	d.lastError = errMsg
 }
 
 func (d *Daemon) Status() (*protocol.DaemonStatus, error) {
