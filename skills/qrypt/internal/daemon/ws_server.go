@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,8 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 	"nhooyr.io/websocket"
 )
+
+const wsPingInterval = 15 * time.Second
 
 // unmarshalParams re-marshals interface{} params and unmarshals into a typed target.
 func unmarshalParams(params interface{}, target interface{}) error {
@@ -158,6 +161,24 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	subID := fmt.Sprintf("ws_%d", s.reqID.Add(1))
+
+	// Heartbeat: periodic ping to detect dead clients
+	pingCtx, pingCancel := context.WithCancel(ctx)
+	defer pingCancel()
+	go func() {
+		ticker := time.NewTicker(wsPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.Ping(pingCtx); err != nil {
+					return
+				}
+			case <-pingCtx.Done():
+				return
+			}
+		}
+	}()
 
 	for {
 		msgType, data, err := conn.Read(ctx)
@@ -421,16 +442,16 @@ func (s *WSServer) dispatch(ctx context.Context, req *protocol.Request) *protoco
 		if req.Params != nil {
 			unmarshalParams(req.Params, &p)
 		}
-		err := s.daemon.Start(ctx, p.Name)
-		return s.handleAction(id, err, "started")
+		go s.daemon.Start(ctx, p.Name)
+		return protocol.NewResult(id, map[string]string{"status": "accepted"})
 
 	case "stop":
 		var p struct{ Name string `json:"name,omitempty"` }
 		if req.Params != nil {
 			unmarshalParams(req.Params, &p)
 		}
-		err := s.daemon.Stop(ctx, p.Name)
-		return s.handleAction(id, err, "stopped")
+		go s.daemon.Stop(ctx, p.Name)
+		return protocol.NewResult(id, map[string]string{"status": "accepted"})
 
 	case "mount_list":
 		return protocol.NewResult(id, s.daemon.manager.List())
@@ -616,7 +637,38 @@ func (s *WSServer) dispatch(ctx context.Context, req *protocol.Request) *protoco
 
 func (s *WSServer) handleAction(id int64, err error, okMsg string) *protocol.Response {
 	if err != nil {
-		return protocol.NewError(id, protocol.ErrCodeInternal, err.Error())
+		code := deriveErrorCode(err)
+		return protocol.NewError(id, code, err.Error())
 	}
 	return protocol.NewResult(id, map[string]string{"status": okMsg})
+}
+
+// deriveErrorCode maps common error patterns to specific protocol error codes.
+func deriveErrorCode(err error) int {
+	msg := err.Error()
+	switch {
+	case containsAny(msg, "config", "配置"):
+		return protocol.ErrCodeConfig
+	case containsAny(msg, "mount", "挂载", "not found in config", "already running", "not running"):
+		return protocol.ErrCodeMount
+	case containsAny(msg, "sync", "upload", "下载"):
+		return protocol.ErrCodeSync
+	case containsAny(msg, "cache"):
+		return protocol.ErrCodeCache
+	case containsAny(msg, "busy", "pending"):
+		return protocol.ErrCodeBusy
+	case containsAny(msg, "invalid", "参数"):
+		return protocol.ErrCodeInvalidReq
+	default:
+		return protocol.ErrCodeInternal
+	}
+}
+
+func containsAny(s string, substrs ...string) bool {
+	for _, sub := range substrs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }

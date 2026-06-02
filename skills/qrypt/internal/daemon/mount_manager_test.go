@@ -7,8 +7,12 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
 
+func newTestMountManager(cfg *config.Config) *MountManager {
+	return NewMountManager(cfg, NewSessionManager(), NewEventManager())
+}
+
 func TestMountManagerListEmpty(t *testing.T) {
-	mm := NewMountManager(&config.Config{}, nil)
+	mm := newTestMountManager(&config.Config{})
 	list := mm.List()
 	if len(list) != 0 {
 		t.Errorf("expected empty list, got %d", len(list))
@@ -38,7 +42,7 @@ func TestMountManagerList(t *testing.T) {
 			},
 		},
 	}
-	mm := NewMountManager(cfg, nil)
+	mm := 	newTestMountManager(cfg)
 	list := mm.List()
 	if len(list) != 2 {
 		t.Fatalf("expected 2 mounts, got %d", len(list))
@@ -69,7 +73,7 @@ func TestMountManagerResolvedConfig(t *testing.T) {
 			},
 		},
 	}
-	mm := NewMountManager(cfg, nil)
+	mm := 	newTestMountManager(cfg)
 	rc, ok := mm.ResolvedConfig("test")
 	if !ok {
 		t.Fatal("expected resolved config to be found")
@@ -83,7 +87,7 @@ func TestMountManagerResolvedConfig(t *testing.T) {
 }
 
 func TestMountManagerGetNotFound(t *testing.T) {
-	mm := NewMountManager(&config.Config{}, nil)
+	mm := newTestMountManager(&config.Config{})
 	_, err := mm.Get("nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent mount")
@@ -107,7 +111,7 @@ func TestMountManagerLookupByPath(t *testing.T) {
 			},
 		},
 	}
-	mm := NewMountManager(cfg, nil)
+	mm := 	newTestMountManager(cfg)
 
 	// Mounts aren't started, so LookupByPath returns error
 	// But we can verify config lookup by checking ResolvedConfig
@@ -140,7 +144,7 @@ func TestMountManagerListWithDefaults(t *testing.T) {
 			},
 		},
 	}
-	mm := NewMountManager(cfg, nil)
+	mm := 	newTestMountManager(cfg)
 	list := mm.List()
 	if len(list) != 1 {
 		t.Fatalf("expected 1 mount, got %d", len(list))
@@ -167,7 +171,7 @@ func TestMountManagerStartStopFailsWithoutAuth(t *testing.T) {
 			},
 		},
 	}
-	mm := NewMountManager(cfg, nil)
+	mm := 	newTestMountManager(cfg)
 
 	// Start will fail because cookie is not valid, but the error handling
 	// should work — mount should be in error state, not crash

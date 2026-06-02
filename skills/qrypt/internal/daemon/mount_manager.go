@@ -16,6 +16,25 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
+func (mm *MountManager) publishMountEvent(name string, state protocol.MountState, errMsg string) {
+	if mm.eventMgr == nil {
+		return
+	}
+	data := map[string]interface{}{
+		"mount":  name,
+		"state":  state,
+	}
+	if errMsg != "" {
+		data["error"] = errMsg
+	}
+	mm.eventMgr.Publish(&protocol.Event{
+		Type:      protocol.EventMountStateChanged,
+		Mount:     name,
+		Timestamp: time.Now().UnixMilli(),
+		Data:      data,
+	})
+}
+
 // PendingUploads returns the number of files not yet uploaded for this mount.
 func (inst *MountInstance) PendingUploads() int {
 	if inst.Cache == nil {
@@ -36,6 +55,7 @@ type MountManager struct {
 	sessionMgr   *SessionManager
 	mounts       map[string]*MountInstance
 	orchestrator *Orchestrator
+	eventMgr     *EventManager
 }
 
 // SetOrchestrator attaches a shared upload queue to all future mounts.
@@ -58,7 +78,7 @@ type MountInstance struct {
 	LastError   string
 }
 
-func NewMountManager(cfg *config.Config, sm *SessionManager) *MountManager {
+func NewMountManager(cfg *config.Config, sm *SessionManager, em *EventManager) *MountManager {
 	if sm == nil {
 		sm = NewSessionManager()
 	}
@@ -66,6 +86,7 @@ func NewMountManager(cfg *config.Config, sm *SessionManager) *MountManager {
 		cfg:        cfg,
 		sessionMgr: sm,
 		mounts:     make(map[string]*MountInstance),
+		eventMgr:   em,
 	}
 }
 
@@ -174,11 +195,14 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 		StartedAt:   time.Now(),
 	}
 
+	mm.publishMountEvent(name, protocol.MountStateMounting, "")
+
 	cipher, err := config.MakeCipher(rc.Encryption, mm.cfg.Defaults.Encryption, "", "")
 	if err != nil {
 		inst.State = protocol.MountStateError
 		inst.LastError = err.Error()
 		mm.mounts[name] = inst
+		mm.publishMountEvent(name, protocol.MountStateError, err.Error())
 		return fmt.Errorf("mount %q cipher init: %w", name, err)
 	}
 	inst.Cipher = cipher
@@ -190,6 +214,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 		inst.State = protocol.MountStateError
 		inst.LastError = err.Error()
 		mm.mounts[name] = inst
+		mm.publishMountEvent(name, protocol.MountStateError, err.Error())
 		return fmt.Errorf("mount %q session: %w", name, err)
 	}
 	inst.Driver = s.Drv
@@ -207,6 +232,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 		inst.State = protocol.MountStateError
 		inst.LastError = err.Error()
 		mm.mounts[name] = inst
+		mm.publishMountEvent(name, protocol.MountStateError, err.Error())
 		return fmt.Errorf("mount %q cache init: %w", name, err)
 	}
 	inst.Cache = cacheMgr
@@ -216,6 +242,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 		inst.State = protocol.MountStateError
 		inst.LastError = err.Error()
 		mm.mounts[name] = inst
+		mm.publishMountEvent(name, protocol.MountStateError, err.Error())
 		return fmt.Errorf("mount %q fuse: %w", name, err)
 	}
 	inst.Backend = backend
@@ -229,6 +256,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 
 	inst.State = protocol.MountStateMounted
 	mm.mounts[name] = inst
+	mm.publishMountEvent(name, protocol.MountStateMounted, "")
 	log.L.Infof("MountManager: mounted %q at %s\n", name, rc.MountPoint)
 	return nil
 }
@@ -244,6 +272,7 @@ func (mm *MountManager) Stop(ctx context.Context, name string) error {
 	}
 
 	inst.State = protocol.MountStateUnmounting
+	mm.publishMountEvent(name, protocol.MountStateUnmounting, "")
 	log.L.Infof("MountManager: stopping %q\n", name)
 
 	if inst.Backend != nil {
@@ -262,6 +291,7 @@ func (mm *MountManager) Stop(ctx context.Context, name string) error {
 	inst.State = protocol.MountStateUnmounted
 	inst.StartedAt = time.Time{}
 	delete(mm.mounts, name)
+	mm.publishMountEvent(name, protocol.MountStateUnmounted, "")
 	log.L.Infof("MountManager: stopped %q\n", name)
 	return nil
 }
@@ -307,6 +337,7 @@ func (mm *MountManager) Reload(ctx context.Context, newCfg *config.Config) (*pro
 	for name := range mm.mounts {
 		inst := mm.mounts[name]
 		inst.State = protocol.MountStateUnmounting
+		mm.publishMountEvent(name, protocol.MountStateUnmounting, "")
 		if inst.Backend != nil {
 			inst.Backend.unmount()
 		}
@@ -317,6 +348,7 @@ func (mm *MountManager) Reload(ctx context.Context, newCfg *config.Config) (*pro
 			mm.sessionMgr.Release(ctx, inst.sessionKey)
 		}
 		inst.State = protocol.MountStateUnmounted
+		mm.publishMountEvent(name, protocol.MountStateUnmounted, "")
 		log.L.Infof("MountManager: stopped %q for reload\n", name)
 	}
 
