@@ -24,6 +24,12 @@ type CacheInvalidatable interface {
 	InvalidateDirCache(path string)
 }
 
+// RemoteRenamer allows the daemon to update the VFS node tree after
+// a successful remote rename/move performed via the CLI path (qrypt mv).
+type RemoteRenamer interface {
+	OnRemoteRename(oldPath, newPath string)
+}
+
 // newMountBackend returns the appropriate backend for the current build.
 // The implementation is chosen via build tags in mount_fuse.go / mount_nofuse.go.
 func newMountBackend() mountBackend {

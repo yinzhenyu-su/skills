@@ -1037,6 +1037,16 @@ func (d *Daemon) Move(ctx context.Context, params protocol.MoveParams) (*protoco
 	if err != nil {
 		return nil, err
 	}
+
+	// Update the FUSE node tree so the mounted filesystem reflects the change
+	// immediately, rather than waiting for MetadataTTL expiry.
+	name := d.resolveMountName(params.MountName)
+	if inst, err := d.manager.Get(name); err == nil {
+		if r, ok := inst.Backend.VFS().(RemoteRenamer); ok {
+			r.OnRemoteRename(params.SrcPath, params.DstPath)
+		}
+	}
+
 	return &result, nil
 }
 

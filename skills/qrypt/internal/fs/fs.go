@@ -5,6 +5,7 @@ package fs
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -214,6 +215,75 @@ func (fs *QryptFS) InvalidateDirCache(path string) {
 		}
 		fs.nodes.Delete(path)
 		log.L.Debugf("Invalidated cache for %s\n", path)
+	}
+}
+
+// OnRemoteRename is called by the daemon after a successful remote rename/move
+// via the CLI path (qrypt mv). It updates the in-memory node tree and migrates
+// pending dirty-file state so subsequent FUSE lookups remain coherent.
+func (fs *QryptFS) OnRemoteRename(oldPath, newPath string) {
+	if oldPath == "" || newPath == "" || oldPath == newPath {
+		return
+	}
+
+	v, ok := fs.nodes.Load(oldPath)
+	if !ok {
+		return
+	}
+	n := v.(*Node)
+
+	fs.recursiveRename(oldPath, newPath, n)
+	fs.persistRecursivePending(oldPath, newPath, n)
+
+	oldParent := filepath.Dir(oldPath)
+	newParent := filepath.Dir(newPath)
+	fs.InvalidateDirCache(oldParent)
+	if oldParent != newParent {
+		fs.InvalidateDirCache(newParent)
+	}
+}
+
+func (fs *QryptFS) persistRecursivePending(oldPath, newPath string, n *Node) {
+	if fs.cacheMgr == nil {
+		return
+	}
+
+	n.mu.RLock()
+	localPath := n.localPath
+	isDirty := n.isDirty
+	isFolder := n.isFolder
+	n.mu.RUnlock()
+
+	if isDirty && !isFolder && localPath != "" {
+		fs.persistPendingPath(oldPath, newPath, n)
+	}
+
+	if !isFolder {
+		return
+	}
+
+	n.mu.RLock()
+	type entry struct {
+		name  string
+		child *Node
+	}
+	var children []entry
+	for name, child := range n.children {
+		children = append(children, entry{name, child})
+	}
+	n.mu.RUnlock()
+
+	prefixOld := oldPath
+	if !strings.HasSuffix(prefixOld, "/") {
+		prefixOld += "/"
+	}
+	prefixNew := newPath
+	if !strings.HasSuffix(prefixNew, "/") {
+		prefixNew += "/"
+	}
+
+	for _, c := range children {
+		fs.persistRecursivePending(prefixOld+c.name, prefixNew+c.name, c.child)
 	}
 }
 
