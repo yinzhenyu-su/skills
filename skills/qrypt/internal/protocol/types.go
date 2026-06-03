@@ -59,11 +59,20 @@ type MountSummary struct {
 type DaemonStatus struct {
 	Version    string         `json:"version"`
 	Uptime     string         `json:"uptime"`
+	ConfigPath string         `json:"config_path,omitempty"`
 	MountPoint string         `json:"mount_point,omitempty"`
 	MountState MountState     `json:"mount_state"`
 	DriveType  string         `json:"drive_type,omitempty"`
 	LastError  string         `json:"last_error,omitempty"`
 	Mounts     []MountSummary `json:"mounts,omitempty"`
+}
+
+// DashboardData is the aggregated response for the "dashboard" RPC.
+type DashboardData struct {
+	Status         *DaemonStatus      `json:"status"`
+	SyncStats      *SyncStats         `json:"sync_stats"`
+	CacheUsage     *CacheUsage        `json:"cache_usage"`
+	ActiveTransfers *ActiveTransfersResult `json:"active_transfers"`
 }
 
 // ReloadResult is returned after a successful reload_config.

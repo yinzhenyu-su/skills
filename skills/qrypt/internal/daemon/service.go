@@ -139,6 +139,7 @@ func (d *Daemon) Status() (*protocol.DaemonStatus, error) {
 	return &protocol.DaemonStatus{
 		Version:    d.version,
 		Uptime:     uptime,
+		ConfigPath: d.cfgPath,
 		MountPoint: firstMountPoint,
 		MountState: state,
 		DriveType:  firstDriveType,
@@ -1237,6 +1238,19 @@ func createRemoteDir(ctx context.Context, drv drive.Driver, w drive.Writer, ciph
 		}
 	}
 	return currentFid, nil
+}
+
+// Dashboard returns aggregated daemon status, sync stats, cache usage, and active transfers.
+func (d *Daemon) Dashboard() *protocol.DashboardData {
+	status, _ := d.Status()
+	stats, _ := d.SyncStatus()
+	usage, _ := d.CacheUsage()
+	return &protocol.DashboardData{
+		Status:          status,
+		SyncStats:       stats,
+		CacheUsage:      usage,
+		ActiveTransfers: d.ActiveTransfers(),
+	}
 }
 
 func (d *Daemon) ClearStaging(ctx context.Context) error {
