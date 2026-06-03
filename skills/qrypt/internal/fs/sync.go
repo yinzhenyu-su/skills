@@ -355,9 +355,21 @@ func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snap
 			!strings.HasPrefix(curParentFid, "local_") {
 			log.L.Infof("syncFilePostUpload: moving %s (fid=%s) from parent %s to %s\n", path, newFid, parentFid, curParentFid)
 			if wOk {
-				moveEntry := drive.Entry{ID: newFid}
-				if err := w.Move(context.Background(), moveEntry, curParentFid); err != nil {
-					log.L.Errorf("syncFilePostUpload: move failed for %s: %v\n", path, err)
+				moveEntry := drive.Entry{ID: newFid, ParentID: parentFid}
+				var moveErr error
+				for attempt := 0; attempt < 3; attempt++ {
+					moveErr = w.Move(context.Background(), moveEntry, curParentFid)
+					if moveErr == nil {
+						break
+					}
+					if errors.Is(moveErr, drive.ErrDirAlreadyExists) || strings.Contains(moveErr.Error(), "conflict") {
+						time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+						continue
+					}
+					break
+				}
+				if moveErr != nil {
+					log.L.Errorf("syncFilePostUpload: move failed for %s: %v\n", path, moveErr)
 				} else {
 					log.L.Debugf("syncFilePostUpload: move succeeded\n")
 				}
@@ -370,9 +382,21 @@ func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snap
 			encName := fs.cipher.EncryptSegment(curName)
 			log.L.Infof("syncFilePostUpload: renaming %s from %s to %s\n", path, snapshotName, curName)
 			if wOk {
-				renameEntry := drive.Entry{ID: newFid}
-				if err := w.Rename(context.Background(), renameEntry, encName); err != nil {
-					log.L.Errorf("syncFilePostUpload: rename failed for %s: %v\n", path, err)
+				renameEntry := drive.Entry{ID: newFid, ParentID: curParentFid}
+				var renameErr error
+				for attempt := 0; attempt < 3; attempt++ {
+					renameErr = w.Rename(context.Background(), renameEntry, encName)
+					if renameErr == nil {
+						break
+					}
+					if errors.Is(renameErr, drive.ErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
+						time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+						continue
+					}
+					break
+				}
+				if renameErr != nil {
+					log.L.Errorf("syncFilePostUpload: rename failed for %s: %v\n", path, renameErr)
 				}
 			}
 		}

@@ -274,6 +274,9 @@ func (c *RcloneCipher) EncryptedSize(size int64) int64 {
 
 // DecryptedSize 根据加密后大小计算原始大小
 func (c *RcloneCipher) DecryptedSize(size int64) (int64, error) {
+	if size <= 0 {
+		return 0, nil
+	}
 	size -= int64(FileHeaderSize)
 	if size < 0 {
 		return 0, errors.New("file too short")

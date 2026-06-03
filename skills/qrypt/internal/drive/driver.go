@@ -21,11 +21,12 @@ type PathResolver interface {
 
 // Entry is a universal file/directory descriptor returned by all drivers.
 type Entry struct {
-	ID      string
-	Name    string
-	IsDir   bool
-	Size    int64
-	ModTime time.Time
+	ID       string
+	ParentID string // optional, used by callers for cache invalidation on write ops
+	Name     string
+	IsDir    bool
+	Size     int64
+	ModTime  time.Time
 	// Extra carries driver-specific metadata transparently.
 	// Consumers may type-assert to access implementation details.
 	Extra any

@@ -32,10 +32,10 @@ FUSE 挂载 (`internal/fs`) 是**可选依赖**。通过 Go build tag `nofuse` �
 
 ```bash
 # macOS 原生构建（含 FUSE 挂载能力）
-go build -o qryptd ./cmd/qryptd/
+go build -o qrypt ./cmd/qrypt/
 
 # Android / 无需 FUSE 场景
-go build -tags nofuse -o qryptd ./cmd/qryptd/
+go build -tags nofuse -o qrypt ./cmd/qrypt/
 ```
 
 `nofuse` 构建时 `internal/fs` 和 `cmd/qrypt/mount.go` 被排除，核心功能（drive/crypt/sync/cache/protocol/daemon）不受影响。
@@ -47,27 +47,30 @@ go build -tags nofuse -o qryptd ./cmd/qryptd/
 ### 架构
 
 ```
-┌──────────────────────┐      JSON-RPC over      ┌──────────────────────┐
-│  macOS App (Swift)   │ ◄───── Unix Socket ────► │  qryptd (Go daemon)  │
-│                      │                          │                      │
-│  SwiftUI Layer       │    /var/run/qryptd.sock  │  Config Management   │
-│  Network Service     │    (或 ~/.qrypt/qryptd.sock)│  Auth (Cookie/QR)    │
-│  Notifications       │                          │  FUSE Mount Mgr      │
-│  Menu Bar App        │                          │  Sync Workers        │
-│  Status Bar Icon     │                          │  Cache Manager       │
-└──────────────────────┘                          │  Drive Driver        │
-                                                   └──────────────────────┘
+┌──────────────────────┐      JSON-RPC over      ┌──────────────────────────┐
+│  macOS App (Swift)   │ ◄───── Unix Socket ────► │  qrypt mount (single    │
+│                      │                          │  process, daemon+FUSE)  │
+│  SwiftUI Layer       │    ~/.qrypt/qryptd.sock  │  Config Management      │
+│  Network Service     │    (向后兼容)             │  Auth (Cookie/QR)       │
+│  Notifications       │                          │  FUSE Mount             │
+│  Menu Bar App        │                          │  Sync Workers           │
+│  Status Bar Icon     │                          │  Cache Manager          │
+└──────────────────────┘                          │  Drive Driver           │
+                                                    └──────────────────────────┘
 ```
 
-### 启动 daemon
+### 启动
 
 ```bash
-# 编译（默认含 FUSE）
+# 编译
 cd skills/qrypt
-go build -o qryptd ./cmd/qryptd/
+go build -o qrypt ./cmd/qrypt/
 
-# 运行（自动挂载）
-./qryptd --config ./qrypt.toml --log-level info
+# 运行（自动启动 FUSE + WebSocket server，监听 ~/.qrypt/qryptd.sock）
+./qrypt mount --config ./qrypt.toml --log-level info
+
+# 后台模式（无 FUSE 挂载，仅 daemon 服务）
+./qrypt mount --daemon --config ./qrypt.toml
 
 # 或通过 launchd 管理（后台服务）
 # cp com.qrypt.daemon.plist ~/Library/LaunchAgents/
@@ -81,7 +84,7 @@ go build -o qryptd ./cmd/qryptd/
 **请求格式：**
 ```json
 {"id": 1, "method": "status"}
-{"id": 2, "method": "start", "params": {}}
+{"id": 2, "method": "list_dir", "params": {"mount_name": "default", "path": "/"}}
 ```
 
 **响应格式：**
@@ -96,23 +99,19 @@ go build -o qryptd ./cmd/qryptd/
 
 ### API 方法列表
 
+完整方法列表见 `internal/protocol/types.go`。常用方法：
+
 | 方法 | 用途 | 返回 |
 |------|------|------|
 | `status` | daemon 状态（版本/挂载/运行时间） | `DaemonStatus` |
-| `start` | 启动挂载（初始化驱动+加密+缓存+FUSE） | `{"status":"started"}` |
-| `stop` | 停止挂载并清理 | `{"status":"stopped"}` |
-| `mount_status` | 当前挂载状态 | `MountState` |
-| `get_config` | 获取完整配置 | `Config` |
-| `update_config` | 更新指定配置字段 | `{"status":"updated"}` |
-| `validate_config` | 验证配置有效性 | `{"valid":"true"}` |
-| `login_cookie` | 通过 Cookie 登录 | `{"status":"logged_in"}` |
-| `login_qr` | 二维码登录（预留） | `{"qr_url":"...", "expires_at": 123}` |
-| `logout` | 登出 | `{"status":"logged_out"}` |
-| `is_logged_in` | 是否已登录 | `true/false` |
-| `account_info` | 账号信息 | `AccountInfo` |
-| `sync_status` | 同步队列统计 | `SyncStats` |
-| `sync_task_list` | 活跃同步任务列表 | `[SyncTaskInfo]` |
-| `cache_usage` | 缓存使用统计 | `CacheUsage` |
+| `list_dir` | 列出目录内容 | `ListDirResult` |
+| `move` | 移动/重命名文件 | `MoveResult` |
+| `find` | 搜索文件 | `FindResult` |
+| `mkdir` | 创建目录 | `MkdirResult` |
+| `remove` | 删除文件/目录 | `RemoveResult` |
+| `push_start` | 上传文件 | `PushStartResult` |
+| `pull_start` | 下载文件 | `PullStartResult` |
+| `dashboard` | 聚合状态（状态+同步+缓存+传输） | `DashboardData` |
 | `subscribe_events` | 订阅实时事件（长连接） | 事件推送流 |
 
 ### 类型定义
@@ -121,29 +120,14 @@ go build -o qryptd ./cmd/qryptd/
 
 ```go
 type DaemonStatus struct {
-    Version    string     // 版本号
-    Uptime     string     // 运行时长
-    MountPoint string     // 挂载点路径
+    Version    string
+    Uptime     string
+    ConfigPath string
+    MountPoint string
     MountState MountState // mounted/unmounted/mounting/unmounting/error
-    DriveType  string     // 驱动类型（quark/yun139/localfs）
-    LastError  string     // 最后错误信息
-}
-
-type SyncStats struct {
-    PendingUploads    int   // 待上传文件数
-    ActiveUploads     int   // 上传中文件数
-    CompletedUploads  int64 // 已完成上传数
-    FailedUploads     int64 // 失败上传数
-    TotalBytesSync    int64 // 已同步字节数
-    TotalBytesPending int64 // 待同步字节数
-    InProgress        bool  // 同步进行中
-}
-
-type CacheUsage struct {
-    TotalSize    int64 // 总缓存大小
-    StagingSize  int64 // 暂存区大小
-    MaxSize      int64 // 最大缓存上限
-    StagingCount int   // 暂存文件数
+    DriveType  string
+    LastError  string
+    Mounts     []MountSummary
 }
 ```
 
@@ -156,7 +140,6 @@ type CacheUsage struct {
 | `sync_completed` | 同步完成 |
 | `sync_failed` | 同步失败 |
 | `disk_space_low` | 磁盘空间不足 |
-| `auth_expired` | 认证过期 |
 | `error` | daemon 内部错误 |
 
 ### Swift 客户端示例
@@ -183,12 +166,8 @@ class QryptService {
         try await call(method: "status")
     }
     
-    func mount() async throws {
-        let _: StatusResult = try await call(method: "start")
-    }
-    
-    func unmount() async throws {
-        let _: StatusResult = try await call(method: "stop")
+    func listDir(_ path: String) async throws -> ListDirResult {
+        try await call(method: "list_dir", params: ["mount_name": "default", "path": path])
     }
     
     func subscribeEvents() -> AsyncStream<QryptEvent> {
@@ -215,11 +194,11 @@ class QryptService {
     <string>com.qrypt.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/qryptd</string>
+        <string>/usr/local/bin/qrypt</string>
+        <string>mount</string>
+        <string>--daemon</string>
         <string>--config</string>
         <string>/Users/you/.config/qrypt/qrypt.toml</string>
-        <string>--log-level</string>
-        <string>info</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -291,7 +270,7 @@ go build -tags nofuse \
 #   -o android/jniLibs/armeabi-v7a/libqrypt_core.so ./mobile/
 ```
 
-### JNI 接口定义
+### JNI 接口定义（示例）
 
 ```go
 // mobile/bridge.go
@@ -367,40 +346,6 @@ class QryptCore {
 }
 ```
 
-```kotlin
-// 使用示例
-class MainActivity : AppCompatActivity() {
-    private val core = QryptCore()
-
-    fun onLogin() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            val result = core.init(quarkCookie, encryptionPassword)
-            Log.d("Qrypt", "Init: $result")
-
-            val files = core.listFiles("0")
-            val entries = JSONArray(files)
-            Log.d("Qrypt", "Files: ${entries.length()}")
-        }
-    }
-
-    fun startBackgroundSync() {
-        val intent = Intent(this, QryptSyncService::class.java)
-        startForegroundService(intent)
-    }
-}
-
-// ForegroundService.kt
-class QryptSyncService : Service() {
-    private val core = QryptCore()
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(1, notification)
-        // 后台同步逻辑
-        return START_STICKY
-    }
-}
-```
-
 ### 关键限制与应对
 
 | 限制 | 说明 | 应对方案 |
@@ -411,23 +356,6 @@ class QryptSyncService : Service() {
 | **网络权限** | 需要声明 `INTERNET` 权限 | 在 `AndroidManifest.xml` 中添加 |
 | **内存限制** | Android 对 JNI 堆内存有限制 | 大文件建议流式上传/下载，避免一次性加载到内存 |
 | **加密库** | crypto 包在 Android NDK 下可能需要 BoringSSL | Go 标准库 `crypto/aes` + `golang.org/x/crypto` 在 Android 上支持良好 |
-
-### AndroidManifest.xml
-
-```xml
-<manifest>
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
-
-    <application>
-        <service
-            android:name=".QryptSyncService"
-            android:foregroundServiceType="dataSync" />
-    </application>
-</manifest>
-```
 
 ---
 
@@ -444,7 +372,6 @@ class QryptSyncService : Service() {
 | `internal/protocol/` | ✅ | ❌ | JSON-RPC 编码，仅 macOS daemon 需要 |
 | `internal/daemon/` | ✅ | ❌ | 后台服务管理，仅 macOS 需要 |
 | `internal/fs/` | ✅ (FUSE) | ❌ | FUSE 文件系统，Android 不可用 |
-| `cmd/qryptd/` | ✅ | ❌ | Daemon 入口点，macOS 专用 |
 
 ---
 
@@ -453,18 +380,18 @@ class QryptSyncService : Service() {
 ### macOS
 
 ```bash
-# 1. 编译 daemon
+# 1. 编译
 cd skills/qrypt
-go build -o qryptd ./cmd/qryptd/
+go build -o qrypt ./cmd/qrypt/
 
 # 2. 创建配置文件
 cp qrypt.toml ~/.config/qrypt/
 # 编辑 ~/.config/qrypt/qrypt.toml 填入 cookie 和密码
 
-# 3. 启动
-./qryptd --config ~/.config/qrypt/qrypt.toml
+# 3. 启动（单进程，daemon + FUSE）
+./qrypt mount --config ~/.config/qrypt/qrypt.toml
 
-# 4. 在 Swift App 中连接 ~/.qrypt/qryptd.sock
+# 4. 在 Swift App 中连接 ~/.qrypt/qryptd.sock 进行 RPC 通信
 ```
 
 ### Android
@@ -480,19 +407,3 @@ CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=$CC \
 
 # 2. 在 Android 项目中使用
 ```
-
-### mobile 包创建
-
-如果 `mobile/` 目录尚不存在，创建 JNI bridge 文件：
-
-```go
-// skills/qrypt/mobile/bridge.go
-package main
-
-// #include <stdlib.h>
-import "C"
-
-func main() {}
-```
-
-完整的 JNI 桥接需要根据具体需求实现在 `mobile/` 包中，导出需要的 `export` 函数。

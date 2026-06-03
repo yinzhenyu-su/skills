@@ -142,9 +142,17 @@ func (d *Yun139Driver) Mkdir(ctx context.Context, parentID, name string) (drive.
 }
 
 func (d *Yun139Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+	srcFileID := entry.ID
+	if srcFileID == "" || srcFileID == "0" || srcFileID == "/" {
+		srcFileID = d.rootID
+	}
+	toParentID := dstParentID
+	if toParentID == "" || toParentID == "0" || toParentID == "/" {
+		toParentID = d.rootID
+	}
 	data := map[string]interface{}{
-		"fileIds":        []string{entry.ID},
-		"toParentFileId": dstParentID,
+		"fileIds":        []string{srcFileID},
+		"toParentFileId": toParentID,
 	}
 	var resp baseResp
 	err := d.cl.doRequest(http.MethodPost, "/file/batchMove", data, &resp)
@@ -158,8 +166,12 @@ func (d *Yun139Driver) Move(ctx context.Context, entry drive.Entry, dstParentID 
 }
 
 func (d *Yun139Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+	srcFileID := entry.ID
+	if srcFileID == "" || srcFileID == "0" || srcFileID == "/" {
+		srcFileID = d.rootID
+	}
 	data := map[string]interface{}{
-		"fileId":      entry.ID,
+		"fileId":      srcFileID,
 		"name":        newName,
 		"description": "",
 	}

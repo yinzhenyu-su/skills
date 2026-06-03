@@ -248,6 +248,10 @@ func (d *QuarkDriver) Move(ctx context.Context, entry drive.Entry, dstParentID s
 	if rerr := apiError(resp); rerr != nil {
 		return rerr
 	}
+	if entry.ParentID != "" {
+		d.cache.removeDir(entry.ParentID)
+	}
+	d.cache.removeDir(dstParentID)
 	return nil
 }
 
@@ -263,6 +267,9 @@ func (d *QuarkDriver) Rename(ctx context.Context, entry drive.Entry, newName str
 	}
 	if rerr := apiError(resp); rerr != nil {
 		return rerr
+	}
+	if entry.ParentID != "" {
+		d.cache.removeDir(entry.ParentID)
 	}
 	return nil
 }

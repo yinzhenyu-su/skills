@@ -15,7 +15,15 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/log"
 )
 
+const (
+	RENAME_NOREPLACE = 1
+)
+
 func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
+	return fs.Rename3(oldPath, newPath, 0)
+}
+
+func (fs *QryptFS) Rename3(oldPath string, newPath string, flags uint32) (errc int) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.L.Errorf("PANIC in Rename(%s->%s): %v\n", oldPath, newPath, r)
@@ -37,6 +45,13 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 		return -fuse.EBUSY
 	}
 
+	if flags&RENAME_NOREPLACE != 0 {
+		if _, errc := fs.lookupExtended(newPath, false); errc == 0 {
+			log.L.Warnf("Rename: target exists (NOREPLACE) %s -> %s\n", oldPath, newPath)
+			return -fuse.EEXIST
+		}
+	}
+
 	oldParent := filepath.Dir(oldPath)
 	newParent := filepath.Dir(newPath)
 	newName := filepath.Base(newPath)
@@ -48,7 +63,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 		encName := fs.cipher.EncryptSegment(newName)
 		oldEncName := fs.cipher.EncryptSegment(oldNode.name)
 		if encName != oldEncName {
-			renameEntry := drive.Entry{ID: oldNode.fid}
+			renameEntry := drive.Entry{ID: oldNode.fid, ParentID: oldNode.parentFid}
 			var renameErr error
 			for attempt := 0; attempt < 5; attempt++ {
 				renameErr = w.Rename(context.Background(), renameEntry, encName)
@@ -75,7 +90,7 @@ func (fs *QryptFS) Rename(oldPath string, newPath string) (errc int) {
 		}
 
 		if !isLocal && wOk {
-			moveEntry := drive.Entry{ID: oldNode.fid}
+			moveEntry := drive.Entry{ID: oldNode.fid, ParentID: oldNode.parentFid}
 			var moveErr error
 			for attempt := 0; attempt < 5; attempt++ {
 				moveErr = w.Move(context.Background(), moveEntry, newParentNode.fid)
