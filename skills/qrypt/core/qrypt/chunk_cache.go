@@ -1,4 +1,4 @@
-package index
+package qrypt
 
 import (
 	"bufio"
@@ -9,8 +9,6 @@ import (
 	"sort"
 	"sync"
 	"time"
-
-	"github.com/yinzhenyu/skills/qrypt/internal/upload"
 )
 
 // OpsLogEntry is retained for compatibility with external callers
@@ -95,7 +93,7 @@ type fileChunkCache struct {
 type CacheManager struct {
 	cacheDir string
 	maxSize  int64
-	staging  *upload.Store
+	staging  *Store
 	evictCount int64
 
 	mu            sync.RWMutex
@@ -116,7 +114,7 @@ func (m *CacheManager) ReadingDir() string {
 	return filepath.Join(m.cacheDir, "reading")
 }
 
-func (m *CacheManager) Staging() *upload.Store {
+func (m *CacheManager) Staging() *Store {
 	return m.staging
 }
 
@@ -126,7 +124,7 @@ func NewCacheManager(cacheDir string, maxSize int64) (*CacheManager, error) {
 	}
 
 	stagingDir := filepath.Join(cacheDir, "staging")
-	store, err := upload.NewStore(stagingDir)
+	store, err := NewStore(stagingDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create staging store: %w", err)
 	}

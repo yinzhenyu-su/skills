@@ -6,7 +6,6 @@ import (
 
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/coreadapter"
 )
 
 func TestSessionKeyForMount_Quark(t *testing.T) {
@@ -91,9 +90,6 @@ func TestDriverFactory_LocalFS(t *testing.T) {
 	}
 	if drv == nil {
 		t.Fatal("nil driver returned")
-	}
-	if _, ok := drv.(*coreadapter.DriverAdapter); !ok {
-		t.Errorf("expected *coreadapter.DriverAdapter, got %T", drv)
 	}
 }
 

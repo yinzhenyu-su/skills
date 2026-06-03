@@ -1,4 +1,4 @@
-package cipher
+package qrypt
 
 import (
 	"bytes"

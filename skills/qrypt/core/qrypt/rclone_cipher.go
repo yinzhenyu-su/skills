@@ -1,4 +1,4 @@
-package cipher
+package qrypt
 
 import (
 	"bytes"
@@ -18,21 +18,10 @@ import (
 	"golang.org/x/crypto/scrypt"
 )
 
-const (
-	FileMagic       = "RCLONE\x00\x00"
-	FileMagicSize   = len(FileMagic)
-	FileNonceSize   = 24
-	FileHeaderSize  = FileMagicSize + FileNonceSize
-	BlockHeaderSize = 16 // Poly1305 Tag
-	BlockDataSize   = 64 * 1024
-	BlockSize       = BlockHeaderSize + BlockDataSize
-)
-
 var defaultSalt = []byte{0xA8, 0x0D, 0xF4, 0x3A, 0x8F, 0xBD, 0x03, 0x08, 0xA7, 0xCA, 0xB8, 0x3E, 0x58, 0x1F, 0x86, 0xB1}
 var rcloneBase32 = base32.HexEncoding.WithPadding(base32.NoPadding)
 var rcloneBase64 = base64.URLEncoding.WithPadding(base64.NoPadding)
 
-// conflictSuffixRe 匹配 Quark Drive 等网盘追加的 (N) 冲突后缀
 var conflictSuffixRe = regexp.MustCompile(`^(.*?)\s*\(\d+\)$`)
 
 const obfuscQuoteRune = '!'
@@ -41,8 +30,8 @@ type RcloneCipher struct {
 	dataKey            [32]byte
 	nameKey            [32]byte
 	nameTweak          [16]byte
-	filenameEncryption string // "standard", "obfuscate", "off"
-	filenameEncoding   string // "base32", "base64" (only for "standard")
+	filenameEncryption string
+	filenameEncoding   string
 }
 
 func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, error) {
@@ -80,10 +69,8 @@ func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, erro
 	return c, nil
 }
 
-// DecryptBlock 解密一个 rclone 加密分块
-func (c *RcloneCipher) DecryptBlock(ciphertext []byte, blockIndex uint64, fileNonce [24]byte) ([]byte, error) {
-	// 1. 计算当前块的 Nonce (FileNonce + blockIndex)
-	var nonce [24]byte
+func (c *RcloneCipher) DecryptBlock(ciphertext []byte, blockIndex uint64, fileNonce [FileNonceSize]byte) ([]byte, error) {
+	var nonce [FileNonceSize]byte
 	copy(nonce[:], fileNonce[:])
 	u := blockIndex
 	for i := 0; i < 8 && u > 0; i++ {
@@ -92,10 +79,6 @@ func (c *RcloneCipher) DecryptBlock(ciphertext []byte, blockIndex uint64, fileNo
 		u >>= 8
 	}
 
-	// 2. 解密 (secretbox.Open expects ciphertext with 16-byte MAC at the end)
-	// rclone stores [MAC(16B)][Data(N)], but secretbox.Open expects [Data][MAC]? 
-	// No, secretbox.Seal/Open in Go expect [MAC][Data] format? Actually let's check.
-	// In rclone: secretbox.Open(out, ciphertext, nonce, key)
 	plaintext, ok := secretbox.Open(nil, ciphertext, &nonce, &c.dataKey)
 	if !ok {
 		return nil, errors.New("failed to authenticate decrypted block")
@@ -104,10 +87,8 @@ func (c *RcloneCipher) DecryptBlock(ciphertext []byte, blockIndex uint64, fileNo
 	return plaintext, nil
 }
 
-// EncryptBlock 加密一个 rclone 分块
-func (c *RcloneCipher) EncryptBlock(plaintext []byte, blockIndex uint64, fileNonce [24]byte) ([]byte, error) {
-	// 1. 计算当前块的 Nonce (FileNonce + blockIndex)
-	var nonce [24]byte
+func (c *RcloneCipher) EncryptBlock(plaintext []byte, blockIndex uint64, fileNonce [FileNonceSize]byte) ([]byte, error) {
+	var nonce [FileNonceSize]byte
 	copy(nonce[:], fileNonce[:])
 	u := blockIndex
 	for i := 0; i < 8 && u > 0; i++ {
@@ -116,21 +97,16 @@ func (c *RcloneCipher) EncryptBlock(plaintext []byte, blockIndex uint64, fileNon
 		u >>= 8
 	}
 
-	// 2. 加密
-	// secretbox.Seal appends the MAC (16B) to the ciphertext.
-	// rclone format: [MAC(16B)][Data(N)]
 	ciphertext := secretbox.Seal(nil, plaintext, &nonce, &c.dataKey)
 	return ciphertext, nil
 }
 
-// GenerateRandomNonce 生成一个新的随机 24 字节 Nonce
-func (c *RcloneCipher) GenerateRandomNonce() ([24]byte, error) {
-	var nonce [24]byte
+func (c *RcloneCipher) GenerateRandomNonce() ([FileNonceSize]byte, error) {
+	var nonce [FileNonceSize]byte
 	_, err := io.ReadFull(rand.Reader, nonce[:])
 	return nonce, err
 }
 
-// EncryptSegment 加密单个路径段（如文件名或文件夹名）
 func (c *RcloneCipher) EncryptSegment(plaintext string) string {
 	if plaintext == "" {
 		return ""
@@ -141,25 +117,21 @@ func (c *RcloneCipher) EncryptSegment(plaintext string) string {
 		return plaintext
 	case "obfuscate":
 		return c.obfuscateSegment(plaintext)
-	default: // "standard"
+	default:
 		return c.encryptSegmentStandard(plaintext)
 	}
 }
 
-// encryptSegmentStandard EME-AES + base32/base64 加密
 func (c *RcloneCipher) encryptSegmentStandard(plaintext string) string {
-	// 1. PKCS7 填充
 	plaintextBytes := []byte(plaintext)
 	paddingLen := 16 - (len(plaintextBytes) % 16)
 	for i := 0; i < paddingLen; i++ {
 		plaintextBytes = append(plaintextBytes, byte(paddingLen))
 	}
 
-	// 2. EME-AES 加密
 	block, _ := aes.NewCipher(c.nameKey[:])
 	ciphertext := eme.Transform(block, c.nameTweak[:], plaintextBytes, eme.DirectionEncrypt)
 
-	// 3. 按配置编码
 	switch c.filenameEncoding {
 	case "base64":
 		return rcloneBase64.EncodeToString(ciphertext)
@@ -168,7 +140,6 @@ func (c *RcloneCipher) encryptSegmentStandard(plaintext string) string {
 	}
 }
 
-// DecryptSegment 解密单个路径段，自动处理 (N) 冲突后缀
 func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
 	if encrypted == "" {
 		return "", nil
@@ -178,8 +149,6 @@ func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
 	case "off":
 		return encrypted, nil
 	case "obfuscate":
-		// obfuscate 模式下先剥离 (N) 冲突后缀，
-		// 否则后缀字符会被当作 obfuscate 内容误解码
 		cleaned := stripConflictSuffix(encrypted)
 		return c.deobfuscateSegment(cleaned)
 	default:
@@ -187,7 +156,6 @@ func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
 		if err == nil {
 			return plain, nil
 		}
-		// standard 模式：冲突后缀导致解码失败 → 剥离后重试
 		cleaned := stripConflictSuffix(encrypted)
 		if cleaned != encrypted {
 			return c.decryptSegmentStandard(cleaned)
@@ -196,9 +164,7 @@ func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
 	}
 }
 
-// decryptSegmentStandard EME-AES 解码 + 双编码 fallback
 func (c *RcloneCipher) decryptSegmentStandard(encrypted string) (string, error) {
-	// 优先使用配置的编码
 	for _, enc := range []string{c.filenameEncoding, otherEncoding(c.filenameEncoding)} {
 		plain, err := c.decodeAndDecrypt(encrypted, enc)
 		if err == nil {
@@ -206,7 +172,6 @@ func (c *RcloneCipher) decryptSegmentStandard(encrypted string) (string, error) 
 		}
 	}
 
-	// 尝试剥离 (N) / (N) 冲突后缀后重试
 	cleaned := stripConflictSuffix(encrypted)
 	if cleaned != encrypted {
 		return c.decryptSegmentStandard(cleaned)
@@ -222,7 +187,6 @@ func otherEncoding(enc string) string {
 	return "base64"
 }
 
-// decodeAndDecrypt base32/base64 -> EME-AES 解密 -> 去填充
 func (c *RcloneCipher) decodeAndDecrypt(encrypted, encoding string) (string, error) {
 	if encrypted == "" {
 		return "", nil
@@ -261,7 +225,6 @@ func (c *RcloneCipher) decodeAndDecrypt(encrypted, encoding string) (string, err
 	return string(plaintextBytes), nil
 }
 
-// EncryptedSize 根据原始大小计算加密后大小
 func (c *RcloneCipher) EncryptedSize(size int64) int64 {
 	blocks := size / BlockDataSize
 	residue := size % BlockDataSize
@@ -272,7 +235,6 @@ func (c *RcloneCipher) EncryptedSize(size int64) int64 {
 	return encSize
 }
 
-// DecryptedSize 根据加密后大小计算原始大小
 func (c *RcloneCipher) DecryptedSize(size int64) (int64, error) {
 	if size <= 0 {
 		return 0, nil
@@ -293,10 +255,6 @@ func (c *RcloneCipher) DecryptedSize(size int64) (int64, error) {
 	}
 	return decSize, nil
 }
-
-// ──────────────────────────────────────────────
-// obfuscate 模式（rclone 兼容，长度不变）
-// ──────────────────────────────────────────────
 
 func (c *RcloneCipher) obfuscateSegment(plaintext string) string {
 	if plaintext == "" {
@@ -447,7 +405,6 @@ func (c *RcloneCipher) deobfuscateSegment(ciphertext string) (string, error) {
 	return result.String(), nil
 }
 
-// stripConflictSuffix 剥离 (N) /  (N) 等网盘冲突后缀，返回清理后的文件名
 func stripConflictSuffix(name string) string {
 	matches := conflictSuffixRe.FindStringSubmatch(name)
 	if len(matches) == 2 {
@@ -456,7 +413,6 @@ func stripConflictSuffix(name string) string {
 	return name
 }
 
-// HasConflictSuffix 检查文件名是否带有 (N) 冲突后缀
 func HasConflictSuffix(name string) bool {
 	return conflictSuffixRe.MatchString(name)
 }

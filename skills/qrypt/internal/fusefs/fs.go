@@ -13,12 +13,10 @@ import (
 
 	"github.com/hashicorp/golang-lru/v2"
 	"github.com/winfsp/cgofuse/fuse"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
-	"github.com/yinzhenyu/skills/qrypt/internal/coreadapter"
-	"github.com/yinzhenyu/skills/qrypt/internal/index"
+	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
-	staging "github.com/yinzhenyu/skills/qrypt/internal/upload"
+	upload "github.com/yinzhenyu/skills/qrypt/internal/upload"
 )
 
 const (
@@ -71,9 +69,9 @@ type QryptFS struct {
 	fuse.FileSystemBase
 
 	drv     backend.Driver
-	cipher  *cipher.RcloneCipher
-	cacheMgr *index.CacheManager
-	staging *staging.Store
+	cipher  *qrypt.RcloneCipher
+	cacheMgr *qrypt.CacheManager
+	staging *qrypt.Store
 
 	rootFid string
 	nodes   sync.Map
@@ -91,7 +89,7 @@ type QryptFS struct {
 
 	memCache *lru.Cache[string, []byte]
 
-	uploader      *staging.Uploader
+	uploader      *upload.Uploader
 	uploadChan    chan syncTask
 	uploadQueue   UploadQueue // optional: replaces uploadChan when set
 	metadataOpChan chan metadataTask
@@ -114,8 +112,8 @@ type FSOptions struct {
 
 func NewFS(
 	drv backend.Driver,
-	cipher *cipher.RcloneCipher,
-	cacheMgr *index.CacheManager,
+	cipher *qrypt.RcloneCipher,
+	cacheMgr *qrypt.CacheManager,
 	rootFid string,
 	opts FSOptions,
 ) *QryptFS {
@@ -136,12 +134,12 @@ func NewFS(
 	memCacheMax := (memSize * 1024) / 64
 	memCache, _ := lru.New[string, []byte](memCacheMax)
 
-	var stg *staging.Store
+	var stg *qrypt.Store
 	if cacheMgr != nil {
 		stg = cacheMgr.Staging()
 	}
 
-	uploader := staging.NewUploader(coreadapter.NewDriverAdapter(drv), coreadapter.NewCipherAdapter(cipher))
+	uploader := upload.NewUploader(drv, cipher)
 
 	fs := &QryptFS{
 		drv:             drv,

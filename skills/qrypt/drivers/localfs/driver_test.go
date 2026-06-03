@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 func newTestDir(t *testing.T) string {

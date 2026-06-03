@@ -5,10 +5,9 @@ import (
 	"fmt"
 
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend/quark"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend/yun139"
-	"github.com/yinzhenyu/skills/qrypt/internal/coreadapter"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
+	"github.com/yinzhenyu/skills/qrypt/drivers/quark"
+	"github.com/yinzhenyu/skills/qrypt/drivers/yun139"
 )
 
 // mobileDriverFactory creates backend drivers on demand, looking up credentials from the
@@ -54,7 +53,7 @@ func (f *mobileDriverFactory) CreateDriver(ctx context.Context, cfg qrypt.Sessio
 		return nil, fmt.Errorf("unsupported backend type: %q (supported: quark, yun139)", backendType)
 	}
 
-	return coreadapter.NewDriverAdapter(drv), nil
+	return drv, nil
 }
 
 func splitTypeMount(t string) (backendType, mount string) {

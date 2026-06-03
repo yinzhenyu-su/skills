@@ -10,9 +10,8 @@ import (
 	"sync"
 
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
-	factory "github.com/yinzhenyu/skills/qrypt/internal/backend/factory"
+	factory "github.com/yinzhenyu/skills/qrypt/drivers/factory"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/coreadapter"
 )
 
 // DriverFactory is a qrypt.DriverFactory that creates backend drivers from registered
@@ -57,7 +56,7 @@ func (f *DriverFactory) CreateDriver(ctx context.Context, cfg qrypt.SessionConfi
 	if err != nil {
 		return nil, fmt.Errorf("create backend driver: %w", err)
 	}
-	return coreadapter.NewDriverAdapter(drv), nil
+	return drv, nil
 }
 
 // SessionKeyForMount derives the qrypt.SessionKey:

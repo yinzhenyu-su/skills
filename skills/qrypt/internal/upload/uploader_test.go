@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
 )
 
 type mockUploaderDriver struct {
@@ -20,7 +19,7 @@ func (m *mockUploaderDriver) Put(ctx context.Context, parentID, name string, siz
 }
 
 type ucipherAdapter struct {
-	inner *cipher.RcloneCipher
+	inner *qrypt.RcloneCipher
 }
 
 func (a *ucipherAdapter) EncryptSegment(plain string) string { return a.inner.EncryptSegment(plain) }
@@ -36,7 +35,7 @@ func (a *ucipherAdapter) DecryptedSize(cipherSize int64) (int64, error) { return
 func (a *ucipherAdapter) GenerateRandomNonce() ([qrypt.FileNonceSize]byte, error) { return a.inner.GenerateRandomNonce() }
 
 func newTestCipher() qrypt.Cipher {
-	c, _ := cipher.NewRcloneCipher("password", "")
+	c, _ := qrypt.NewRcloneCipher("password", "")
 	return &ucipherAdapter{inner: c}
 }
 
@@ -230,7 +229,7 @@ func BenchmarkUploadThroughput(b *testing.B) {
 		data[i] = byte(i % 256)
 	}
 
-	ciph, _ := cipher.NewRcloneCipher("password", "")
+	ciph, _ := qrypt.NewRcloneCipher("password", "")
 	u := NewUploader(drv, &ucipherAdapter{inner: ciph})
 
 	b.ResetTimer()

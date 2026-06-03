@@ -17,11 +17,13 @@ const (
 )
 
 type Entry struct {
-	ID      string
-	Name    string
-	IsDir   bool
-	Size    int64
-	ModTime time.Time
+	ID       string
+	ParentID string
+	Name     string
+	IsDir    bool
+	Size     int64
+	ModTime  time.Time
+	Extra    any
 }
 
 type Driver interface {
@@ -44,6 +46,17 @@ type Uploader interface {
 
 type PathResolver interface {
 	ResolvePath(ctx context.Context, path string) (string, error)
+}
+
+type mtimeKey struct{}
+
+func WithMtime(ctx context.Context, mtime time.Time) context.Context {
+	return context.WithValue(ctx, mtimeKey{}, mtime)
+}
+
+func MtimeFromContext(ctx context.Context) (time.Time, bool) {
+	mtime, ok := ctx.Value(mtimeKey{}).(time.Time)
+	return mtime, ok
 }
 
 type Cipher interface {

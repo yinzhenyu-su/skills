@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
+	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
@@ -24,11 +24,11 @@ type QuarkDriver struct {
 	cache    *cacheManager
 	cookie   string
 	rootPath string
-	cipher   *cipher.RcloneCipher
+	cipher   *qrypt.RcloneCipher
 }
 
 // SetCipher attaches a cipher for path-name encryption/decryption in ResolvePath.
-func (d *QuarkDriver) SetCipher(c *cipher.RcloneCipher) {
+func (d *QuarkDriver) SetCipher(c *qrypt.RcloneCipher) {
 	d.cipher = c
 }
 
@@ -295,7 +295,7 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 	d.deleteExistingFileByName(parentID, name)
 
 	mtime := time.Now()
-	if mt, ok := backend.MtimeFromContext(ctx); ok {
+	if mt, ok := qrypt.MtimeFromContext(ctx); ok {
 		mtime = mt
 	}
 	preData := map[string]interface{}{

@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/winfsp/cgofuse/fuse"
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
+	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
@@ -41,13 +41,13 @@ func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int)
 		}
 	}
 
-	startChunk := ofst / cipher.BlockDataSize
-	endChunk := (ofst + int64(len(buff)) - 1) / cipher.BlockDataSize
+	startChunk := ofst / qrypt.BlockDataSize
+	endChunk := (ofst + int64(len(buff)) - 1) / qrypt.BlockDataSize
 
 	node.mu.Lock()
-	if ofst == (node.lastReadBlock+1)*cipher.BlockDataSize {
+	if ofst == (node.lastReadBlock+1)*qrypt.BlockDataSize {
 		node.readSeqCount++
-	} else if ofst != node.lastReadBlock*cipher.BlockDataSize {
+	} else if ofst != node.lastReadBlock*qrypt.BlockDataSize {
 		node.readSeqCount = 0
 	}
 	node.lastReadBlock = endChunk
@@ -67,7 +67,7 @@ func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int)
 
 		chunkStart := int64(0)
 		if i == startChunk {
-			chunkStart = ofst % cipher.BlockDataSize
+			chunkStart = ofst % qrypt.BlockDataSize
 		}
 
 		chunkEnd := int64(len(chunkData))
@@ -106,7 +106,7 @@ func (fs *QryptFS) prefetch(n *Node, startChunk uint64) {
 	seenBatches := make(map[uint64]bool)
 	for i := uint64(0); i < FetchBatchBlocks/4; i++ {
 		target := startChunk + i
-		if int64(target)*cipher.BlockDataSize >= fileSize {
+		if int64(target)*qrypt.BlockDataSize >= fileSize {
 			break
 		}
 		batchIdx := target / FetchBatchBlocks
@@ -153,7 +153,7 @@ func (fs *QryptFS) getDecryptedChunk(n *Node, idx uint64) ([]byte, error) {
 	}
 
 	if strings.HasPrefix(n.fid, "local_") {
-		return make([]byte, 0, cipher.BlockDataSize), nil
+		return make([]byte, 0, qrypt.BlockDataSize), nil
 	}
 
 	batchIdx := idx / FetchBatchBlocks
@@ -211,10 +211,10 @@ func (fs *QryptFS) fetchBatch(n *Node, batchIdx uint64) error {
 	var pStart, pEnd int64
 	if batchIdx == 0 {
 		pStart = 0
-		pEnd = int64(cipher.FileHeaderSize) + int64(FetchBatchBlocks)*int64(cipher.BlockSize) - 1
+		pEnd = int64(qrypt.FileHeaderSize) + int64(FetchBatchBlocks)*int64(qrypt.BlockSize) - 1
 	} else {
-		pStart = int64(cipher.FileHeaderSize) + int64(startBlock)*int64(cipher.BlockSize)
-		pEnd = pStart + int64(FetchBatchBlocks)*int64(cipher.BlockSize) - 1
+		pStart = int64(qrypt.FileHeaderSize) + int64(startBlock)*int64(qrypt.BlockSize)
+		pEnd = pStart + int64(FetchBatchBlocks)*int64(qrypt.BlockSize) - 1
 	}
 	if pEnd >= encSize {
 		pEnd = encSize - 1
@@ -253,12 +253,12 @@ processBatch:
 	defer rc.Close()
 
 	if pStart == 0 {
-		header := make([]byte, cipher.FileHeaderSize)
+		header := make([]byte, qrypt.FileHeaderSize)
 		_, errHeader := io.ReadFull(rc, header)
-		if errHeader == nil && string(header[:len(cipher.FileMagic)]) == cipher.FileMagic {
+		if errHeader == nil && string(header[:len(qrypt.FileMagic)]) == qrypt.FileMagic {
 			if !n.hasNonce {
 				n.mu.Lock()
-				copy(n.fileNonce[:], header[len(cipher.FileMagic):])
+				copy(n.fileNonce[:], header[len(qrypt.FileMagic):])
 				n.hasNonce = true
 				n.mu.Unlock()
 			}
@@ -266,14 +266,14 @@ processBatch:
 	}
 
 	for i := startBlock; i <= endBlock; i++ {
-		encBlock := make([]byte, cipher.BlockSize)
+		encBlock := make([]byte, qrypt.BlockSize)
 		nRead, err := io.ReadFull(rc, encBlock)
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
 			if err == io.ErrUnexpectedEOF {
-				if nRead > cipher.BlockHeaderSize {
+				if nRead > qrypt.BlockHeaderSize {
 					encBlock = encBlock[:nRead]
 				} else {
 					break

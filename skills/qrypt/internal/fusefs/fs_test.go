@@ -8,11 +8,9 @@ import (
 
 	"github.com/hashicorp/golang-lru/v2"
 	"github.com/winfsp/cgofuse/fuse"
-	"github.com/yinzhenyu/skills/qrypt/internal/index"
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
-	localfs "github.com/yinzhenyu/skills/qrypt/internal/backend/localfs"
+	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	localfs "github.com/yinzhenyu/skills/qrypt/drivers/localfs"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
-	staging "github.com/yinzhenyu/skills/qrypt/internal/upload"
 )
 
 func newTestFS(t *testing.T) *QryptFS {
@@ -25,7 +23,7 @@ func newTestFS(t *testing.T) *QryptFS {
 		t.Fatal(err)
 	}
 
-	cm, err := index.NewCacheManager(cacheDir, 100*1024*1024)
+	cm, err := qrypt.NewCacheManager(cacheDir, 100*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +32,7 @@ func newTestFS(t *testing.T) *QryptFS {
 	logger, _ := logging.New("off", "", nil)
 	logging.L = logger
 
-	cph, _ := cipher.NewRcloneCipher("testpassword", "")
+	cph, _ := qrypt.NewRcloneCipher("testpassword", "")
 
 	drv := localfs.NewDriver(rootDir)
 
@@ -180,7 +178,7 @@ func TestMknod(t *testing.T) {
 	fs := newTestFS(t)
 
 	if fs.staging == nil {
-		fs.staging, _ = staging.NewStore(t.TempDir())
+		fs.staging, _ = qrypt.NewStore(t.TempDir())
 	}
 
 	errc := fs.Mknod("/newfile.txt", 0o644, 0)
@@ -196,7 +194,7 @@ func TestMknod(t *testing.T) {
 func TestCreate(t *testing.T) {
 	fs := newTestFS(t)
 	if fs.staging == nil {
-		fs.staging, _ = staging.NewStore(t.TempDir())
+		fs.staging, _ = qrypt.NewStore(t.TempDir())
 	}
 
 	errc, fh := fs.Create("/created.txt", 0, 0o644)
@@ -211,7 +209,7 @@ func TestCreate(t *testing.T) {
 func TestOpen(t *testing.T) {
 	fs := newTestFS(t)
 	if fs.staging == nil {
-		fs.staging, _ = staging.NewStore(t.TempDir())
+		fs.staging, _ = qrypt.NewStore(t.TempDir())
 	}
 
 	fs.Create("/open.txt", 0, 0o644)
@@ -235,7 +233,7 @@ func TestOpen_NonExistent(t *testing.T) {
 func TestUnlink(t *testing.T) {
 	fs := newTestFS(t)
 	if fs.staging == nil {
-		fs.staging, _ = staging.NewStore(t.TempDir())
+		fs.staging, _ = qrypt.NewStore(t.TempDir())
 	}
 
 	fs.Create("/delete.txt", 0, 0o644)
@@ -248,7 +246,7 @@ func TestUnlink(t *testing.T) {
 func TestRename(t *testing.T) {
 	fs := newTestFS(t)
 	if fs.staging == nil {
-		fs.staging, _ = staging.NewStore(t.TempDir())
+		fs.staging, _ = qrypt.NewStore(t.TempDir())
 	}
 
 	fs.Create("/old.txt", 0, 0o644)
@@ -319,7 +317,7 @@ func TestReadDir_NonExistent(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	fs := newTestFS(t)
 	if fs.staging == nil {
-		fs.staging, _ = staging.NewStore(t.TempDir())
+		fs.staging, _ = qrypt.NewStore(t.TempDir())
 	}
 
 	fs.Create("/trunc.txt", 0, 0o644)
@@ -349,7 +347,7 @@ func TestUtimens(t *testing.T) {
 func TestFlush(t *testing.T) {
 	fs := newTestFS(t)
 	if fs.staging == nil {
-		fs.staging, _ = staging.NewStore(t.TempDir())
+		fs.staging, _ = qrypt.NewStore(t.TempDir())
 	}
 
 	fs.Create("/flush.txt", 0, 0o644)
@@ -362,7 +360,7 @@ func TestFlush(t *testing.T) {
 func TestRelease(t *testing.T) {
 	fs := newTestFS(t)
 	if fs.staging == nil {
-		fs.staging, _ = staging.NewStore(t.TempDir())
+		fs.staging, _ = qrypt.NewStore(t.TempDir())
 	}
 
 	fs.Create("/release.txt", 0, 0o644)
@@ -463,7 +461,7 @@ func TestReadRemoteFileSize(t *testing.T) {
 func TestRead_LocalFile(t *testing.T) {
 	fs := newTestFS(t)
 	stgDir := t.TempDir()
-	fs.staging, _ = staging.NewStore(stgDir)
+	fs.staging, _ = qrypt.NewStore(stgDir)
 
 	localPath, _ := fs.staging.Create("local_fid")
 	fs.staging.WriteAt(localPath, []byte("hello local read"), 0)
@@ -496,7 +494,7 @@ func TestWrite_NoStaging(t *testing.T) {
 func TestWrite_WithStaging(t *testing.T) {
 	fs := newTestFS(t)
 	stgDir := t.TempDir()
-	fs.staging, _ = staging.NewStore(stgDir)
+	fs.staging, _ = qrypt.NewStore(stgDir)
 
 	fs.Create("/write_test.txt", 0, 0o644)
 	nWritten := fs.Write("/write_test.txt", []byte("hello"), 0, 0)

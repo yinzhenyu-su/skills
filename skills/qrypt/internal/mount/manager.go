@@ -8,12 +8,9 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/coreadapter"
 	"github.com/yinzhenyu/skills/qrypt/internal/fusefs"
-	"github.com/yinzhenyu/skills/qrypt/internal/index"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
@@ -70,8 +67,8 @@ type MountInstance struct {
 	Name    string
 	State   protocol.MountState
 	Driver  backend.Driver
-	Cipher  *cipher.RcloneCipher
-	Cache   *index.CacheManager
+	Cipher  *qrypt.RcloneCipher
+	Cache   *qrypt.CacheManager
 	Backend mountBackend
 
 	sessionKey  qrypt.SessionKey
@@ -219,17 +216,9 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 		mm.publishMountEvent(name, protocol.MountStateError, err.Error())
 		return fmt.Errorf("mount %q session: %w", name, err)
 	}
-	ada, ok := s.Drv.(*coreadapter.DriverAdapter)
-	if !ok {
-		inst.State = protocol.MountStateError
-		inst.LastError = "unexpected driver type"
-		mm.mounts[name] = inst
-		mm.publishMountEvent(name, protocol.MountStateError, "unexpected driver type")
-		return fmt.Errorf("mount %q: expected *coreadapter.DriverAdapter, got %T", name, s.Drv)
-	}
-	inst.Driver = ada.Inner()
+	inst.Driver = s.Drv
 
-	if setter, ok := inst.Driver.(interface{ SetCipher(*cipher.RcloneCipher) }); ok {
+	if setter, ok := inst.Driver.(interface{ SetCipher(*qrypt.RcloneCipher) }); ok {
 		setter.SetCipher(rcloneCipher)
 	}
 
@@ -237,7 +226,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 	if maxSize, err := config.ParseSize(rc.Cache.MaxSize); err == nil {
 		cacheMaxSize = maxSize
 	}
-	cacheMgr, err := index.NewCacheManager(rc.CacheDir, cacheMaxSize)
+	cacheMgr, err := qrypt.NewCacheManager(rc.CacheDir, cacheMaxSize)
 	if err != nil {
 		inst.State = protocol.MountStateError
 		inst.LastError = err.Error()

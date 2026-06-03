@@ -10,10 +10,8 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
-	factory "github.com/yinzhenyu/skills/qrypt/internal/backend/factory"
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
+	factory "github.com/yinzhenyu/skills/qrypt/drivers/factory"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/coreadapter"
 	"github.com/yinzhenyu/skills/qrypt/internal/mount"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
@@ -149,10 +147,10 @@ func (d *Daemon) initFileAPI() *qrypt.FileAPI {
 		return nil
 	}
 	api, err := qrypt.NewFileAPI(qrypt.Options{
-		Cipher:        coreadapter.NewCipherAdapter(ciph),
+		Cipher:        ciph,
 		Dirs:          daemonDirResolver{},
 		Creds:         daemonCredentialStore{},
-		DriverFactory: coreadapter.NewSingleDriverFactory(drv),
+		DriverFactory: qrypt.SingleDriverFactory(drv),
 	})
 	if err != nil {
 		return nil
@@ -451,7 +449,7 @@ func (d *Daemon) resolveMountName(name string) string {
 	return ""
 }
 
-func (d *Daemon) makeCipher(rc *config.ResolvedMountConfig, pwd, salt string) (*cipher.RcloneCipher, error) {
+func (d *Daemon) makeCipher(rc *config.ResolvedMountConfig, pwd, salt string) (*qrypt.RcloneCipher, error) {
 	return config.MakeCipher(rc.Encryption, d.cfg.Defaults.Encryption, pwd, salt)
 }
 

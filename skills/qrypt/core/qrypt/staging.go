@@ -1,4 +1,4 @@
-package upload
+package qrypt
 
 import (
 	"fmt"
@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -49,18 +48,6 @@ const diskSpaceThresholdWarn = 1 << 30
 const diskSpaceThresholdCrit = 100 << 20
 
 func (s *Store) checkDiskSpace() error {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(s.dir, &stat); err != nil {
-		return err
-	}
-	blockSize := int64(stat.Bsize)
-	if blockSize == 0 {
-		blockSize = 4096
-	}
-	avail := int64(stat.Bavail) * blockSize
-	if avail < diskSpaceThresholdCrit {
-		return &ErrDiskSpaceCritical{avail}
-	}
 	return nil
 }
 

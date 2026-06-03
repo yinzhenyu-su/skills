@@ -9,8 +9,8 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
 )
 
 func runEncrypt(cmd *cobra.Command, args []string) {
@@ -54,7 +54,7 @@ func encryptFile(cmd *cobra.Command, path string) {
 		os.Exit(1)
 	}
 
-	er := cipher.NewEncryptingReader(r, cp, nonce, plainSize)
+	er := qrypt.NewEncryptingReader(r, cp, nonce, plainSize)
 	if _, err := io.Copy(os.Stdout, er); err != nil {
 		fmt.Fprintf(os.Stderr, "加密失败: %v\n", err)
 		os.Exit(1)
@@ -90,26 +90,22 @@ func decryptFile(cmd *cobra.Command, path string) {
 	}
 	defer r.Close()
 
-	header := make([]byte, cipher.FileHeaderSize)
+	header := make([]byte, qrypt.FileHeaderSize)
 	if _, err := io.ReadFull(r, header); err != nil {
 		fmt.Fprintf(os.Stderr, "读取文件头失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	if string(header[:cipher.FileMagicSize]) != cipher.FileMagic {
+	if string(header[:qrypt.FileMagicSize]) != qrypt.FileMagic {
 		fmt.Fprintf(os.Stderr, "无效的加密文件: 魔数不匹配\n")
 		os.Exit(1)
 	}
 
 	var nonce [24]byte
-	copy(nonce[:], header[cipher.FileMagicSize:])
+	copy(nonce[:], header[qrypt.FileMagicSize:])
 
 	cp := loadCipherForTool(cmd)
-	dr, err := cipher.NewDecryptingReader(r, cp, nonce)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "创建解密流失败: %v\n", err)
-		os.Exit(1)
-	}
+	dr := qrypt.NewDecryptingReader(r, cp, nonce)
 
 	if _, err := io.Copy(os.Stdout, dr); err != nil {
 		fmt.Fprintf(os.Stderr, "解密失败: %v\n", err)
@@ -129,7 +125,7 @@ func runEncSize(cmd *cobra.Command, args []string) {
 }
 
 // loadCipherForTool loads the encryption cipher from config for local tool operations.
-func loadCipherForTool(cmd *cobra.Command) *cipher.RcloneCipher {
+func loadCipherForTool(cmd *cobra.Command) *qrypt.RcloneCipher {
 	configPath, _ := cmd.Flags().GetString("config")
 	_, cfg, _, _ := config.LoadConfigAuto(configPath)
 	if cfg == nil {

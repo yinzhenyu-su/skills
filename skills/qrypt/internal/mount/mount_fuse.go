@@ -8,10 +8,9 @@ import (
 
 	"github.com/winfsp/cgofuse/fuse"
 
-	"github.com/yinzhenyu/skills/qrypt/internal/index"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
+	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/fusefs"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
@@ -25,7 +24,7 @@ func newPlatformMountBackend() mountBackend {
 	return &fuseMountBackend{}
 }
 
-func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountConfig, drv backend.Driver, cipher *cipher.RcloneCipher, cacheMgr *index.CacheManager) error {
+func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountConfig, drv backend.Driver, cipher *qrypt.RcloneCipher, cacheMgr *qrypt.CacheManager) error {
 	rootFid := getRootFid(ctx, drv, rc)
 
 	writeBackDelay, _ := time.ParseDuration(rc.Sync.WriteBackTimeout)

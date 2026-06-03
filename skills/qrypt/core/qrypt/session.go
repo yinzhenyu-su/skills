@@ -83,6 +83,18 @@ func (sm *sessionManager) Release(ctx context.Context, key SessionKey) {
 	}
 }
 
+type singleDriverFactory struct {
+	drv Driver
+}
+
+func (f *singleDriverFactory) CreateDriver(_ context.Context, _ SessionConfig) (Driver, error) {
+	return f.drv, nil
+}
+
+func SingleDriverFactory(drv Driver) DriverFactory {
+	return &singleDriverFactory{drv: drv}
+}
+
 func CredKeyForCookie(cookie string) string {
 	h := sha256.Sum256([]byte(cookie))
 	return fmt.Sprintf("%x", h[:16])

@@ -4,8 +4,6 @@ import (
 	"fmt"
 
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
-	"github.com/yinzhenyu/skills/qrypt/internal/coreadapter"
 )
 
 // Config holds construction-time parameters supplied by the Android/iOS host.
@@ -35,7 +33,7 @@ type Config struct {
 //
 // Wiring:
 //
-//	cipher        ← internal/cipher.NewRcloneCipher(Password, Salt, ...)
+//	cipher        ← qrypt.NewRcloneCipher(Password, Salt, ...)
 //	creds         ← in-memory MemoryCredentialStore (host must Set() before use)
 //	dirs          ← MobileDirs from cfg
 //	DriverFactory ← mobileDriverFactory (quark / yun139)
@@ -89,7 +87,7 @@ func newQryptAPI(cfg *Config, creds qrypt.CredentialStore) (*MobileAPI, error) {
 		filenameEnc = "standard"
 	}
 
-	rc, err := cipher.NewRcloneCipher(cfg.Password, cfg.Salt, encoding, filenameEnc)
+	rc, err := qrypt.NewRcloneCipher(cfg.Password, cfg.Salt, encoding, filenameEnc)
 	if err != nil {
 		return nil, fmt.Errorf("create cipher: %w", err)
 	}
@@ -101,7 +99,7 @@ func newQryptAPI(cfg *Config, creds qrypt.CredentialStore) (*MobileAPI, error) {
 	}
 
 	api, err := qrypt.NewFileAPI(qrypt.Options{
-		Cipher:        coreadapter.NewCipherAdapter(rc),
+		Cipher:        rc,
 		Dirs:          dirs,
 		Creds:         creds,
 		DriverFactory: newMobileDriverFactory(creds),

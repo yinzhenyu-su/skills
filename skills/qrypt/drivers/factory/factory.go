@@ -5,10 +5,10 @@ import (
 	"fmt"
 
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend/localfs"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend/quark"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend/yun139"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
+	"github.com/yinzhenyu/skills/qrypt/drivers/localfs"
+	"github.com/yinzhenyu/skills/qrypt/drivers/quark"
+	"github.com/yinzhenyu/skills/qrypt/drivers/yun139"
 )
 
 // NewDriverFromConfig creates a Driver from the given DriveConfig.

@@ -12,9 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
+	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
-	staging "github.com/yinzhenyu/skills/qrypt/internal/upload"
+	upload "github.com/yinzhenyu/skills/qrypt/internal/upload"
 )
 
 var errCooldown = errors.New("upload cooldown active")
@@ -265,7 +266,7 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		}
 	}
 
-	uploadCtx, uploadCancel := context.WithTimeout(backend.WithMtime(context.Background(), n.mtime), 30*time.Minute)
+	uploadCtx, uploadCancel := context.WithTimeout(qrypt.WithMtime(context.Background(), n.mtime), 30*time.Minute)
 	defer uploadCancel()
 	uploadReader := func() (io.ReadCloser, error) {
 		if snapPath == "" {
@@ -273,7 +274,7 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		}
 		return fs.staging.OpenReader(snapPath)
 	}
-	result, err := fs.uploader.Upload(uploadCtx, staging.Request{
+	result, err := fs.uploader.Upload(uploadCtx, upload.Request{
 		Path:       path,
 		Name:       snapshotName,
 		ParentFid:  parentFid,

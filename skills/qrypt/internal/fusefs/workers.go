@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yinzhenyu/skills/qrypt/internal/index"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
+	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
@@ -158,7 +158,7 @@ func (fs *QryptFS) logOpsBatch(tasks []metadataTask) {
 		return
 	}
 	for _, t := range tasks {
-		fs.cacheMgr.AppendOpsLog(&index.OpsLogEntry{
+		fs.cacheMgr.AppendOpsLog(&qrypt.OpsLogEntry{
 			OpType: t.opType,
 			Path:   t.path,
 			Fid:    strings.Join(t.fids, ","),

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/skills/qrypt/internal/backend"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 type file struct {

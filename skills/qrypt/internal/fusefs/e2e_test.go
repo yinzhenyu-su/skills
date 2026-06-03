@@ -11,9 +11,8 @@ import (
 
 	"github.com/hashicorp/golang-lru/v2"
 	"github.com/winfsp/cgofuse/fuse"
-	"github.com/yinzhenyu/skills/qrypt/internal/index"
-	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
-	"github.com/yinzhenyu/skills/qrypt/internal/backend/quarkmock"
+	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/drivers/quarkmock"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
@@ -32,13 +31,13 @@ func newE2EWithOpts(t *testing.T, opts FSOptions) *e2eSuite {
 	logging.L = logger
 
 	cacheDir := t.TempDir()
-	cm, err := index.NewCacheManager(cacheDir, 100*1024*1024)
+	cm, err := qrypt.NewCacheManager(cacheDir, 100*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	memCache, _ := lru.New[string, []byte](100)
-	cph, _ := cipher.NewRcloneCipher("e2etest", "")
+	cph, _ := qrypt.NewRcloneCipher("e2etest", "")
 
 	drv := quarkmock.NewDriver()
 	fs := NewFS(drv, cph, cm, "0", opts)
@@ -621,7 +620,7 @@ func TestE2E_ConcurrentCreateDifferentFiles(t *testing.T) {
 func TestE2E_ChunkBoundaryRead(t *testing.T) {
 	s := newE2E(t)
 
-	blockSize := cipher.BlockDataSize
+	blockSize := qrypt.BlockDataSize
 	data := make([]byte, blockSize*3)
 	for i := range data {
 		data[i] = byte(i % 256)
