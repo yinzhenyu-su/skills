@@ -202,6 +202,21 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 				s.subs[subID] = conn
 				s.subsMu.Unlock()
 
+				// Push current state snapshot so client can sync after reconnect
+				snapshot := s.daemon.Dashboard()
+				snapshotEvt, _ := json.Marshal(&protocol.Request{
+					ID:     0,
+					Method: "event",
+					Params: &protocol.Event{
+						Type:      protocol.EventMountStateChanged,
+						Timestamp: time.Now().UnixMilli(),
+						Data:      snapshot,
+					},
+				})
+				if err := conn.Write(ctx, websocket.MessageText, snapshotEvt); err != nil {
+					log.L.Errorf("WS: write snapshot failed: %v\n", err)
+				}
+
 				ack, _ := json.Marshal(protocol.NewResult(req.ID, map[string]string{"status": "subscribed"}))
 				if err := conn.Write(ctx, websocket.MessageText, ack); err != nil {
 					log.L.Errorf("WS: write ack failed: %v\n", err)
@@ -430,6 +445,12 @@ func (s *WSServer) dispatch(ctx context.Context, req *protocol.Request) *protoco
 	id := req.ID
 
 	switch req.Method {
+	case "ping":
+		return protocol.NewResult(id, map[string]string{"status": "pong"})
+
+	case "dashboard":
+		return protocol.NewResult(id, s.daemon.Dashboard())
+
 	case "status":
 		status, err := s.daemon.Status()
 		if err != nil {

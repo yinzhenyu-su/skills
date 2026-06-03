@@ -173,17 +173,13 @@ func runMount(cmd *cobra.Command, args []string) {
 
 	fmt.Printf("daemon 正在监听 %s\n", socketPath)
 
-	// If startup failed, keep WS alive briefly for client to read error via RPC, then exit
+	// If startup failed, keep daemon alive for client to query error via RPC
 	if len(startupErrs) > 0 {
 		for _, e := range startupErrs {
 			fmt.Fprintln(os.Stderr, e)
 		}
-		time.Sleep(5 * time.Second)
-		return
-	}
-
-	// Start mounts (unless --daemon headless mode)
-	if !daemonMode {
+		srv.SetHeadless(true)
+	} else if !daemonMode {
 		targets := resolveMountTargets(cmd, args, cfg)
 		for _, m := range targets {
 			if err := d.Start(ctx, m.Name); err != nil {
