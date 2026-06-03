@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
+	"github.com/yinzhenyu/skills/qrypt/internal/rpc"
 )
 
 func runStatus(cmd *cobra.Command, args []string) {
@@ -48,12 +48,12 @@ func runStatus(cmd *cobra.Command, args []string) {
 		printCacheMetrics(cacheDir)
 	}
 
-	if daemon.IsDaemonRunning(daemon.FindSocketPath()) {
+	if rpc.IsDaemonRunning(rpc.FindSocketPath()) {
 		fmt.Println()
 		fmt.Println("运行状态:    daemon 运行中")
 
 		// Query active transfers
-		client, err := daemon.DialWS(daemon.FindSocketPath())
+		client, err := rpc.DialWS(rpc.FindSocketPath())
 		if err == nil {
 			resp, rpcErr := client.Call("active_transfers", nil)
 			if rpcErr == nil && resp.Error == nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,7 +9,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
 type ListEntry struct {
@@ -22,42 +22,26 @@ type ListEntry struct {
 }
 
 func runList(cmd *cobra.Command, args []string) {
-	client, err := ensureDaemon()
+	api, err := apiFromCmd(cmd)
 	if err != nil {
 		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
-	defer client.Close()
 
 	path := "/"
 	if len(args) > 0 {
 		path = args[0]
 	}
 	mountName := resolveMount(cmd, &path)
-	password, _ := cmd.Flags().GetString("password")
-	salt, _ := cmd.Flags().GetString("salt")
 
-	resp, rpcErr := client.Call("list_dir", protocol.ListDirParams{
-		MountName: mountName,
-		Path:      path,
-		Password:  password,
-		Salt:      salt,
-	})
-	if rpcErr != nil {
-		fmt.Printf("RPC 错误: %v\n", err)
-		os.Exit(1)
-	}
-	if resp.Error != nil {
-		fmt.Printf("列出目录失败: %s\n", resp.Error.Message)
+	entries, err := api.List(context.Background(), mountName, path)
+	if err != nil {
+		fmt.Printf("列出目录失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	data, _ := json.Marshal(resp.Result)
-	var result protocol.ListDirResult
-	json.Unmarshal(data, &result)
-
-	allEntries := make([]ListEntry, 0, len(result.Entries))
-	for _, e := range result.Entries {
+	allEntries := make([]ListEntry, 0, len(entries))
+	for _, e := range entries {
 		allEntries = append(allEntries, ListEntry{
 			Path:      e.DecName,
 			Name:      e.Name,
@@ -65,7 +49,7 @@ func runList(cmd *cobra.Command, args []string) {
 			IsDir:     e.IsDir,
 			Size:      e.Size,
 			PlainSize: e.PlainSize,
-			ModTime:   time.UnixMilli(e.ModTime),
+			ModTime:   e.ModTime,
 		})
 	}
 

@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
+	"github.com/yinzhenyu/skills/qrypt/internal/rpc"
 )
 
 // ParseMountPath parses "mount_name:path" format.
@@ -46,17 +46,17 @@ func resolveMount(cmd *cobra.Command, path *string) string {
 
 // ensureDaemon checks if a daemon is running and auto-starts one if not.
 // Returns a connected WSClient. Caller MUST close the client when done.
-func ensureDaemon() (*daemon.WSClient, error) {
-	socketPath := daemon.FindSocketPath()
-	if daemon.IsDaemonRunning(socketPath) {
-		return daemon.DialWS(socketPath)
+func ensureDaemon() (*rpc.WSClient, error) {
+	socketPath := rpc.FindSocketPath()
+	if rpc.IsDaemonRunning(socketPath) {
+		return rpc.DialWS(socketPath)
 	}
 	if err := startDaemonHeadless(); err != nil {
 		return nil, err
 	}
 	for i := 0; i < 50; i++ {
-		if daemon.IsDaemonRunning(socketPath) {
-			return daemon.DialWS(socketPath)
+		if rpc.IsDaemonRunning(socketPath) {
+			return rpc.DialWS(socketPath)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

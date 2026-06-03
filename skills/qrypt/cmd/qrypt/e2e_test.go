@@ -1,45 +1,42 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
 )
 
-func startTestDaemon(t *testing.T, workDir string) {
+func writeTestConfig(t *testing.T, workDir string) string {
 	t.Helper()
+	cfgPath := filepath.Join(workDir, "qrypt.toml")
+	content := `version = "1"
 
-	cfg := &config.Config{
-		Mounts: []config.MountInstance{{
-			Name:   "test",
-			Type:   "localfs",
-			Params: config.MountParams{LocalRoot: workDir},
-			Encryption: &config.EncryptionConfig{
-				Password: "test",
-			},
-		}},
-	}
+[[mounts]]
+name = "test"
+type = "localfs"
+mount_point = "` + workDir + `"
 
-	d := daemon.NewDaemon(cfg, "test")
-	srv := daemon.NewWSServer(d, daemon.FindSocketPath())
-	ctx := context.Background()
-	if err := srv.Start(ctx); err != nil {
-		t.Fatalf("start daemon: %v", err)
+[mounts.params]
+local_root = "` + workDir + `"
+
+[mounts.encryption]
+password = "test"
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { srv.Stop(); os.Remove(daemon.FindSocketPath()) })
+	return cfgPath
 }
 
-func baseFlags() *cobra.Command {
+func baseFlags(cfgPath string) *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Flags().String("mount", "", "")
 	cmd.Flags().String("config", "", "")
 	cmd.Flags().String("password", "", "")
 	cmd.Flags().String("salt", "", "")
+	cmd.Flags().Set("config", cfgPath)
 	return cmd
 }
 
@@ -47,9 +44,9 @@ func TestCLI_E2E_ListDir(t *testing.T) {
 	workDir := t.TempDir()
 	t.Setenv("QRYPT_WORK_DIR", workDir)
 	os.WriteFile(filepath.Join(workDir, "hello.txt"), []byte("world"), 0644)
-	startTestDaemon(t, workDir)
+	cfgPath := writeTestConfig(t, workDir)
 
-	cmd := baseFlags()
+	cmd := baseFlags(cfgPath)
 	cmd.Flags().Bool("long", false, "")
 	cmd.Flags().Bool("encrypted", false, "")
 	cmd.Flags().Bool("human-readable", false, "")
@@ -65,13 +62,13 @@ func TestCLI_E2E_ListDir(t *testing.T) {
 func TestCLI_E2E_MkdirAndList(t *testing.T) {
 	workDir := t.TempDir()
 	t.Setenv("QRYPT_WORK_DIR", workDir)
-	startTestDaemon(t, workDir)
+	cfgPath := writeTestConfig(t, workDir)
 
-	mkdirCmd := baseFlags()
+	mkdirCmd := baseFlags(cfgPath)
 	mkdirCmd.Flags().Bool("parents", false, "")
 	runMkdir(mkdirCmd, []string{"/subdir"})
 
-	listCmd := baseFlags()
+	listCmd := baseFlags(cfgPath)
 	listCmd.Flags().Bool("json", false, "")
 	listCmd.Flags().Bool("long", false, "")
 	listCmd.Flags().Bool("encrypted", false, "")
@@ -87,9 +84,9 @@ func TestCLI_E2E_Remove(t *testing.T) {
 	workDir := t.TempDir()
 	t.Setenv("QRYPT_WORK_DIR", workDir)
 	os.WriteFile(filepath.Join(workDir, "temp.txt"), []byte("data"), 0644)
-	startTestDaemon(t, workDir)
+	cfgPath := writeTestConfig(t, workDir)
 
-	cmd := baseFlags()
+	cmd := baseFlags(cfgPath)
 	cmd.Flags().Bool("recursive", false, "")
 	cmd.Flags().Bool("recursive-upper", false, "")
 	cmd.Flags().Bool("force", false, "")

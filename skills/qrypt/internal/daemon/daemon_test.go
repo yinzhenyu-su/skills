@@ -9,9 +9,13 @@ import (
 
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
+	"github.com/yinzhenyu/skills/qrypt/internal/rpc"
 )
 
-func newTestDaemon(t *testing.T) (*Daemon, *WSClient, string) {
+var _ rpc.RPCHost = (*Daemon)(nil) // compile-time check
+
+
+func newTestDaemon(t *testing.T) (*Daemon, *rpc.WSClient, string) {
 	t.Helper()
 
 	dataDir := t.TempDir()
@@ -29,14 +33,14 @@ func newTestDaemon(t *testing.T) (*Daemon, *WSClient, string) {
 	}
 
 	d := NewDaemon(cfg, "test")
-	srv := NewWSServer(d, socketPath)
+	srv := rpc.NewWSServer(d, socketPath)
 	ctx := context.Background()
 	if err := srv.Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	t.Cleanup(func() { srv.Stop(); os.Remove(socketPath) })
 
-	client, err := DialWS(socketPath)
+	client, err := rpc.DialWS(socketPath)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -45,7 +49,7 @@ func newTestDaemon(t *testing.T) (*Daemon, *WSClient, string) {
 	return d, client, dataDir
 }
 
-func rpcCall(t *testing.T, client *WSClient, method string, params interface{}) *protocol.Response {
+func rpcCall(t *testing.T, client *rpc.WSClient, method string, params interface{}) *protocol.Response {
 	t.Helper()
 	resp, err := client.Call(method, params)
 	if err != nil {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
-	"github.com/yinzhenyu/skills/qrypt/internal/crypt"
+	"github.com/yinzhenyu/skills/qrypt/internal/cipher"
 )
 
 func runEncrypt(cmd *cobra.Command, args []string) {
@@ -18,9 +18,9 @@ func runEncrypt(cmd *cobra.Command, args []string) {
 		encryptFile(cmd, args[0])
 		return
 	}
-	cipher := loadCipherForTool(cmd)
+	cp := loadCipherForTool(cmd)
 	name := args[0]
-	encName := cipher.EncryptSegment(name)
+	encName := cp.EncryptSegment(name)
 	fmt.Printf("明文:  %s\n加密:  %s\n", name, encName)
 }
 
@@ -47,14 +47,14 @@ func encryptFile(cmd *cobra.Command, path string) {
 	}
 	defer r.Close()
 
-	cipher := loadCipherForTool(cmd)
+	cp := loadCipherForTool(cmd)
 	var nonce [24]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		fmt.Fprintf(os.Stderr, "生成随机数失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	er := crypt.NewEncryptingReader(r, cipher, nonce, plainSize)
+	er := cipher.NewEncryptingReader(r, cp, nonce, plainSize)
 	if _, err := io.Copy(os.Stdout, er); err != nil {
 		fmt.Fprintf(os.Stderr, "加密失败: %v\n", err)
 		os.Exit(1)
@@ -66,9 +66,9 @@ func runDecrypt(cmd *cobra.Command, args []string) {
 		decryptFile(cmd, args[0])
 		return
 	}
-	cipher := loadCipherForTool(cmd)
+	cp := loadCipherForTool(cmd)
 	encName := args[0]
-	plain, err := cipher.DecryptSegment(encName)
+	plain, err := cp.DecryptSegment(encName)
 	if err != nil {
 		fmt.Printf("解密失败: %v\n", err)
 		os.Exit(1)
@@ -90,22 +90,22 @@ func decryptFile(cmd *cobra.Command, path string) {
 	}
 	defer r.Close()
 
-	header := make([]byte, crypt.FileHeaderSize)
+	header := make([]byte, cipher.FileHeaderSize)
 	if _, err := io.ReadFull(r, header); err != nil {
 		fmt.Fprintf(os.Stderr, "读取文件头失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	if string(header[:crypt.FileMagicSize]) != crypt.FileMagic {
+	if string(header[:cipher.FileMagicSize]) != cipher.FileMagic {
 		fmt.Fprintf(os.Stderr, "无效的加密文件: 魔数不匹配\n")
 		os.Exit(1)
 	}
 
 	var nonce [24]byte
-	copy(nonce[:], header[crypt.FileMagicSize:])
+	copy(nonce[:], header[cipher.FileMagicSize:])
 
-	cipher := loadCipherForTool(cmd)
-	dr, err := crypt.NewDecryptingReader(r, cipher, nonce)
+	cp := loadCipherForTool(cmd)
+	dr, err := cipher.NewDecryptingReader(r, cp, nonce)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "创建解密流失败: %v\n", err)
 		os.Exit(1)
@@ -118,18 +118,18 @@ func decryptFile(cmd *cobra.Command, path string) {
 }
 
 func runEncSize(cmd *cobra.Command, args []string) {
-	cipher := loadCipherForTool(cmd)
+	cp := loadCipherForTool(cmd)
 	size, err := strconv.ParseInt(args[0], 10, 64)
 	if err != nil {
 		fmt.Printf("无效大小: %s\n", args[0])
 		os.Exit(1)
 	}
-	encSize := cipher.EncryptedSize(size)
+	encSize := cp.EncryptedSize(size)
 	fmt.Printf("明文大小:  %d\n加密大小:  %d\n", size, encSize)
 }
 
 // loadCipherForTool loads the encryption cipher from config for local tool operations.
-func loadCipherForTool(cmd *cobra.Command) *crypt.RcloneCipher {
+func loadCipherForTool(cmd *cobra.Command) *cipher.RcloneCipher {
 	configPath, _ := cmd.Flags().GetString("config")
 	_, cfg, _, _ := config.LoadConfigAuto(configPath)
 	if cfg == nil {
@@ -146,10 +146,10 @@ func loadCipherForTool(cmd *cobra.Command) *crypt.RcloneCipher {
 		mountEnc = rc.Encryption
 	}
 
-	cipher, err := config.MakeCipher(mountEnc, cfg.Defaults.Encryption, pwd, salt)
+	cp, err := config.MakeCipher(mountEnc, cfg.Defaults.Encryption, pwd, salt)
 	if err != nil {
 		fmt.Printf("加密引擎初始化失败: %v\n", err)
 		os.Exit(1)
 	}
-	return cipher
+	return cp
 }

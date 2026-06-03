@@ -6,6 +6,9 @@ qryptd
 !cmd/qrypt/
 !cmd/qryptd/**
 !cmd/qrypt/**
+!core/qrypt/
+!core/qrypt/**
+!internal/**
 vfs.test
 test-config.toml
 *.log

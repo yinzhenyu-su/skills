@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,23 +10,14 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
-)
-
-const (
-	matchSubstring = iota
-	matchGlob
-	matchRegex
-	matchExact
 )
 
 func runFind(cmd *cobra.Command, args []string) {
-	client, err := ensureDaemon()
+	api, err := apiFromCmd(cmd)
 	if err != nil {
 		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
-	defer client.Close()
 
 	rootPath := "/"
 	pattern := ""
@@ -48,26 +40,21 @@ func runFind(cmd *cobra.Command, args []string) {
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 	countOnly, _ := cmd.Flags().GetBool("count")
 
-	resp, rpcErr := client.Call("find", protocol.FindParams{
-		MountName:     mountName,
-		Path:          rootPath,
-		Pattern:       pattern,
-		CaseSensitive: caseSensitive,
-		MaxDepth:      maxDepth,
-		MaxMatches:    maxMatches,
-	})
-	if rpcErr != nil {
-		fmt.Printf("RPC 错误: %v\n", rpcErr)
-		os.Exit(1)
-	}
-	if resp.Error != nil {
-		fmt.Printf("搜索失败: %s\n", resp.Error.Message)
+	entries, err := api.Find(context.Background(), mountName, rootPath, pattern, maxDepth, maxMatches, caseSensitive)
+	if err != nil {
+		fmt.Printf("搜索失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	data, _ := json.Marshal(resp.Result)
-	var result protocol.FindResult
-	json.Unmarshal(data, &result)
+	// Convert to findEntries for client-side filtering
+	findEntries := make([]findEntry, len(entries))
+	for i, e := range entries {
+		findEntries[i] = findEntry{
+			Path:  e.DecName,
+			IsDir: e.IsDir,
+			Size:  e.Size,
+		}
+	}
 
 	// Client-side filtering for advanced matching modes
 	globMode, _ := cmd.Flags().GetBool("glob")
@@ -79,20 +66,19 @@ func runFind(cmd *cobra.Command, args []string) {
 	useFilter := globMode || regexMode || exactMode || typeFilter != "" || sizeFilter != ""
 
 	if useFilter && pattern != "" {
-		filtered := result.Entries[:0]
-		for _, e := range result.Entries {
+		var filtered []findEntry
+		for _, e := range findEntries {
 			if matchPath(e.Path, pattern, globMode, regexMode, exactMode, caseSensitive) {
 				filtered = append(filtered, e)
 			}
 		}
-		result.Entries = filtered
-		result.Count = len(filtered)
+		findEntries = filtered
 	}
 
 	// File type filter
 	if typeFilter != "" {
-		filtered := result.Entries[:0]
-		for _, e := range result.Entries {
+		var filtered []findEntry
+		for _, e := range findEntries {
 			if typeFilter == "f" && e.IsDir {
 				continue
 			}
@@ -101,48 +87,40 @@ func runFind(cmd *cobra.Command, args []string) {
 			}
 			filtered = append(filtered, e)
 		}
-		result.Entries = filtered
-		result.Count = len(filtered)
+		findEntries = filtered
 	}
 
 	// Size filter
 	if sizeFilter != "" {
 		sizeOp, sizeBytes := parseSizeFilter(sizeFilter)
 		if sizeOp != 0 {
-			filtered := result.Entries[:0]
-			for _, e := range result.Entries {
+			var filtered []findEntry
+			for _, e := range findEntries {
 				if e.IsDir {
 					filtered = append(filtered, e)
 					continue
 				}
 				switch sizeOp {
-				case 1: // greater than
+				case 1:
 					if e.Size > sizeBytes {
 						filtered = append(filtered, e)
 					}
-				case -1: // less than
+				case -1:
 					if e.Size < sizeBytes {
 						filtered = append(filtered, e)
 					}
 				}
 			}
-			result.Entries = filtered
-			result.Count = len(filtered)
+			findEntries = filtered
 		}
 	}
 
-	// Max matches post-filter
-	if maxMatches > 0 && len(result.Entries) > maxMatches {
-		result.Entries = result.Entries[:maxMatches]
-		result.Count = maxMatches
-	}
-
 	if countOnly {
-		fmt.Println(result.Count)
+		fmt.Println(len(findEntries))
 		return
 	}
 
-	for _, e := range result.Entries {
+	for _, e := range findEntries {
 		if jsonOutput {
 			typ := "file"
 			if e.IsDir {
@@ -161,6 +139,12 @@ func runFind(cmd *cobra.Command, args []string) {
 			}
 		}
 	}
+}
+
+type findEntry struct {
+	Path  string
+	IsDir bool
+	Size  int64
 }
 
 func matchPath(path, pattern string, globMode, regexMode, exactMode, caseSensitive bool) bool {

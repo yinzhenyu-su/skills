@@ -14,8 +14,12 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/daemon"
-	"github.com/yinzhenyu/skills/qrypt/internal/log"
+	"github.com/yinzhenyu/skills/qrypt/internal/logging"
+	"github.com/yinzhenyu/skills/qrypt/internal/rpc"
 )
+
+var _ rpc.RPCHost = (*daemon.Daemon)(nil) // compile-time check
+
 
 func init() {
 	var mountCmd = &cobra.Command{
@@ -32,7 +36,7 @@ Use --daemon for headless mode (daemon without FUSE mount).`,
 		Run: runMount,
 	}
 	mountCmd.Flags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
-	mountCmd.Flags().String("drive-type", "", "驱动类型: quark, yun139 (默认: 配置文件 drive.type)")
+	mountCmd.Flags().String("drive-type", "", "驱动类型: quark, yun139 (默认: 配置文件 backend.type)")
 	mountCmd.Flags().StringP("cookie", "c", "", "Quark Drive Cookie")
 	mountCmd.Flags().StringP("cache", "a", "", "本地缓存目录")
 	mountCmd.Flags().StringP("mount", "m", "", "本地挂载点")
@@ -71,10 +75,10 @@ func runMount(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	socketPath := daemon.FindSocketPath()
+	socketPath := rpc.FindSocketPath()
 
 	// If daemon is already running, delegate via RPC
-	if daemon.IsDaemonRunning(socketPath) {
+	if rpc.IsDaemonRunning(socketPath) {
 		if daemonMode, _ := cmd.Flags().GetBool("daemon"); daemonMode {
 			fmt.Println("daemon 已经在运行中")
 			return
@@ -127,7 +131,7 @@ func runMount(cmd *cobra.Command, args []string) {
 	}
 
 	// Init logger (fallback on failure)
-	rotateCfg := log.DefaultRotateConfig
+	rotateCfg := logging.DefaultRotateConfig
 	if cfg.Log.MaxSize > 0 {
 		rotateCfg.MaxSize = cfg.Log.MaxSize
 	}
@@ -140,15 +144,15 @@ func runMount(cmd *cobra.Command, args []string) {
 	if cfg.Log.Compress != nil {
 		rotateCfg.Compress = *cfg.Log.Compress
 	}
-	logger, err := log.New(cfg.Log.Level, cfg.Log.File, &rotateCfg)
+	logger, err := logging.New(cfg.Log.Level, cfg.Log.File, &rotateCfg)
 	if err != nil {
 		startupErrs = append(startupErrs, fmt.Sprintf("日志初始化失败: %v", err))
 	} else {
-		log.L = logger
+		logging.L = logger
 		defer logger.Close()
 	}
 
-	log.L.Infof("qrypt mount v%s starting...\n", version)
+	logging.L.Infof("qrypt mount v%s starting...\n", version)
 
 	// Create daemon with all components
 	d := daemon.NewDaemonWithPath(cfg, usedPath, version)
@@ -162,7 +166,7 @@ func runMount(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	srv := daemon.NewWSServer(d, socketPath)
+	srv := rpc.NewWSServer(d, socketPath)
 	if daemonMode {
 		srv.SetHeadless(true)
 	}
@@ -183,7 +187,7 @@ func runMount(cmd *cobra.Command, args []string) {
 		targets := resolveMountTargets(cmd, args, cfg)
 		for _, m := range targets {
 			if err := d.Start(ctx, m.Name); err != nil {
-				log.L.Errorf("启动挂载 %s 失败: %v\n", m.Name, err)
+				logging.L.Errorf("启动挂载 %s 失败: %v\n", m.Name, err)
 				fmt.Fprintf(os.Stderr, "  %s: 启动失败: %v\n", m.Name, err)
 			} else {
 				fmt.Printf("  %s: 已挂载\n", m.Name)
@@ -207,16 +211,16 @@ func runMount(cmd *cobra.Command, args []string) {
 	case <-srv.Done():
 		// shutdown was initiated via RPC; already handled
 	}
-	log.L.Infof("daemon stopped\n")
+	logging.L.Infof("daemon stopped\n")
 }
 
 func stopRunningDaemon() {
-	socketPath := daemon.FindSocketPath()
-	if !daemon.IsDaemonRunning(socketPath) {
+	socketPath := rpc.FindSocketPath()
+	if !rpc.IsDaemonRunning(socketPath) {
 		fmt.Println("daemon 未在运行")
 		return
 	}
-	client, err := daemon.DialWS(socketPath)
+	client, err := rpc.DialWS(socketPath)
 	if err != nil {
 		fmt.Printf("无法连接到 daemon: %v\n", err)
 		os.Exit(1)
@@ -231,7 +235,7 @@ func stopRunningDaemon() {
 }
 
 func delegateMountToRunningDaemon(cmd *cobra.Command, args []string, socketPath string) {
-	client, err := daemon.DialWS(socketPath)
+	client, err := rpc.DialWS(socketPath)
 	if err != nil {
 		fmt.Printf("无法连接到 daemon: %v\n", err)
 		os.Exit(1)
