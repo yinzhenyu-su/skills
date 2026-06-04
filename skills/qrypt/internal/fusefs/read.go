@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/winfsp/cgofuse/fuse"
-	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
@@ -41,13 +40,13 @@ func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int)
 		}
 	}
 
-	startChunk := ofst / qrypt.BlockDataSize
-	endChunk := (ofst + int64(len(buff)) - 1) / qrypt.BlockDataSize
+	startChunk := ofst / drivers.BlockDataSize
+	endChunk := (ofst + int64(len(buff)) - 1) / drivers.BlockDataSize
 
 	node.mu.Lock()
-	if ofst == (node.lastReadBlock+1)*qrypt.BlockDataSize {
+	if ofst == (node.lastReadBlock+1)*drivers.BlockDataSize {
 		node.readSeqCount++
-	} else if ofst != node.lastReadBlock*qrypt.BlockDataSize {
+	} else if ofst != node.lastReadBlock*drivers.BlockDataSize {
 		node.readSeqCount = 0
 	}
 	node.lastReadBlock = endChunk
@@ -67,7 +66,7 @@ func (fs *QryptFS) Read(path string, buff []byte, ofst int64, fh uint64) (n int)
 
 		chunkStart := int64(0)
 		if i == startChunk {
-			chunkStart = ofst % qrypt.BlockDataSize
+			chunkStart = ofst % drivers.BlockDataSize
 		}
 
 		chunkEnd := int64(len(chunkData))
@@ -106,7 +105,7 @@ func (fs *QryptFS) prefetch(n *Node, startChunk uint64) {
 	seenBatches := make(map[uint64]bool)
 	for i := uint64(0); i < FetchBatchBlocks/4; i++ {
 		target := startChunk + i
-		if int64(target)*qrypt.BlockDataSize >= fileSize {
+		if int64(target)*drivers.BlockDataSize >= fileSize {
 			break
 		}
 		batchIdx := target / FetchBatchBlocks
@@ -153,7 +152,7 @@ func (fs *QryptFS) getDecryptedChunk(n *Node, idx uint64) ([]byte, error) {
 	}
 
 	if strings.HasPrefix(n.fid, "local_") {
-		return make([]byte, 0, qrypt.BlockDataSize), nil
+		return make([]byte, 0, drivers.BlockDataSize), nil
 	}
 
 	batchIdx := idx / FetchBatchBlocks
@@ -211,10 +210,10 @@ func (fs *QryptFS) fetchBatch(n *Node, batchIdx uint64) error {
 	var pStart, pEnd int64
 	if batchIdx == 0 {
 		pStart = 0
-		pEnd = int64(qrypt.FileHeaderSize) + int64(FetchBatchBlocks)*int64(qrypt.BlockSize) - 1
+		pEnd = int64(drivers.FileHeaderSize) + int64(FetchBatchBlocks)*int64(drivers.BlockSize) - 1
 	} else {
-		pStart = int64(qrypt.FileHeaderSize) + int64(startBlock)*int64(qrypt.BlockSize)
-		pEnd = pStart + int64(FetchBatchBlocks)*int64(qrypt.BlockSize) - 1
+		pStart = int64(drivers.FileHeaderSize) + int64(startBlock)*int64(drivers.BlockSize)
+		pEnd = pStart + int64(FetchBatchBlocks)*int64(drivers.BlockSize) - 1
 	}
 	if pEnd >= encSize {
 		pEnd = encSize - 1
@@ -253,12 +252,12 @@ processBatch:
 	defer rc.Close()
 
 	if pStart == 0 {
-		header := make([]byte, qrypt.FileHeaderSize)
+		header := make([]byte, drivers.FileHeaderSize)
 		_, errHeader := io.ReadFull(rc, header)
-		if errHeader == nil && string(header[:len(qrypt.FileMagic)]) == qrypt.FileMagic {
+		if errHeader == nil && string(header[:len(drivers.FileMagic)]) == drivers.FileMagic {
 			if !n.hasNonce {
 				n.mu.Lock()
-				copy(n.fileNonce[:], header[len(qrypt.FileMagic):])
+				copy(n.fileNonce[:], header[len(drivers.FileMagic):])
 				n.hasNonce = true
 				n.mu.Unlock()
 			}
@@ -266,14 +265,14 @@ processBatch:
 	}
 
 	for i := startBlock; i <= endBlock; i++ {
-		encBlock := make([]byte, qrypt.BlockSize)
+		encBlock := make([]byte, drivers.BlockSize)
 		nRead, err := io.ReadFull(rc, encBlock)
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
 			if err == io.ErrUnexpectedEOF {
-				if nRead > qrypt.BlockHeaderSize {
+				if nRead > drivers.BlockHeaderSize {
 					encBlock = encBlock[:nRead]
 				} else {
 					break
@@ -287,7 +286,7 @@ processBatch:
 		nonce := n.fileNonce
 		n.mu.RUnlock()
 
-		decBlock, err := fs.cipher.DecryptBlock(encBlock, uint64(i), nonce)
+		decBlock, err := fs.cp.DecryptBlock(encBlock, uint64(i), nonce)
 		if err != nil {
 			return fmt.Errorf("decryption failed for block %d: %v", i, err)
 		}

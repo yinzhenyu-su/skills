@@ -17,7 +17,7 @@ type FSOptions struct {
 }
 
 // NewFS returns an error when FUSE is not available.
-func NewFS(drv, cipher, cacheMgr interface{}, rootFid string, opts FSOptions) *QryptFS {
+func NewFS(drv, cp, cacheMgr interface{}, rootFid string, opts FSOptions) *QryptFS {
 	return &QryptFS{}
 }
 

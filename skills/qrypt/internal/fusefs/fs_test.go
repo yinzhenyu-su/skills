@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/golang-lru/v2"
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	localfs "github.com/yinzhenyu/skills/qrypt/drivers/localfs"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
@@ -32,7 +33,7 @@ func newTestFS(t *testing.T) *QryptFS {
 	logger, _ := logging.New("off", "", nil)
 	logging.L = logger
 
-	cph, _ := qrypt.NewRcloneCipher("testpassword", "")
+	cph, _ := cipher.NewRcloneCipher("testpassword", "")
 
 	drv := localfs.NewDriver(rootDir)
 

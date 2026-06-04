@@ -300,7 +300,7 @@ func (fs *QryptFS) lookupExtended(path string, refresh bool) (*Node, int) {
 							if _, inDeletion := fs.activeDeletions.Load(fid); inDeletion {
 								break
 							}
-							decSize, err := fs.cipher.DecryptedSize(f.Size)
+							decSize, err := fs.cp.DecryptedSize(f.Size)
 							if err != nil {
 								logging.L.Warnf("lookupExtended: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", path, fid, f.Size, err)
 							}
@@ -361,7 +361,7 @@ func (fs *QryptFS) lookupExtended(path string, refresh bool) (*Node, int) {
 
 		found := false
 		for _, f := range files {
-			decName, _ := fs.cipher.DecryptSegment(f.Name)
+			decName, _ := fs.cp.DecryptSegment(f.Name)
 			if decName != part {
 				continue
 			}
@@ -382,7 +382,7 @@ func (fs *QryptFS) lookupExtended(path string, refresh bool) (*Node, int) {
 				}
 			}
 
-			decSize, errDec := fs.cipher.DecryptedSize(f.Size)
+			decSize, errDec := fs.cp.DecryptedSize(f.Size)
 			if errDec != nil {
 				logging.L.Warnf("lookupExtended path resolution: DecryptedSize failed for fid=%s name=%s encSize=%d: %v\n", f.ID, part, f.Size, errDec)
 			}

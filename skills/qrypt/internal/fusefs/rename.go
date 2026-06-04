@@ -60,8 +60,8 @@ func (fs *QryptFS) Rename3(oldPath string, newPath string, flags uint32) (errc i
 	w, wOk := fs.drv.(drivers.Writer)
 
 	if !isLocal && wOk {
-		encName := fs.cipher.EncryptSegment(newName)
-		oldEncName := fs.cipher.EncryptSegment(oldNode.name)
+		encName := fs.cp.EncryptSegment(newName)
+		oldEncName := fs.cp.EncryptSegment(oldNode.name)
 		if encName != oldEncName {
 			renameEntry := drivers.Entry{ID: oldNode.fid, ParentID: oldNode.parentFid}
 			var renameErr error

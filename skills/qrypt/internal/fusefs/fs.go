@@ -13,6 +13,7 @@ import (
 
 	"github.com/hashicorp/golang-lru/v2"
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
@@ -69,7 +70,7 @@ type QryptFS struct {
 	fuse.FileSystemBase
 
 	drv     drivers.Driver
-	cipher  *qrypt.RcloneCipher
+	cp  *cipher.RcloneCipher
 	cacheMgr *qrypt.CacheManager
 	staging *qrypt.Store
 
@@ -112,7 +113,7 @@ type FSOptions struct {
 
 func NewFS(
 	drv drivers.Driver,
-	cipher *qrypt.RcloneCipher,
+	cp *cipher.RcloneCipher,
 	cacheMgr *qrypt.CacheManager,
 	rootFid string,
 	opts FSOptions,
@@ -139,11 +140,11 @@ func NewFS(
 		stg = cacheMgr.Staging()
 	}
 
-	uploader := upload.NewUploader(drv, cipher)
+	uploader := upload.NewUploader(drv, cp)
 
 	fs := &QryptFS{
 		drv:             drv,
-		cipher:          cipher,
+		cp:              cp,
 		cacheMgr:        cacheMgr,
 		staging:         stg,
 		rootFid:         rootFid,

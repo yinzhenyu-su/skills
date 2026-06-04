@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 	upload "github.com/yinzhenyu/skills/qrypt/internal/upload"
@@ -266,7 +265,7 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		}
 	}
 
-	uploadCtx, uploadCancel := context.WithTimeout(qrypt.WithMtime(context.Background(), n.mtime), 30*time.Minute)
+	uploadCtx, uploadCancel := context.WithTimeout(drivers.WithMtime(context.Background(), n.mtime), 30*time.Minute)
 	defer uploadCancel()
 	uploadReader := func() (io.ReadCloser, error) {
 		if snapPath == "" {
@@ -380,7 +379,7 @@ func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snap
 		}
 
 		if curName != snapshotName {
-			encName := fs.cipher.EncryptSegment(curName)
+			encName := fs.cp.EncryptSegment(curName)
 			logging.L.Infof("syncFilePostUpload: renaming %s from %s to %s\n", path, snapshotName, curName)
 			if wOk {
 				renameEntry := drivers.Entry{ID: newFid, ParentID: curParentFid}
@@ -487,7 +486,7 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 			return fmt.Errorf("mount root node has empty name")
 		}
 
-		encName := fs.cipher.EncryptSegment(mountName)
+		encName := fs.cp.EncryptSegment(mountName)
 		newFid, createErr := fs.ensureRemoteDir("0", encName)
 		if createErr != nil {
 			return createErr
@@ -501,7 +500,7 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 
 	currentRemoteParentFid := "0"
 	for _, level := range levels {
-		encName := fs.cipher.EncryptSegment(level.segName)
+		encName := fs.cp.EncryptSegment(level.segName)
 		fid, err := fs.findChildDir(context.Background(), currentRemoteParentFid, encName)
 		if err != nil {
 			newFid, createErr := fs.ensureRemoteDir(currentRemoteParentFid, encName)

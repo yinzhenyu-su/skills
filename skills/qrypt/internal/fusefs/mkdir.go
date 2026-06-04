@@ -35,7 +35,7 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 		return errc
 	}
 
-	encName := fs.cipher.EncryptSegment(name)
+	encName := fs.cp.EncryptSegment(name)
 
 	w, ok := fs.drv.(drivers.Writer)
 	if !ok {

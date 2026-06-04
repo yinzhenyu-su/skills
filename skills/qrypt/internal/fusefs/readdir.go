@@ -162,7 +162,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 			pn.mu.RUnlock()
 		}
 		if decName == "" {
-			decName, _ = fs.cipher.DecryptSegment(f.Name)
+			decName, _ = fs.cp.DecryptSegment(f.Name)
 		}
 
 		if decName == "" || decName == "." || decName == ".." {
@@ -280,7 +280,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 
 			if source == "remote" && baseMtime > 0 && remoteMtime > baseMtime+2000 {
 				if !isDirty {
-					decSize, errDec := fs.cipher.DecryptedSize(rf.Size)
+					decSize, errDec := fs.cp.DecryptedSize(rf.Size)
 					if errDec != nil {
 						logging.L.Warnf("MergeRemoteChanges: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", entry.path, rf.ID, rf.Size, errDec)
 					}
@@ -320,7 +320,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		logging.L.Debugf("MergeRemoteChanges: adding new remote file %s (fid=%s, size=%d) to %s\n", name, rf.ID, rf.Size, parentPath)
 
 		childPath := prefix + name
-		decSize, errDec := fs.cipher.DecryptedSize(rf.Size)
+		decSize, errDec := fs.cp.DecryptedSize(rf.Size)
 		if errDec != nil {
 			logging.L.Warnf("MergeRemoteChanges new file: DecryptedSize failed for %s fid=%s encSize=%d: %v\n", childPath, rf.ID, rf.Size, errDec)
 		}

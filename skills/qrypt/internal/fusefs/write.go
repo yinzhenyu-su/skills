@@ -49,7 +49,7 @@ func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uin
 		source:            "local",
 	}
 
-	nonce, err := fs.cipher.GenerateRandomNonce()
+	nonce, err := fs.cp.GenerateRandomNonce()
 	if err == nil {
 		n.fileNonce = nonce
 		n.hasNonce = true
