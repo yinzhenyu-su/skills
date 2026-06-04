@@ -1,6 +1,6 @@
 ## Phase 1: IPC 层替换
 
-- [x] 1.1 添加 `nhooyr.io/websocket` 依赖
+- [x] 1.1 添加 `github.com/coder/websocket` 依赖
 - [x] 1.2 WebSocket Server 实现（接受连接、分帧、dispatch）
 - [x] 1.3 WebSocket Client 实现（请求/响应、事件接收、binary 收发）
 - [x] 1.4 JSON-RPC handler 包装为 WebSocket Text frame（兼容桥接）

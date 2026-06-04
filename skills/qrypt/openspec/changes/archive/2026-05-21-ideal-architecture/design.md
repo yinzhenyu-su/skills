@@ -16,6 +16,7 @@ v4: + daemon push/pull (CLI 通过 RPC 路由文件操作)
 ## Goals / Non-Goals
 
 **Goals:**
+
 - 单连接双工 IPC，同时处理 RPC、事件推送、数据流
 - Driver 连接池化，CLI 和 VFS 复用同一认证会话
 - 统一上传调度，合并 VFS flushing 和 CLI push
@@ -23,6 +24,7 @@ v4: + daemon push/pull (CLI 通过 RPC 路由文件操作)
 - 缓存一致性事件机制
 
 **Non-Goals:**
+
 - 跨语言/跨平台协议（WebSocket 已足够）
 - 客户端与服务端分离部署（始终同一台机器）
 - 水平扩展（单用户场景无用）
@@ -111,9 +113,10 @@ v4: + daemon push/pull (CLI 通过 RPC 路由文件操作)
 
 ### Decision 1: WebSocket over Unix socket
 
-**方案：** 使用 `nhooyr.io/websocket` 在 Unix socket 上运行 WebSocket 协议。
+**方案：** 使用 `github.com/coder/websocket` 在 Unix socket 上运行 WebSocket 协议。
 
 **理由：**
+
 - 原生支持 Text/Binary 帧，自然区分 JSON 控制消息和二进制数据
 - 单连接全双工，RPC 请求和事件推送共享同一连接
 - 内置 ping/pong 心跳、关闭握手、消息分帧
@@ -167,10 +170,12 @@ func (sm *SessionManager) Release(key SessionKey)
 ```
 
 **流程：**
+
 - `Acquire()`: 检查 `sessions[key]` 是否存在，存在则 `RefCount++`，不存在则新建 Driver → `Init()` → 启动 token refresh goroutine → `RefCount=1`
 - `Release()`: `RefCount--`，到 0 时关闭 token refresh goroutine → `Driver.Drop()` → 从 map 删除
 
 **锁竞争分析：**
+
 - Acquire/Release 只在 `mu.Lock()` 内做 map lookup + refcount 原子增减
 - 临界区极短（纳秒级）
 - 实际的 `drv.List()` / `drv.Read()` 调用在 Release 之后、Driver 方法调用不在锁保护范围内
@@ -178,11 +183,13 @@ func (sm *SessionManager) Release(key SessionKey)
 - 真实场景下锁竞争不可感知
 
 **不选择方案 B（VFS 独享 session）：**
+
 - 每个 VFS mount 多一个 TCP 连接和认证握手
 - 如果 3 个 mount 连同一个夸克账号，3 个独立 TCP 连接 vs 1 个共享连接
 - 没有实质好处（"锁竞争"在实测中是理论问题）
 
 **Token 刷新：**
+
 - Quark Driver 的 token（`__puus`）在 HTTP 请求中自动更新
 - 用 `atomic.Value` 存储最新 token，后台 goroutine 定期获取或被动接收更新
 - 不在锁保护范围内做 token 刷新，避免 VFS 请求被 token 刷新阻塞
@@ -231,25 +238,27 @@ VFS Release()                     CLI qrypt push file
 ```
 
 **VFS side：**
+
 - Release() 行为不变：`staging.Sync()` → `orchestrator.Enqueue()` → 返回
 - 原来 Release 后马上返回，现在也一样
 
 **v.s. 当前架构：**
 
-| | 当前 | 统一后 |
-|--|------|--------|
-| VFS flush 队列 | uploadChan (cap 1000) | TransferOrchestrator.queue |
-| CLI push 队列 | WorkerPool.jobs | TransferOrchestrator.queue（同一队列） |
-| 并发控制 | VFS: sync.concurrency / CLI: --transfers | 统一并发数 |
-| 限速 | 无 | Token bucket |
-| 进度查询 | CLI push 有 event, VFS flush 无 | 统一 ProgressHub, status 可见 |
-| 重试策略 | 各写各的 | 统一重试逻辑 |
+|                | 当前                                     | 统一后                                 |
+| -------------- | ---------------------------------------- | -------------------------------------- |
+| VFS flush 队列 | uploadChan (cap 1000)                    | TransferOrchestrator.queue             |
+| CLI push 队列  | WorkerPool.jobs                          | TransferOrchestrator.queue（同一队列） |
+| 并发控制       | VFS: sync.concurrency / CLI: --transfers | 统一并发数                             |
+| 限速           | 无                                       | Token bucket                           |
+| 进度查询       | CLI push 有 event, VFS flush 无          | 统一 ProgressHub, status 可见          |
+| 重试策略       | 各写各的                                 | 统一重试逻辑                           |
 
 值得注意：当前 Release 已经是异步 enqueue 的，所以这个变更**对 VFS 行为无影响**。用户无感知。
 
 ### Decision 4: 薄 CLI
 
 **CLI 不再直接做的事情：**
+
 - 加载和解析 TOML config（→ 由 daemon 持有）
 - 创建 cipher 实例（→ daemon 持有）
 - 创建 Driver 实例（→ daemon SessionManager）
@@ -258,6 +267,7 @@ VFS Release()                     CLI qrypt push file
 - 遍历本地目录树、构建传输清单（→ daemon 收到路径后自己 Scan）
 
 **CLI 保留的能力：**
+
 - `qrypt init` → 本地生成配置模板（不依赖 daemon）
 - `qrypt validate` → 本地校验配置（不依赖 daemon）
 - `qrypt config` → 查看/修改配置（委托 daemon）
@@ -265,20 +275,20 @@ VFS Release()                     CLI qrypt push file
 
 **命令映射表：**
 
-| 命令 | 当前 | 理想 |
-|------|------|------|
-| `qrypt mount` | 直接启 FUSE | WS → daemon mount start |
-| `qrypt ls` | 混合（daemon/direct） | WS → daemon |
-| `qrypt push` | 混合（daemon/direct） | WS → daemon（binary data 流） |
-| `qrypt pull` | 混合（daemon/direct） | WS → daemon（binary data 流） |
-| `qrypt cat` | direct | WS → daemon（binary data 流） |
-| `qrypt find` | direct | WS → daemon（daemon 返回全量再在 CLI filter）|
-| `qrypt cp` | direct | WS → daemon（跨盘传输走 daemon 内流式管道）|
-| `qrypt rm` | 混合（daemon/direct） | WS → daemon |
-| `qrypt mv` | 混合（daemon/direct） | WS → daemon |
-| `qrypt status` | 混合 | WS → daemon |
-| `qrypt init` | local | local（不变） |
-| `qrypt validate` | local | local（不变） |
+| 命令             | 当前                  | 理想                                          |
+| ---------------- | --------------------- | --------------------------------------------- |
+| `qrypt mount`    | 直接启 FUSE           | WS → daemon mount start                       |
+| `qrypt ls`       | 混合（daemon/direct） | WS → daemon                                   |
+| `qrypt push`     | 混合（daemon/direct） | WS → daemon（binary data 流）                 |
+| `qrypt pull`     | 混合（daemon/direct） | WS → daemon（binary data 流）                 |
+| `qrypt cat`      | direct                | WS → daemon（binary data 流）                 |
+| `qrypt find`     | direct                | WS → daemon（daemon 返回全量再在 CLI filter） |
+| `qrypt cp`       | direct                | WS → daemon（跨盘传输走 daemon 内流式管道）   |
+| `qrypt rm`       | 混合（daemon/direct） | WS → daemon                                   |
+| `qrypt mv`       | 混合（daemon/direct） | WS → daemon                                   |
+| `qrypt status`   | 混合                  | WS → daemon                                   |
+| `qrypt init`     | local                 | local（不变）                                 |
+| `qrypt validate` | local                 | local（不变）                                 |
 
 **需要考虑：** `qrypt cat` 走 daemon 意味着即使小文件也需要一次 IPC 往返。但 WebSocket binary frame 传递文件内容的开销极小（mmap 共享内存实际上更复杂），对于个人工具可以接受。
 
@@ -287,6 +297,7 @@ VFS Release()                     CLI qrypt push file
 **方案：** `qryptd` 是唯一能启 FUSE 挂载的进程。`qrypt mount` 命令变为向 daemon 发送 `mount_start` RPC 的别名。
 
 **理由：**
+
 - 所有 VFS 操作直接访问 daemon 内的 SessionManager 和缓存
 - daemon 退出时自动卸载所有挂载点（通过 signal handler）
 - 消除"独立 mount 进程"和"daemon mount"两条路径的维护成本
@@ -318,6 +329,7 @@ func (ci *CacheInvalidator) OnFileRemoved(mount, remotePath string) {
 ```
 
 **为什么需要：**
+
 - 当前 VFS 对"外部"变更毫无感知
 - CLI push 了一个文件 → VFS 目录树缓存还是旧的 → `ls` 看不到新文件
 - 另一个设备删了文件 → VFS 缓存等到 TTL 过期才反映
@@ -442,7 +454,7 @@ Task 列表以"从当前代码演进到目标架构"的视角编写，分为 4 �
 
 ### Phase 1: IPC 层替换（重构, 不影响业务逻辑）
 
-- [ ] 1.1 添加 `nhooyr.io/websocket` 依赖
+- [ ] 1.1 添加 `github.com/coder/websocket` 依赖
 - [ ] 1.2 实现 `internal/daemon/wsserver.go` — WebSocket Server（接受连接, 分帧, dispatch）
 - [ ] 1.3 实现 `internal/daemon/wsclient.go` — WebSocket Client（请求/响应, 事件接收, binary 收发）
 - [ ] 1.4 旧 JSON-RPC Server 包装为 WebSocket Text frame handler（兼容桥接, 逐步迁移）
@@ -479,11 +491,11 @@ Task 列表以"从当前代码演进到目标架构"的视角编写，分为 4 �
 
 ## Risks / Trade-offs
 
-| Risk | Mitigation |
-|------|-----------|
-| WebSocket 依赖不是标准库 | `nhooyr.io/websocket` 纯 Go、广泛使用、LICENSE MIT；依赖数量增加 1 个 |
-| Daemon 进程崩溃 → CLI 全部瘫痪 | daemon 退出自动卸载 FUSE, 重启后 VFS 恢复正常；CLI 显示友好错误"daemon 未运行" |
-| Session 共享 → VFS 被 CLI 操作影响性能 | 锁竞争窗口纳秒级；若实测有问题, 可回退到方案 B（VFS 独享 session） |
-| TransferOrchestrator 单点故障 | goroutine panic 只影响单个 worker, 不崩 Orchestrator；队列持久化暂不考虑 |
-| CLI 变薄后 `qrypt cat` 延迟增加 | WebSocket 二进制帧开销极小；如有实际性能问题, 可给 cat 加 `--direct` 绕过 daemon |
-| 迁移过程中旧代码需要保留 | Phase 1-4 逐阶段演进, 每阶段可独立部署；旧 JSON-RPC 路径在 Phase 4 才移除 |
+| Risk                                   | Mitigation                                                                       |
+| -------------------------------------- | -------------------------------------------------------------------------------- |
+| WebSocket 依赖不是标准库               | `nhooyr.io/websocket` 纯 Go、广泛使用、LICENSE MIT；依赖数量增加 1 个            |
+| Daemon 进程崩溃 → CLI 全部瘫痪         | daemon 退出自动卸载 FUSE, 重启后 VFS 恢复正常；CLI 显示友好错误"daemon 未运行"   |
+| Session 共享 → VFS 被 CLI 操作影响性能 | 锁竞争窗口纳秒级；若实测有问题, 可回退到方案 B（VFS 独享 session）               |
+| TransferOrchestrator 单点故障          | goroutine panic 只影响单个 worker, 不崩 Orchestrator；队列持久化暂不考虑         |
+| CLI 变薄后 `qrypt cat` 延迟增加        | WebSocket 二进制帧开销极小；如有实际性能问题, 可给 cat 加 `--direct` 绕过 daemon |
+| 迁移过程中旧代码需要保留               | Phase 1-4 逐阶段演进, 每阶段可独立部署；旧 JSON-RPC 路径在 Phase 4 才移除        |

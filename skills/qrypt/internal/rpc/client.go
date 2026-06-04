@@ -9,8 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/coder/websocket"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
-	"nhooyr.io/websocket"
 )
 
 type WSClient struct {

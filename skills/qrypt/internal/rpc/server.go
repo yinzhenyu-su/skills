@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
-	"nhooyr.io/websocket"
 )
 
 const wsPingInterval = 15 * time.Second

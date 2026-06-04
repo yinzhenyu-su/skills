@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/coder/websocket v1.8.14
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/rfjakob/eme v1.2.0
 	github.com/spf13/cobra v1.10.2
@@ -11,7 +12,6 @@ require (
 	golang.org/x/crypto v0.50.0
 	golang.org/x/time v0.15.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
-	nhooyr.io/websocket v1.8.17
 )
 
 require (

@@ -7,9 +7,9 @@ import (
 	"fmt"
 
 	"github.com/yinzhenyu/skills/qrypt/cipher"
-	"github.com/yinzhenyu/skills/qrypt/internal/config"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
+	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
 
 type noopMountBackend struct{}
