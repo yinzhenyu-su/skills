@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
@@ -52,27 +53,27 @@ func (m *mockCipher) DecryptBlock(ciphertext []byte, blockIndex uint64, nonce [2
 
 func (m *mockCipher) EncryptedSize(plainSize int64) int64 {
 	if plainSize <= 0 {
-		return int64(drivers.FileHeaderSize)
+		return int64(cipher.FileHeaderSize)
 	}
-	blocks := plainSize / drivers.BlockDataSize
-	residue := plainSize % drivers.BlockDataSize
-	encSize := int64(drivers.FileHeaderSize) + blocks*(drivers.BlockHeaderSize+drivers.BlockDataSize)
+	blocks := plainSize / cipher.BlockDataSize
+	residue := plainSize % cipher.BlockDataSize
+	encSize := int64(cipher.FileHeaderSize) + blocks*(cipher.BlockHeaderSize+cipher.BlockDataSize)
 	if residue != 0 {
-		encSize += drivers.BlockHeaderSize + residue
+		encSize += cipher.BlockHeaderSize + residue
 	}
 	return encSize
 }
 
 func (m *mockCipher) DecryptedSize(cipherSize int64) (int64, error) {
-	if cipherSize <= int64(drivers.FileHeaderSize) {
+	if cipherSize <= int64(cipher.FileHeaderSize) {
 		return 0, nil
 	}
-	size := cipherSize - int64(drivers.FileHeaderSize)
-	blocks := size / drivers.BlockSize
-	residue := size % drivers.BlockSize
-	decSize := blocks * drivers.BlockDataSize
+	size := cipherSize - int64(cipher.FileHeaderSize)
+	blocks := size / cipher.BlockSize
+	residue := size % cipher.BlockSize
+	decSize := blocks * cipher.BlockDataSize
 	if residue > 0 {
-		residue -= drivers.BlockHeaderSize
+		residue -= cipher.BlockHeaderSize
 		if residue <= 0 {
 			return 0, io.ErrUnexpectedEOF
 		}
@@ -861,11 +862,11 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 		t.Fatalf("encrypt: %v", err)
 	}
 
-	if len(encData) < drivers.FileHeaderSize {
+	if len(encData) < cipher.FileHeaderSize {
 		t.Fatal("encrypted data too short")
 	}
 
-	dr := NewDecryptingReader(bytes.NewReader(encData[drivers.FileHeaderSize:]), cp, nonce)
+	dr := NewDecryptingReader(bytes.NewReader(encData[cipher.FileHeaderSize:]), cp, nonce)
 	decrypted, err := io.ReadAll(dr)
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)

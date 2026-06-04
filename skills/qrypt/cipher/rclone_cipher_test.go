@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"golang.org/x/crypto/nacl/secretbox"
 )
 
@@ -295,7 +294,7 @@ func TestRcloneCipher_BlockDecryption(t *testing.T) {
 	var fileNonce [24]byte
 	copy(fileNonce[:], []byte("123456789012345678901234"))
 
-	plaintext := make([]byte, drivers.BlockDataSize)
+	plaintext := make([]byte, BlockDataSize)
 	for i := range plaintext {
 		plaintext[i] = byte(i % 256)
 	}
@@ -340,7 +339,7 @@ func TestRcloneCipher_BlockEncryption(t *testing.T) {
 func TestSizeMapping(t *testing.T) {
 	c, _ := NewRcloneCipher("p", "")
 
-	testSizes := []int64{0, 1, 100, drivers.BlockDataSize, drivers.BlockDataSize + 1, 10 * 1024 * 1024}
+	testSizes := []int64{0, 1, 100, BlockDataSize, BlockDataSize + 1, 10 * 1024 * 1024}
 	for _, size := range testSizes {
 		enc := c.EncryptedSize(size)
 		dec, err := c.DecryptedSize(enc)

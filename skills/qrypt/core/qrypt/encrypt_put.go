@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
@@ -13,17 +14,17 @@ type EncryptPutRequest struct {
 	PlainSize int64
 	PlainName string
 	ParentID  string
-	Nonce     [drivers.FileNonceSize]byte
+	Nonce     [cipher.FileNonceSize]byte
 }
 
 // EncryptPutResult reports the outcome of EncryptAndPut.
 type EncryptPutResult struct {
 	Entry         drivers.Entry
-	Nonce         [drivers.FileNonceSize]byte
+	Nonce         [cipher.FileNonceSize]byte
 	EncryptedSize int64
 }
 
-func EncryptAndPut(ctx context.Context, up drivers.Uploader, cp drivers.Cipher, req EncryptPutRequest) (EncryptPutResult, error) {
+func EncryptAndPut(ctx context.Context, up drivers.Uploader, cp cipher.Cipher, req EncryptPutRequest) (EncryptPutResult, error) {
 	nonce := req.Nonce
 	if isZeroNonce(nonce) {
 		var err error
@@ -44,7 +45,7 @@ func EncryptAndPut(ctx context.Context, up drivers.Uploader, cp drivers.Cipher, 
 	return EncryptPutResult{Entry: entry, Nonce: nonce, EncryptedSize: encSize}, nil
 }
 
-func isZeroNonce(n [drivers.FileNonceSize]byte) bool {
+func isZeroNonce(n [cipher.FileNonceSize]byte) bool {
 	for _, b := range n {
 		if b != 0 {
 			return false

@@ -9,11 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
-	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 	"github.com/yinzhenyu/skills/qrypt/internal/mockdrive"
 )
@@ -622,7 +621,7 @@ func TestE2E_ConcurrentCreateDifferentFiles(t *testing.T) {
 func TestE2E_ChunkBoundaryRead(t *testing.T) {
 	s := newE2E(t)
 
-	blockSize := drivers.BlockDataSize
+	blockSize := cipher.BlockDataSize
 	data := make([]byte, blockSize*3)
 	for i := range data {
 		data[i] = byte(i % 256)

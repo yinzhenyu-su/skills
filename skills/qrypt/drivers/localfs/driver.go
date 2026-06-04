@@ -9,16 +9,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 type LocalDriver struct {
 	root    string
 	rootDir string
-	cipher  drivers.Cipher
+	cipher  cipher.Cipher
 }
 
-func (d *LocalDriver) SetCipher(c drivers.Cipher) { d.cipher = c }
+func (d *LocalDriver) SetCipher(c cipher.Cipher) { d.cipher = c }
 
 var (
 	_ drivers.Driver   = (*LocalDriver)(nil)

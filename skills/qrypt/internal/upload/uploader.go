@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
@@ -33,10 +34,10 @@ type Result struct {
 
 type Uploader struct {
 	drv    drivers.Driver
-	cipher drivers.Cipher
+	cipher cipher.Cipher
 }
 
-func NewUploader(drv drivers.Driver, cipher drivers.Cipher) *Uploader {
+func NewUploader(drv drivers.Driver, cipher cipher.Cipher) *Uploader {
 	return &Uploader{drv: drv, cipher: cipher}
 }
 

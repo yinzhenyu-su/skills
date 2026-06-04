@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
@@ -23,10 +24,10 @@ type QuarkDriver struct {
 	cache    *cacheManager
 	cookie   string
 	rootPath string
-	cipher   drivers.Cipher
+	cipher   cipher.Cipher
 }
 
-func (d *QuarkDriver) SetCipher(c drivers.Cipher) {
+func (d *QuarkDriver) SetCipher(c cipher.Cipher) {
 	d.cipher = c
 }
 

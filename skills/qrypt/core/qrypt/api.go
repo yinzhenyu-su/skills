@@ -11,11 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 type Options struct {
-	Cipher        drivers.Cipher
+	Cipher        cipher.Cipher
 	Dirs          DirResolver
 	Creds         CredentialStore
 	DriverFactory DriverFactory
@@ -26,7 +27,7 @@ type Options struct {
 }
 
 type FileAPI struct {
-	cp    drivers.Cipher
+	cp    cipher.Cipher
 	dirs  DirResolver
 	creds CredentialStore
 
@@ -464,7 +465,7 @@ func (a *FileAPI) Read(ctx context.Context, mount, path string) (io.ReadCloser, 
 }
 
 func (a *FileAPI) readFile(ctx context.Context, drv drivers.Driver, target drivers.Entry) (io.ReadCloser, error) {
-	headerSize := int64(drivers.FileHeaderSize)
+	headerSize := int64(cipher.FileHeaderSize)
 	rcHeader, err := drv.Read(ctx, target, 0, headerSize)
 	if err != nil {
 		return nil, WrapError(ErrNetwork, "read header", err)
@@ -476,8 +477,8 @@ func (a *FileAPI) readFile(ctx context.Context, drv drivers.Driver, target drive
 	}
 	rcHeader.Close()
 
-	var fileNonce [drivers.FileNonceSize]byte
-	copy(fileNonce[:], header[drivers.FileMagicSize:])
+	var fileNonce [cipher.FileNonceSize]byte
+	copy(fileNonce[:], header[cipher.FileMagicSize:])
 
 	encBodySize := target.Size - headerSize
 	if encBodySize <= 0 {
@@ -810,7 +811,7 @@ func (a *FileAPI) Pull(ctx context.Context, mount, remotePath, localPath string,
 		}
 	}()
 
-	headerSize := int64(drivers.FileHeaderSize)
+	headerSize := int64(cipher.FileHeaderSize)
 	rcHeader, err := drv.Read(ctx, target, 0, headerSize)
 	if err != nil {
 		return WrapError(ErrNetwork, "read header", err)
@@ -822,8 +823,8 @@ func (a *FileAPI) Pull(ctx context.Context, mount, remotePath, localPath string,
 	}
 	rcHeader.Close()
 
-	var fileNonce [drivers.FileNonceSize]byte
-	copy(fileNonce[:], header[drivers.FileMagicSize:])
+	var fileNonce [cipher.FileNonceSize]byte
+	copy(fileNonce[:], header[cipher.FileMagicSize:])
 
 	encBodySize := target.Size - headerSize
 	if encBodySize > 0 {

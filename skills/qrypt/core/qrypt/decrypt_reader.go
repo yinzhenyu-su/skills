@@ -4,19 +4,19 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/yinzhenyu/skills/qrypt/drivers"
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 )
 
 type DecryptingReader struct {
 	enc        io.Reader
-	cipher     drivers.Cipher
-	nonce      [drivers.FileNonceSize]byte
+	cipher     cipher.Cipher
+	nonce      [cipher.FileNonceSize]byte
 	blockIndex uint64
 	pending    []byte
 	encEOF     bool
 }
 
-func NewDecryptingReader(enc io.Reader, cipher drivers.Cipher, nonce [drivers.FileNonceSize]byte) *DecryptingReader {
+func NewDecryptingReader(enc io.Reader, cipher cipher.Cipher, nonce [cipher.FileNonceSize]byte) *DecryptingReader {
 	return &DecryptingReader{
 		enc:    enc,
 		cipher: cipher,
@@ -48,7 +48,7 @@ func (r *DecryptingReader) fillPending() error {
 		return io.EOF
 	}
 
-	encBlock := make([]byte, drivers.BlockSize)
+	encBlock := make([]byte, cipher.BlockSize)
 	n, err := io.ReadFull(r.enc, encBlock)
 
 	if err != nil {

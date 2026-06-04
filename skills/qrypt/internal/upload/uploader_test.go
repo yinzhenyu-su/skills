@@ -25,17 +25,17 @@ type ucipherAdapter struct {
 
 func (a *ucipherAdapter) EncryptSegment(plain string) string { return a.inner.EncryptSegment(plain) }
 func (a *ucipherAdapter) DecryptSegment(ct string) (string, error) { return a.inner.DecryptSegment(ct) }
-func (a *ucipherAdapter) EncryptBlock(plaintext []byte, blockIndex uint64, nonce [drivers.FileNonceSize]byte) ([]byte, error) {
+func (a *ucipherAdapter) EncryptBlock(plaintext []byte, blockIndex uint64, nonce [cipher.FileNonceSize]byte) ([]byte, error) {
 	return a.inner.EncryptBlock(plaintext, blockIndex, nonce)
 }
-func (a *ucipherAdapter) DecryptBlock(ciphertext []byte, blockIndex uint64, nonce [drivers.FileNonceSize]byte) ([]byte, error) {
+func (a *ucipherAdapter) DecryptBlock(ciphertext []byte, blockIndex uint64, nonce [cipher.FileNonceSize]byte) ([]byte, error) {
 	return a.inner.DecryptBlock(ciphertext, blockIndex, nonce)
 }
 func (a *ucipherAdapter) EncryptedSize(plainSize int64) int64 { return a.inner.EncryptedSize(plainSize) }
 func (a *ucipherAdapter) DecryptedSize(cipherSize int64) (int64, error) { return a.inner.DecryptedSize(cipherSize) }
-func (a *ucipherAdapter) GenerateRandomNonce() ([drivers.FileNonceSize]byte, error) { return a.inner.GenerateRandomNonce() }
+func (a *ucipherAdapter) GenerateRandomNonce() ([cipher.FileNonceSize]byte, error) { return a.inner.GenerateRandomNonce() }
 
-func newTestCipher() drivers.Cipher {
+func newTestCipher() cipher.Cipher {
 	c, _ := cipher.NewRcloneCipher("password", "")
 	return &ucipherAdapter{inner: c}
 }

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/yinzhenyu/skills/qrypt/cipher"
-	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 func TestNewEncryptingReader(t *testing.T) {
@@ -29,13 +28,13 @@ func TestEncryptingReader_Read_Empty(t *testing.T) {
 		t.Fatalf("ReadAll failed: %v", err)
 	}
 	// Should produce only the header (no data blocks for empty plaintext)
-	if len(out) < drivers.FileHeaderSize {
-		t.Errorf("output too short: %d < header %d", len(out), drivers.FileHeaderSize)
+	if len(out) < cipher.FileHeaderSize {
+		t.Errorf("output too short: %d < header %d", len(out), cipher.FileHeaderSize)
 	}
-	if string(out[:drivers.FileMagicSize]) != drivers.FileMagic {
+	if string(out[:cipher.FileMagicSize]) != cipher.FileMagic {
 		t.Errorf("missing file magic at header start")
 	}
-	_ = out[:drivers.FileHeaderSize] // verify at least header exists
+	_ = out[:cipher.FileHeaderSize] // verify at least header exists
 }
 
 func TestEncryptingReader_SingleBlockRoundTrip(t *testing.T) {
@@ -53,18 +52,18 @@ func TestEncryptingReader_SingleBlockRoundTrip(t *testing.T) {
 	}
 
 	// Verify header
-	if len(encrypted) < drivers.FileHeaderSize {
+	if len(encrypted) < cipher.FileHeaderSize {
 		t.Fatalf("encrypted data too short: %d", len(encrypted))
 	}
-	if string(encrypted[:drivers.FileMagicSize]) != drivers.FileMagic {
+	if string(encrypted[:cipher.FileMagicSize]) != cipher.FileMagic {
 		t.Errorf("bad magic")
 	}
-	if !bytes.Equal(encrypted[drivers.FileMagicSize:drivers.FileHeaderSize], nonce[:]) {
+	if !bytes.Equal(encrypted[cipher.FileMagicSize:cipher.FileHeaderSize], nonce[:]) {
 		t.Errorf("nonce mismatch in header")
 	}
 
 	// Verify block: strip header, decrypt block
-	blockData := encrypted[drivers.FileHeaderSize:]
+	blockData := encrypted[cipher.FileHeaderSize:]
 	decrypted, err := c.DecryptBlock(blockData, 0, nonce)
 	if err != nil {
 		t.Fatalf("DecryptBlock failed: %v", err)
@@ -80,7 +79,7 @@ func TestEncryptingReader_MultiBlock(t *testing.T) {
 	copy(nonce[:], []byte("abcdefghijklmnopqrstuvwx"))
 
 	// Three full blocks of data
-	plaintext := make([]byte, drivers.BlockDataSize*3)
+	plaintext := make([]byte, cipher.BlockDataSize*3)
 	for i := range plaintext {
 		plaintext[i] = byte(i % 251)
 	}
@@ -92,20 +91,20 @@ func TestEncryptingReader_MultiBlock(t *testing.T) {
 	}
 
 	// Verify header + 3 blocks
-	expectedSize := drivers.FileHeaderSize + drivers.BlockSize*3
+	expectedSize := cipher.FileHeaderSize + cipher.BlockSize*3
 	if len(encrypted) != expectedSize {
 		t.Errorf("expected %d bytes, got %d", expectedSize, len(encrypted))
 	}
 
 	// Decrypt each block
 	for i := 0; i < 3; i++ {
-		start := drivers.FileHeaderSize + i*drivers.BlockSize
-		block := encrypted[start : start+drivers.BlockSize]
+		start := cipher.FileHeaderSize + i*cipher.BlockSize
+		block := encrypted[start : start+cipher.BlockSize]
 		decrypted, err := c.DecryptBlock(block, uint64(i), nonce)
 		if err != nil {
 			t.Fatalf("DecryptBlock block %d failed: %v", i, err)
 		}
-		expected := plaintext[i*drivers.BlockDataSize : (i+1)*drivers.BlockDataSize]
+		expected := plaintext[i*cipher.BlockDataSize : (i+1)*cipher.BlockDataSize]
 		if !bytes.Equal(decrypted, expected) {
 			t.Errorf("block %d mismatch", i)
 		}
@@ -125,12 +124,12 @@ func TestEncryptingReader_PartialBlock(t *testing.T) {
 	}
 
 	// Verify: header + 1 block (with partial data)
-	expectedSize := drivers.FileHeaderSize + drivers.BlockHeaderSize + len(plaintext)
+	expectedSize := cipher.FileHeaderSize + cipher.BlockHeaderSize + len(plaintext)
 	if len(encrypted) != expectedSize {
 		t.Errorf("expected %d bytes, got %d", expectedSize, len(encrypted))
 	}
 
-	decrypted, err := c.DecryptBlock(encrypted[drivers.FileHeaderSize:], 0, nonce)
+	decrypted, err := c.DecryptBlock(encrypted[cipher.FileHeaderSize:], 0, nonce)
 	if err != nil {
 		t.Fatalf("DecryptBlock failed: %v", err)
 	}
@@ -144,7 +143,7 @@ func TestEncryptingReader_ReadSmallBuffer(t *testing.T) {
 	var nonce [24]byte
 	copy(nonce[:], []byte("123456789012345678901234"))
 
-	plaintext := bytes.Repeat([]byte("A"), drivers.BlockDataSize*2+100)
+	plaintext := bytes.Repeat([]byte("A"), cipher.BlockDataSize*2+100)
 	r := NewEncryptingReader(bytes.NewReader(plaintext), c, nonce, int64(len(plaintext)))
 
 	// Read in tiny chunks to exercise the partial buffer logic
@@ -164,12 +163,12 @@ func TestEncryptingReader_ReadSmallBuffer(t *testing.T) {
 	}
 
 	// Verify total size (last block may be partial)
-	expectedSize := drivers.FileHeaderSize
-	fullBlocks := len(plaintext) / drivers.BlockDataSize
-	residue := len(plaintext) % drivers.BlockDataSize
-	expectedSize += fullBlocks * drivers.BlockSize
+	expectedSize := cipher.FileHeaderSize
+	fullBlocks := len(plaintext) / cipher.BlockDataSize
+	residue := len(plaintext) % cipher.BlockDataSize
+	expectedSize += fullBlocks * cipher.BlockSize
 	if residue > 0 {
-		expectedSize += drivers.BlockHeaderSize + residue
+		expectedSize += cipher.BlockHeaderSize + residue
 	}
 	if len(total) != expectedSize {
 		t.Errorf("expected %d total bytes, got %d", expectedSize, len(total))
@@ -183,7 +182,7 @@ func TestEncryptingReader_NonceCompatibility(t *testing.T) {
 	var nonce [24]byte
 	copy(nonce[:], []byte("nonce_test_1234567890!!"))
 
-	plaintext := []byte("compatibility test data across blocks " + strings.Repeat("X", drivers.BlockDataSize*2))
+	plaintext := []byte("compatibility test data across blocks " + strings.Repeat("X", cipher.BlockDataSize*2))
 	r := NewEncryptingReader(bytes.NewReader(plaintext), c, nonce, int64(len(plaintext)))
 
 	encrypted, err := io.ReadAll(r)
@@ -192,14 +191,14 @@ func TestEncryptingReader_NonceCompatibility(t *testing.T) {
 	}
 
 	// Decrypt each block via the public API to verify round-trip
-	var fileNonce [drivers.FileNonceSize]byte
-	copy(fileNonce[:], encrypted[drivers.FileMagicSize:drivers.FileHeaderSize])
+	var fileNonce [cipher.FileNonceSize]byte
+	copy(fileNonce[:], encrypted[cipher.FileMagicSize:cipher.FileHeaderSize])
 
 	var decrypted []byte
-	pos := drivers.FileHeaderSize
+	pos := cipher.FileHeaderSize
 	blockIdx := uint64(0)
 	for pos < len(encrypted) {
-		blockEnd := pos + drivers.BlockSize
+		blockEnd := pos + cipher.BlockSize
 		if blockEnd > len(encrypted) {
 			blockEnd = len(encrypted)
 		}

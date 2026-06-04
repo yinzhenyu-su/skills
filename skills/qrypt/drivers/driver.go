@@ -11,16 +11,6 @@ import (
 	"time"
 )
 
-const (
-	FileMagic       = "RCLONE\x00\x00"
-	FileMagicSize   = len(FileMagic)
-	FileNonceSize   = 24
-	FileHeaderSize  = FileMagicSize + FileNonceSize
-	BlockHeaderSize = 16
-	BlockDataSize   = 64 * 1024
-	BlockSize       = BlockHeaderSize + BlockDataSize
-)
-
 // Entry is a single file-system entry returned by a storage backend.
 type Entry struct {
 	ID       string
@@ -58,16 +48,7 @@ type PathResolver interface {
 	ResolvePath(ctx context.Context, path string) (string, error)
 }
 
-// Cipher is the encryption contract for rclone-compatible crypt operations.
-type Cipher interface {
-	EncryptSegment(plain string) string
-	DecryptSegment(cipher string) (string, error)
-	EncryptBlock(plaintext []byte, blockIndex uint64, fileNonce [FileNonceSize]byte) ([]byte, error)
-	DecryptBlock(ciphertext []byte, blockIndex uint64, fileNonce [FileNonceSize]byte) ([]byte, error)
-	EncryptedSize(plainSize int64) int64
-	DecryptedSize(cipherSize int64) (int64, error)
-	GenerateRandomNonce() ([FileNonceSize]byte, error)
-}
+
 
 type mtimeKey struct{}
 

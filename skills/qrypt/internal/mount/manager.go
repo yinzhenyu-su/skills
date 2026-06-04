@@ -219,7 +219,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 	}
 	inst.Driver = s.Drv
 
-	if setter, ok := inst.Driver.(interface{ SetCipher(drivers.Cipher) }); ok {
+	if setter, ok := inst.Driver.(interface{ SetCipher(cipher.Cipher) }); ok {
 		setter.SetCipher(rcloneCipher)
 	}
 

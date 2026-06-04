@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
-	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
 
@@ -92,19 +91,19 @@ func decryptFile(cmd *cobra.Command, path string) {
 	}
 	defer r.Close()
 
-	header := make([]byte, drivers.FileHeaderSize)
+	header := make([]byte, cipher.FileHeaderSize)
 	if _, err := io.ReadFull(r, header); err != nil {
 		fmt.Fprintf(os.Stderr, "读取文件头失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	if string(header[:drivers.FileMagicSize]) != drivers.FileMagic {
+	if string(header[:cipher.FileMagicSize]) != cipher.FileMagic {
 		fmt.Fprintf(os.Stderr, "无效的加密文件: 魔数不匹配\n")
 		os.Exit(1)
 	}
 
 	var nonce [24]byte
-	copy(nonce[:], header[drivers.FileMagicSize:])
+	copy(nonce[:], header[cipher.FileMagicSize:])
 
 	cp := loadCipherForTool(cmd)
 	dr := qrypt.NewDecryptingReader(r, cp, nonce)
