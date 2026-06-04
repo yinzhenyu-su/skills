@@ -22,17 +22,29 @@ type ListEntry struct {
 }
 
 func runList(cmd *cobra.Command, args []string) {
-	api, err := apiFromCmd(cmd)
-	if err != nil {
-		fmt.Printf("错误: %v\n", err)
-		os.Exit(1)
-	}
-
 	path := "/"
 	if len(args) > 0 {
 		path = args[0]
 	}
 	mountName := resolveMount(cmd, &path)
+
+	cfgPath, _ := cmd.Flags().GetString("config")
+	cfg, err := getCfg(cfgPath)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
+	mountCfg, err := resolveMountConfig(cfg, mountName)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
+
+	api, err := apiFromCmdForMount(cmd, mountName)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
 
 	entries, err := api.List(context.Background(), mountName, path)
 	if err != nil {
@@ -42,14 +54,18 @@ func runList(cmd *cobra.Command, args []string) {
 
 	allEntries := make([]ListEntry, 0, len(entries))
 	for _, e := range entries {
+		decName := e.DecName
+		if mountCfg.Params.RootPath != "/" && mountCfg.Params.RootPath != "" {
+			decName = StripRootPath(mountCfg.Params.RootPath, e.DecName)
+		}
 		allEntries = append(allEntries, ListEntry{
-			Path:      e.DecName,
-			Name:      e.Name,
-			DecName:   e.DecName,
-			IsDir:     e.IsDir,
-			Size:      e.Size,
+			Path:    decName,
+			Name:    e.Name,
+			DecName: decName,
+			IsDir:   e.IsDir,
+			Size:    e.Size,
 			PlainSize: e.PlainSize,
-			ModTime:   e.ModTime,
+			ModTime: e.ModTime,
 		})
 	}
 

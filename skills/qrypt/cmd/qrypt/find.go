@@ -15,14 +15,7 @@ import (
 
 func runFind(cmd *cobra.Command, args []string) {
 	cfgPath, _ := cmd.Flags().GetString("config")
-	password, _ := cmd.Flags().GetString("password")
-	salt, _ := cmd.Flags().GetString("salt")
 	cfg, err := getCfg(cfgPath)
-	if err != nil {
-		fmt.Printf("错误: %v\n", err)
-		os.Exit(1)
-	}
-	api, err := newFileAPI(cfg, password, salt)
 	if err != nil {
 		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
@@ -49,6 +42,23 @@ func runFind(cmd *cobra.Command, args []string) {
 			outputMountName = m.Name
 		}
 	}
+
+	api, err := apiFromCmdForMount(cmd, mountName)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
+
+	mountCfg, err := resolveMountConfig(cfg, mountName)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
+	mountInstance := config.MountInstance{
+		Type:   mountCfg.Type,
+		Params: mountCfg.Params,
+	}
+	rootPathForMount := config.RootPathForMount(mountInstance)
 	caseSensitive, _ := cmd.Flags().GetBool("case-sensitive")
 	maxDepth, _ := cmd.Flags().GetInt("maxdepth")
 	maxMatches, _ := cmd.Flags().GetInt("max")
@@ -69,6 +79,7 @@ func runFind(cmd *cobra.Command, args []string) {
 		if entryPath == "" {
 			entryPath = e.DecName
 		}
+		entryPath = StripRootPath(rootPathForMount, entryPath)
 		findEntries[i] = findEntry{
 			Path:  formatRemotePath(outputMountName, entryPath),
 			IsDir: e.IsDir,

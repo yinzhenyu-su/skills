@@ -10,14 +10,14 @@ import (
 )
 
 func runCat(cmd *cobra.Command, args []string) {
-	api, err := apiFromCmd(cmd)
+	path := args[0]
+	mountName := resolveMount(cmd, &path)
+
+	api, err := apiFromCmdForMount(cmd, mountName)
 	if err != nil {
 		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
-
-	path := args[0]
-	mountName := resolveMount(cmd, &path)
 
 	rc, err := api.Read(context.Background(), mountName, path)
 	if err != nil {
