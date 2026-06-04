@@ -572,7 +572,19 @@ func (d *QuarkDriver) deleteExistingFileByName(parentFid, name string) {
 }
 
 func (d *QuarkDriver) ResolvePath(ctx context.Context, path string) (string, error) {
-	segments := strings.Split(strings.Trim(path, "/"), "/")
+	fullPath := path
+	if d.rootPath != "" && d.rootPath != "/" {
+		trimmedPath := strings.TrimLeft(path, "/")
+		trimmedRoot := strings.TrimLeft(d.rootPath, "/")
+		if !strings.HasPrefix(trimmedPath, trimmedRoot) {
+			if trimmedPath == "" {
+				fullPath = d.rootPath
+			} else {
+				fullPath = strings.TrimRight(d.rootPath, "/") + "/" + trimmedPath
+			}
+		}
+	}
+	segments := strings.Split(strings.Trim(fullPath, "/"), "/")
 	currentFid := "0"
 	for _, seg := range segments {
 		if seg == "" {
@@ -589,9 +601,15 @@ func (d *QuarkDriver) ResolvePath(ctx context.Context, path string) (string, err
 		}
 		for _, e := range entries {
 			if e.Name == seg || (encSeg != "" && strings.EqualFold(e.Name, encSeg)) {
-				currentFid = e.ID
-				found = true
-				break
+				if e.IsDir {
+					currentFid = e.ID
+					found = true
+					break
+				}
+				if !found {
+					currentFid = e.ID
+					found = true
+				}
 			}
 		}
 		if !found {
