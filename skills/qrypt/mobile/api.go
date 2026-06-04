@@ -58,7 +58,7 @@ func (m *MobileAPI) Stat(mount, path string) (string, error) {
 
 // Find returns JSON array of matching FileEntry. Empty pattern matches all.
 func (m *MobileAPI) Find(mount, path, pattern string, maxDepth, maxMatches int, caseSensitive bool) (string, error) {
-	results, err := m.fileAPI.Find(context.Background(), mount, path, pattern, maxDepth, maxMatches, caseSensitive)
+	results, err := m.fileAPI.Find(context.Background(), mount, path, pattern, maxDepth, maxMatches, caseSensitive, 4)
 	if err != nil {
 		return "", err
 	}

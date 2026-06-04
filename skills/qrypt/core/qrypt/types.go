@@ -4,6 +4,7 @@ import "time"
 
 type FileEntry struct {
 	ID        string
+	Path      string
 	Name      string
 	DecName   string
 	IsDir     bool

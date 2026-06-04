@@ -69,29 +69,29 @@ type DaemonStatus struct {
 
 // DashboardData is the aggregated response for the "dashboard" RPC.
 type DashboardData struct {
-	Status         *DaemonStatus      `json:"status"`
-	SyncStats      *SyncStats         `json:"sync_stats"`
-	CacheUsage     *CacheUsage        `json:"cache_usage"`
+	Status          *DaemonStatus          `json:"status"`
+	SyncStats       *SyncStats             `json:"sync_stats"`
+	CacheUsage      *CacheUsage            `json:"cache_usage"`
 	ActiveTransfers *ActiveTransfersResult `json:"active_transfers"`
 }
 
 // ReloadResult is returned after a successful reload_config.
 type ReloadResult struct {
-	Status   string   `json:"status"`
-	Started  []string `json:"started,omitempty"`
-	Stopped  []string `json:"stopped,omitempty"`
+	Status  string   `json:"status"`
+	Started []string `json:"started,omitempty"`
+	Stopped []string `json:"stopped,omitempty"`
 }
 
 // Sync stats
 type SyncStats struct {
-	PendingUploads    int     `json:"pending_uploads"`
-	ActiveUploads     int     `json:"active_uploads"`
-	CompletedUploads  int64   `json:"completed_uploads"`
-	FailedUploads     int64   `json:"failed_uploads"`
-	TotalBytesSync    int64   `json:"total_bytes_sync"`
-	TotalBytesPending int64   `json:"total_bytes_pending"`
-	InProgress        bool    `json:"in_progress"`
-	LastSyncTime      string  `json:"last_sync_time,omitempty"`
+	PendingUploads    int    `json:"pending_uploads"`
+	ActiveUploads     int    `json:"active_uploads"`
+	CompletedUploads  int64  `json:"completed_uploads"`
+	FailedUploads     int64  `json:"failed_uploads"`
+	TotalBytesSync    int64  `json:"total_bytes_sync"`
+	TotalBytesPending int64  `json:"total_bytes_pending"`
+	InProgress        bool   `json:"in_progress"`
+	LastSyncTime      string `json:"last_sync_time,omitempty"`
 }
 
 // Sync task info
@@ -198,7 +198,7 @@ type ListEntryItem struct {
 
 // ListDirResult is the response for list_dir RPC.
 type ListDirResult struct {
-	Path    string         `json:"path"`
+	Path    string          `json:"path"`
 	Entries []ListEntryItem `json:"entries"`
 }
 
@@ -270,8 +270,9 @@ type FindParams struct {
 	Path          string `json:"path"`
 	Pattern       string `json:"pattern"`
 	CaseSensitive bool   `json:"case_sensitive"`
-	MaxDepth      int    `json:"max_depth"`  // -1 for unlimited
+	MaxDepth      int    `json:"max_depth"`   // -1 for unlimited
 	MaxMatches    int    `json:"max_matches"` // 0 for unlimited
+	Workers       int    `json:"workers"`     // 1-8, 0 uses default
 	Password      string `json:"password,omitempty"`
 	Salt          string `json:"salt,omitempty"`
 }

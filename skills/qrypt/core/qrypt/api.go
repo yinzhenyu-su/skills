@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -25,9 +26,9 @@ type Options struct {
 }
 
 type FileAPI struct {
-	cp       drivers.Cipher
-	dirs     DirResolver
-	creds    CredentialStore
+	cp    drivers.Cipher
+	dirs  DirResolver
+	creds CredentialStore
 
 	sessions  SessionManager
 	uploadQ   Orchestrator
@@ -78,9 +79,9 @@ func NewFileAPI(opts Options) (*FileAPI, error) {
 	return api, nil
 }
 
-func (a *FileAPI) Events() EventBus          { return a.eventBus }
-func (a *FileAPI) Progress() ProgressHub     { return a.progress }
-func (a *FileAPI) Sessions() SessionManager  { return a.sessions }
+func (a *FileAPI) Events() EventBus         { return a.eventBus }
+func (a *FileAPI) Progress() ProgressHub    { return a.progress }
+func (a *FileAPI) Sessions() SessionManager { return a.sessions }
 
 func (a *FileAPI) acquireDriver(ctx context.Context, mount string) (drivers.Driver, error) {
 	if a.sessions == nil {
@@ -858,12 +859,13 @@ type PullOptions struct {
 	OnProgress func(p *ProgressEntry)
 }
 
-func (a *FileAPI) Find(ctx context.Context, mount, path, pattern string, maxDepth, maxMatches int, caseSensitive bool) ([]FileEntry, error) {
+func (a *FileAPI) Find(ctx context.Context, mount, path, pattern string, maxDepth, maxMatches int, caseSensitive bool, workers int) ([]FileEntry, error) {
 	drv, err := a.acquireDriver(ctx, mount)
 	if err != nil {
 		return nil, err
 	}
 	defer a.releaseDriver(ctx, mount)
+	path = cleanRemotePath(path)
 
 	fid, err := a.resolvePath(ctx, drv, path)
 	if err != nil {
@@ -874,8 +876,19 @@ func (a *FileAPI) Find(ctx context.Context, mount, path, pattern string, maxDept
 	if maxDepth == 0 {
 		maxDepth = -1
 	}
-
-	err = a.walkAndMatch(ctx, drv, fid, path, 0, maxDepth, maxMatches, pattern, caseSensitive, &result)
+	if workers == 0 {
+		workers = 4
+	} else if workers < 1 {
+		workers = 1
+	}
+	if workers > 8 {
+		workers = 8
+	}
+	if workers > 1 {
+		err = a.walkAndMatchConcurrent(ctx, drv, fid, path, maxDepth, maxMatches, pattern, caseSensitive, workers, &result)
+	} else {
+		err = a.walkAndMatch(ctx, drv, fid, path, 0, maxDepth, maxMatches, pattern, caseSensitive, &result)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -900,22 +913,19 @@ func (a *FileAPI) walkAndMatch(ctx context.Context, drv drivers.Driver, fid, dis
 		if decErr != nil {
 			decName = e.Name
 		}
-		childPath := displayPath + "/" + decName
+		childPath := joinRemotePath(displayPath, decName)
 
-		matched := false
-		if caseSensitive {
-			matched = strings.Contains(decName, pattern)
-		} else {
-			matched = strings.Contains(strings.ToLower(decName), strings.ToLower(pattern))
-		}
-
-		if matched {
+		if matchName(decName, pattern, caseSensitive) {
 			if maxMatches > 0 && len(*result) >= maxMatches {
 				break
 			}
-			plainSize, _ := a.cp.DecryptedSize(e.Size)
+			plainSize, sizeErr := a.cp.DecryptedSize(e.Size)
+			if sizeErr != nil {
+				plainSize = e.Size
+			}
 			*result = append(*result, FileEntry{
 				ID:        e.ID,
+				Path:      childPath,
 				Name:      e.Name,
 				DecName:   decName,
 				IsDir:     e.IsDir,
@@ -931,6 +941,100 @@ func (a *FileAPI) walkAndMatch(ctx context.Context, drv drivers.Driver, fid, dis
 		}
 	}
 	return nil
+}
+
+func (a *FileAPI) walkAndMatchConcurrent(ctx context.Context, drv drivers.Driver, fid, displayPath string, maxDepth, maxMatches int, pattern string, caseSensitive bool, workers int, result *[]FileEntry) error {
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	setErr := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+	}
+	stopped := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return firstErr != nil || maxMatches > 0 && len(*result) >= maxMatches
+	}
+	addMatch := func(e drivers.Entry, decName, childPath string) {
+		plainSize, sizeErr := a.cp.DecryptedSize(e.Size)
+		if sizeErr != nil {
+			plainSize = e.Size
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if maxMatches > 0 && len(*result) >= maxMatches {
+			return
+		}
+		*result = append(*result, FileEntry{ID: e.ID, Path: childPath, Name: e.Name, DecName: decName, IsDir: e.IsDir, Size: e.Size, PlainSize: plainSize, ModTime: e.ModTime})
+	}
+
+	var walk func(string, string, int)
+	walk = func(currentID, currentPath string, depth int) {
+		defer wg.Done()
+		if maxDepth >= 0 && depth > maxDepth || stopped() {
+			return
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			setErr(ctx.Err())
+			return
+		}
+		entries, err := drv.List(ctx, currentID)
+		<-sem
+		if err != nil {
+			setErr(WrapError(ErrNetwork, "list", err))
+			return
+		}
+		for _, e := range entries {
+			if stopped() {
+				return
+			}
+			decName, decErr := a.cp.DecryptSegment(e.Name)
+			if decErr != nil {
+				decName = e.Name
+			}
+			childPath := joinRemotePath(currentPath, decName)
+			if matchName(decName, pattern, caseSensitive) {
+				addMatch(e, decName, childPath)
+			}
+			if e.IsDir {
+				wg.Add(1)
+				go walk(e.ID, childPath, depth+1)
+			}
+		}
+	}
+	wg.Add(1)
+	go walk(fid, displayPath, 0)
+	wg.Wait()
+	return firstErr
+}
+
+func matchName(name, pattern string, caseSensitive bool) bool {
+	if caseSensitive {
+		return strings.Contains(name, pattern)
+	}
+	return strings.Contains(strings.ToLower(name), strings.ToLower(pattern))
+}
+
+func cleanRemotePath(p string) string {
+	if p == "" || p == "." {
+		return "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return pathpkg.Clean(p)
+}
+
+func joinRemotePath(parent, name string) string {
+	return pathpkg.Join(cleanRemotePath(parent), name)
 }
 
 func (a *FileAPI) Shutdown() {

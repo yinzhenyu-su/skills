@@ -10,10 +10,19 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
 
 func runFind(cmd *cobra.Command, args []string) {
-	api, err := apiFromCmd(cmd)
+	cfgPath, _ := cmd.Flags().GetString("config")
+	password, _ := cmd.Flags().GetString("password")
+	salt, _ := cmd.Flags().GetString("salt")
+	cfg, err := getCfg(cfgPath)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
+	api, err := newFileAPI(cfg, password, salt)
 	if err != nil {
 		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
@@ -34,13 +43,20 @@ func runFind(cmd *cobra.Command, args []string) {
 	}
 
 	mountName := resolveMount(cmd, &rootPath)
+	outputMountName := mountName
+	if outputMountName == "" {
+		if m := config.FindDefaultMount(cfg); m != nil {
+			outputMountName = m.Name
+		}
+	}
 	caseSensitive, _ := cmd.Flags().GetBool("case-sensitive")
 	maxDepth, _ := cmd.Flags().GetInt("maxdepth")
 	maxMatches, _ := cmd.Flags().GetInt("max")
+	workers, _ := cmd.Flags().GetInt("workers")
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 	countOnly, _ := cmd.Flags().GetBool("count")
 
-	entries, err := api.Find(context.Background(), mountName, rootPath, pattern, maxDepth, maxMatches, caseSensitive)
+	entries, err := api.Find(context.Background(), mountName, rootPath, pattern, maxDepth, maxMatches, caseSensitive, workers)
 	if err != nil {
 		fmt.Printf("搜索失败: %v\n", err)
 		os.Exit(1)
@@ -49,8 +65,12 @@ func runFind(cmd *cobra.Command, args []string) {
 	// Convert to findEntries for client-side filtering
 	findEntries := make([]findEntry, len(entries))
 	for i, e := range entries {
+		entryPath := e.Path
+		if entryPath == "" {
+			entryPath = e.DecName
+		}
 		findEntries[i] = findEntry{
-			Path:  e.DecName,
+			Path:  formatRemotePath(outputMountName, entryPath),
 			IsDir: e.IsDir,
 			Size:  e.Size,
 		}
@@ -139,6 +159,19 @@ func runFind(cmd *cobra.Command, args []string) {
 			}
 		}
 	}
+}
+
+func formatRemotePath(mountName, remotePath string) string {
+	if remotePath == "" {
+		remotePath = "/"
+	}
+	if !strings.HasPrefix(remotePath, "/") {
+		remotePath = "/" + remotePath
+	}
+	if mountName == "" {
+		return remotePath
+	}
+	return mountName + ":" + remotePath
 }
 
 type findEntry struct {

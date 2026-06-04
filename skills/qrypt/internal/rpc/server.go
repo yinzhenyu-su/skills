@@ -390,7 +390,9 @@ func (s *WSServer) dispatch(ctx context.Context, req *protocol.Request) *protoco
 		return protocol.NewResult(id, status)
 
 	case "start":
-		var p struct{ Name string `json:"name,omitempty"` }
+		var p struct {
+			Name string `json:"name,omitempty"`
+		}
 		if req.Params != nil {
 			unmarshalParams(req.Params, &p)
 		}
@@ -398,7 +400,9 @@ func (s *WSServer) dispatch(ctx context.Context, req *protocol.Request) *protoco
 		return protocol.NewResult(id, map[string]string{"status": "accepted"})
 
 	case "stop":
-		var p struct{ Name string `json:"name,omitempty"` }
+		var p struct {
+			Name string `json:"name,omitempty"`
+		}
 		if req.Params != nil {
 			unmarshalParams(req.Params, &p)
 		}
@@ -604,14 +608,18 @@ func (s *WSServer) dispatch(ctx context.Context, req *protocol.Request) *protoco
 		if api == nil {
 			return protocol.NewError(id, protocol.ErrCodeInternal, "FileAPI not available")
 		}
-		entries, err := api.Find(ctx, p.MountName, p.Path, p.Pattern, p.MaxDepth, p.MaxMatches, p.CaseSensitive)
+		entries, err := api.Find(ctx, p.MountName, p.Path, p.Pattern, p.MaxDepth, p.MaxMatches, p.CaseSensitive, p.Workers)
 		if err != nil {
 			return protocol.NewError(id, protocol.ErrCodeSync, err.Error())
 		}
 		result := protocol.FindResult{}
 		for _, e := range entries {
+			entryPath := e.Path
+			if entryPath == "" {
+				entryPath = e.DecName
+			}
 			result.Entries = append(result.Entries, protocol.FindEntry{
-				Path: e.DecName, IsDir: e.IsDir, Size: e.Size,
+				Path: entryPath, IsDir: e.IsDir, Size: e.Size,
 			})
 		}
 		result.Count = len(result.Entries)

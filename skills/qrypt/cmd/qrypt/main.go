@@ -99,7 +99,7 @@ func main() {
 	findCmd.Flags().IntP("max", "n", 0, "匹配数量上限 (0=不限)")
 	findCmd.Flags().Bool("json", false, "JSON 格式输出")
 	findCmd.Flags().BoolP("count", "c", false, "只显示匹配数")
-	findCmd.Flags().Int("workers", 1, "并发遍历协程数 (1-8)")
+	findCmd.Flags().Int("workers", 4, "并发遍历协程数 (1-8)")
 	findCmd.Flags().String("size", "", "按大小过滤 (例: +1M, -500K, 100B)")
 
 	var pullCmd = &cobra.Command{

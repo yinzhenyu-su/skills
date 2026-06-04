@@ -56,9 +56,9 @@ func TestFormatBytesEdgeCases(t *testing.T) {
 
 func TestParseMountPath(t *testing.T) {
 	tests := []struct {
-		input       string
-		wantMount   string
-		wantPath    string
+		input     string
+		wantMount string
+		wantPath  string
 	}{
 		{"personal:/docs/file.txt", "personal", "/docs/file.txt"},
 		{"my-mount:/path", "my-mount", "/path"},
@@ -76,6 +76,25 @@ func TestParseMountPath(t *testing.T) {
 		}
 		if path != tt.wantPath {
 			t.Errorf("ParseMountPath(%q) path = %q, want %q", tt.input, path, tt.wantPath)
+		}
+	}
+}
+
+func TestFormatRemotePath(t *testing.T) {
+	tests := []struct {
+		mount string
+		path  string
+		want  string
+	}{
+		{"quark", "/dist/css/chunk.css", "quark:/dist/css/chunk.css"},
+		{"quark", "dist/css/chunk.css", "quark:/dist/css/chunk.css"},
+		{"quark", "/", "quark:/"},
+		{"", "/dist/css/chunk.css", "/dist/css/chunk.css"},
+	}
+	for _, tt := range tests {
+		got := formatRemotePath(tt.mount, tt.path)
+		if got != tt.want {
+			t.Errorf("formatRemotePath(%q, %q) = %q, want %q", tt.mount, tt.path, got, tt.want)
 		}
 	}
 }

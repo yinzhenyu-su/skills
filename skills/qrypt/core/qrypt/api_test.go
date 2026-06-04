@@ -567,7 +567,7 @@ func TestFileAPI_Find(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := api.Find(context.Background(), "", "/", "hello", -1, 0, false)
+	results, err := api.Find(context.Background(), "", "/", "hello", -1, 0, false, 1)
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -577,6 +577,9 @@ func TestFileAPI_Find(t *testing.T) {
 	matchFound := false
 	for _, r := range results {
 		if strings.Contains(r.DecName, "hello") {
+			if r.Path == "" || !strings.HasPrefix(r.Path, "/") {
+				t.Fatalf("expected full result path, got %q", r.Path)
+			}
 			matchFound = true
 			break
 		}
@@ -589,12 +592,41 @@ func TestFileAPI_Find(t *testing.T) {
 func TestFileAPI_Find_NoMatch(t *testing.T) {
 	api := newFileAPIWithMock(t)
 	writeTestFile(t, api)
-	results, err := api.Find(context.Background(), "", "/", "zzz_nonexistent", -1, 0, false)
+	results, err := api.Find(context.Background(), "", "/", "zzz_nonexistent", -1, 0, false, 1)
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
 	if len(results) != 0 {
 		t.Fatalf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestFileAPI_FindReturnsNestedPaths(t *testing.T) {
+	api := newFileAPIWithMock(t)
+	if err := api.Mkdir(context.Background(), "", "/dist"); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.Mkdir(context.Background(), "", "/dist/css"); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "chunk-5154c9cb.46dbd33f.css")
+	if err := os.WriteFile(filePath, []byte("body{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.Push(context.Background(), "", filePath, "/dist/css/chunk-5154c9cb.46dbd33f.css"); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := api.Find(context.Background(), "", "/", "chunk-5154c9cb", -1, 0, false, 4)
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Path != "/dist/css/chunk-5154c9cb.46dbd33f.css" {
+		t.Fatalf("path = %q", results[0].Path)
 	}
 }
 
