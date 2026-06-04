@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sync"
+
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 type SessionKey struct {
@@ -20,11 +22,11 @@ type SessionConfig struct {
 }
 
 type DriverFactory interface {
-	CreateDriver(ctx context.Context, cfg SessionConfig) (Driver, error)
+	CreateDriver(ctx context.Context, cfg SessionConfig) (drivers.Driver, error)
 }
 
 type Session struct {
-	Drv      Driver
+	Drv      drivers.Driver
 	RefCount int32
 }
 
@@ -84,14 +86,14 @@ func (sm *sessionManager) Release(ctx context.Context, key SessionKey) {
 }
 
 type singleDriverFactory struct {
-	drv Driver
+	drv drivers.Driver
 }
 
-func (f *singleDriverFactory) CreateDriver(_ context.Context, _ SessionConfig) (Driver, error) {
+func (f *singleDriverFactory) CreateDriver(_ context.Context, _ SessionConfig) (drivers.Driver, error) {
 	return f.drv, nil
 }
 
-func SingleDriverFactory(drv Driver) DriverFactory {
+func SingleDriverFactory(drv drivers.Driver) DriverFactory {
 	return &singleDriverFactory{drv: drv}
 }
 

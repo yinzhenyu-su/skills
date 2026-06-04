@@ -3,18 +3,20 @@ package qrypt
 import (
 	"fmt"
 	"io"
+
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 type DecryptingReader struct {
 	enc        io.Reader
-	cipher     Cipher
-	nonce      [FileNonceSize]byte
+	cipher     drivers.Cipher
+	nonce      [drivers.FileNonceSize]byte
 	blockIndex uint64
 	pending    []byte
 	encEOF     bool
 }
 
-func NewDecryptingReader(enc io.Reader, cipher Cipher, nonce [FileNonceSize]byte) *DecryptingReader {
+func NewDecryptingReader(enc io.Reader, cipher drivers.Cipher, nonce [drivers.FileNonceSize]byte) *DecryptingReader {
 	return &DecryptingReader{
 		enc:    enc,
 		cipher: cipher,
@@ -46,7 +48,7 @@ func (r *DecryptingReader) fillPending() error {
 		return io.EOF
 	}
 
-	encBlock := make([]byte, BlockSize)
+	encBlock := make([]byte, drivers.BlockSize)
 	n, err := io.ReadFull(r.enc, encBlock)
 
 	if err != nil {

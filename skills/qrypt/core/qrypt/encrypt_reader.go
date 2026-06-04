@@ -1,11 +1,15 @@
 package qrypt
 
-import "io"
+import (
+	"io"
+
+	"github.com/yinzhenyu/skills/qrypt/drivers"
+)
 
 type EncryptingReader struct {
 	plain        io.Reader
-	cipher       Cipher
-	nonce        [FileNonceSize]byte
+	cipher       drivers.Cipher
+	nonce        [drivers.FileNonceSize]byte
 	remaining    int64
 	headerSent   bool
 	blockIndex   uint64
@@ -13,7 +17,7 @@ type EncryptingReader struct {
 	plaintextEOF bool
 }
 
-func NewEncryptingReader(plain io.Reader, cipher Cipher, nonce [FileNonceSize]byte, plainSize int64) *EncryptingReader {
+func NewEncryptingReader(plain io.Reader, cipher drivers.Cipher, nonce [drivers.FileNonceSize]byte, plainSize int64) *EncryptingReader {
 	return &EncryptingReader{
 		plain:     plain,
 		cipher:    cipher,
@@ -43,8 +47,8 @@ func (r *EncryptingReader) Read(p []byte) (int, error) {
 
 func (r *EncryptingReader) fillPending() error {
 	if !r.headerSent {
-		header := make([]byte, 0, FileHeaderSize)
-		header = append(header, []byte(FileMagic)...)
+		header := make([]byte, 0, drivers.FileHeaderSize)
+		header = append(header, []byte(drivers.FileMagic)...)
 		header = append(header, r.nonce[:]...)
 		r.pending = header
 		r.headerSent = true
@@ -60,7 +64,7 @@ func (r *EncryptingReader) fillPending() error {
 		return io.EOF
 	}
 
-	chunkSize := int64(BlockDataSize)
+	chunkSize := int64(drivers.BlockDataSize)
 	if r.remaining < chunkSize {
 		chunkSize = r.remaining
 	}

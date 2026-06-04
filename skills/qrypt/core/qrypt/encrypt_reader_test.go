@@ -6,11 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/crypto/nacl/secretbox"
+	"github.com/yinzhenyu/skills/qrypt/cipher"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 func TestNewEncryptingReader(t *testing.T) {
-	c, _ := NewRcloneCipher("password", "salt")
+	c, _ := cipher.NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	r := NewEncryptingReader(strings.NewReader("hello"), c, nonce, 5)
 	if r == nil {
@@ -19,7 +20,7 @@ func TestNewEncryptingReader(t *testing.T) {
 }
 
 func TestEncryptingReader_Read_Empty(t *testing.T) {
-	c, _ := NewRcloneCipher("password", "salt")
+	c, _ := cipher.NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	r := NewEncryptingReader(strings.NewReader(""), c, nonce, 0)
 
@@ -28,17 +29,17 @@ func TestEncryptingReader_Read_Empty(t *testing.T) {
 		t.Fatalf("ReadAll failed: %v", err)
 	}
 	// Should produce only the header (no data blocks for empty plaintext)
-	if len(out) < FileHeaderSize {
-		t.Errorf("output too short: %d < header %d", len(out), FileHeaderSize)
+	if len(out) < drivers.FileHeaderSize {
+		t.Errorf("output too short: %d < header %d", len(out), drivers.FileHeaderSize)
 	}
-	if string(out[:FileMagicSize]) != FileMagic {
+	if string(out[:drivers.FileMagicSize]) != drivers.FileMagic {
 		t.Errorf("missing file magic at header start")
 	}
-	_ = out[:FileHeaderSize] // verify at least header exists
+	_ = out[:drivers.FileHeaderSize] // verify at least header exists
 }
 
 func TestEncryptingReader_SingleBlockRoundTrip(t *testing.T) {
-	c, _ := NewRcloneCipher("password", "salt")
+	c, _ := cipher.NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	// Use crypto/rand to fill nonce for production, but deterministic for test
 	copy(nonce[:], []byte("012345678901234567890123"))
@@ -52,18 +53,18 @@ func TestEncryptingReader_SingleBlockRoundTrip(t *testing.T) {
 	}
 
 	// Verify header
-	if len(encrypted) < FileHeaderSize {
+	if len(encrypted) < drivers.FileHeaderSize {
 		t.Fatalf("encrypted data too short: %d", len(encrypted))
 	}
-	if string(encrypted[:FileMagicSize]) != FileMagic {
+	if string(encrypted[:drivers.FileMagicSize]) != drivers.FileMagic {
 		t.Errorf("bad magic")
 	}
-	if !bytes.Equal(encrypted[FileMagicSize:FileHeaderSize], nonce[:]) {
+	if !bytes.Equal(encrypted[drivers.FileMagicSize:drivers.FileHeaderSize], nonce[:]) {
 		t.Errorf("nonce mismatch in header")
 	}
 
 	// Verify block: strip header, decrypt block
-	blockData := encrypted[FileHeaderSize:]
+	blockData := encrypted[drivers.FileHeaderSize:]
 	decrypted, err := c.DecryptBlock(blockData, 0, nonce)
 	if err != nil {
 		t.Fatalf("DecryptBlock failed: %v", err)
@@ -74,12 +75,12 @@ func TestEncryptingReader_SingleBlockRoundTrip(t *testing.T) {
 }
 
 func TestEncryptingReader_MultiBlock(t *testing.T) {
-	c, _ := NewRcloneCipher("password", "salt")
+	c, _ := cipher.NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	copy(nonce[:], []byte("abcdefghijklmnopqrstuvwx"))
 
 	// Three full blocks of data
-	plaintext := make([]byte, BlockDataSize*3)
+	plaintext := make([]byte, drivers.BlockDataSize*3)
 	for i := range plaintext {
 		plaintext[i] = byte(i % 251)
 	}
@@ -91,20 +92,20 @@ func TestEncryptingReader_MultiBlock(t *testing.T) {
 	}
 
 	// Verify header + 3 blocks
-	expectedSize := FileHeaderSize + BlockSize*3
+	expectedSize := drivers.FileHeaderSize + drivers.BlockSize*3
 	if len(encrypted) != expectedSize {
 		t.Errorf("expected %d bytes, got %d", expectedSize, len(encrypted))
 	}
 
 	// Decrypt each block
 	for i := 0; i < 3; i++ {
-		start := FileHeaderSize + i*BlockSize
-		block := encrypted[start : start+BlockSize]
+		start := drivers.FileHeaderSize + i*drivers.BlockSize
+		block := encrypted[start : start+drivers.BlockSize]
 		decrypted, err := c.DecryptBlock(block, uint64(i), nonce)
 		if err != nil {
 			t.Fatalf("DecryptBlock block %d failed: %v", i, err)
 		}
-		expected := plaintext[i*BlockDataSize : (i+1)*BlockDataSize]
+		expected := plaintext[i*drivers.BlockDataSize : (i+1)*drivers.BlockDataSize]
 		if !bytes.Equal(decrypted, expected) {
 			t.Errorf("block %d mismatch", i)
 		}
@@ -112,7 +113,7 @@ func TestEncryptingReader_MultiBlock(t *testing.T) {
 }
 
 func TestEncryptingReader_PartialBlock(t *testing.T) {
-	c, _ := NewRcloneCipher("password", "salt")
+	c, _ := cipher.NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	copy(nonce[:], []byte("123456789012345678901234"))
 
@@ -124,12 +125,12 @@ func TestEncryptingReader_PartialBlock(t *testing.T) {
 	}
 
 	// Verify: header + 1 block (with partial data)
-	expectedSize := FileHeaderSize + BlockHeaderSize + len(plaintext)
+	expectedSize := drivers.FileHeaderSize + drivers.BlockHeaderSize + len(plaintext)
 	if len(encrypted) != expectedSize {
 		t.Errorf("expected %d bytes, got %d", expectedSize, len(encrypted))
 	}
 
-	decrypted, err := c.DecryptBlock(encrypted[FileHeaderSize:], 0, nonce)
+	decrypted, err := c.DecryptBlock(encrypted[drivers.FileHeaderSize:], 0, nonce)
 	if err != nil {
 		t.Fatalf("DecryptBlock failed: %v", err)
 	}
@@ -139,11 +140,11 @@ func TestEncryptingReader_PartialBlock(t *testing.T) {
 }
 
 func TestEncryptingReader_ReadSmallBuffer(t *testing.T) {
-	c, _ := NewRcloneCipher("password", "salt")
+	c, _ := cipher.NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	copy(nonce[:], []byte("123456789012345678901234"))
 
-	plaintext := bytes.Repeat([]byte("A"), BlockDataSize*2+100)
+	plaintext := bytes.Repeat([]byte("A"), drivers.BlockDataSize*2+100)
 	r := NewEncryptingReader(bytes.NewReader(plaintext), c, nonce, int64(len(plaintext)))
 
 	// Read in tiny chunks to exercise the partial buffer logic
@@ -163,12 +164,12 @@ func TestEncryptingReader_ReadSmallBuffer(t *testing.T) {
 	}
 
 	// Verify total size (last block may be partial)
-	expectedSize := FileHeaderSize
-	fullBlocks := len(plaintext) / BlockDataSize
-	residue := len(plaintext) % BlockDataSize
-	expectedSize += fullBlocks * BlockSize
+	expectedSize := drivers.FileHeaderSize
+	fullBlocks := len(plaintext) / drivers.BlockDataSize
+	residue := len(plaintext) % drivers.BlockDataSize
+	expectedSize += fullBlocks * drivers.BlockSize
 	if residue > 0 {
-		expectedSize += BlockHeaderSize + residue
+		expectedSize += drivers.BlockHeaderSize + residue
 	}
 	if len(total) != expectedSize {
 		t.Errorf("expected %d total bytes, got %d", expectedSize, len(total))
@@ -178,11 +179,11 @@ func TestEncryptingReader_ReadSmallBuffer(t *testing.T) {
 // TestEncryptingReader_NonceCompatibility verifies the encrypting reader's
 // output can be decrypted by the same cipher (self-consistency).
 func TestEncryptingReader_NonceCompatibility(t *testing.T) {
-	c, _ := NewRcloneCipher("password", "salt")
+	c, _ := cipher.NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	copy(nonce[:], []byte("nonce_test_1234567890!!"))
 
-	plaintext := []byte("compatibility test data across blocks " + strings.Repeat("X", BlockDataSize*2))
+	plaintext := []byte("compatibility test data across blocks " + strings.Repeat("X", drivers.BlockDataSize*2))
 	r := NewEncryptingReader(bytes.NewReader(plaintext), c, nonce, int64(len(plaintext)))
 
 	encrypted, err := io.ReadAll(r)
@@ -190,33 +191,23 @@ func TestEncryptingReader_NonceCompatibility(t *testing.T) {
 		t.Fatalf("ReadAll failed: %v", err)
 	}
 
-	// Manually decode: read nonce from header, decrypt each block
-	var fileNonce [24]byte
-	copy(fileNonce[:], encrypted[FileMagicSize:FileHeaderSize])
+	// Decrypt each block via the public API to verify round-trip
+	var fileNonce [drivers.FileNonceSize]byte
+	copy(fileNonce[:], encrypted[drivers.FileMagicSize:drivers.FileHeaderSize])
 
 	var decrypted []byte
-	pos := FileHeaderSize
+	pos := drivers.FileHeaderSize
 	blockIdx := uint64(0)
 	for pos < len(encrypted) {
-		blockEnd := pos + BlockSize
+		blockEnd := pos + drivers.BlockSize
 		if blockEnd > len(encrypted) {
 			blockEnd = len(encrypted)
 		}
 		block := encrypted[pos:blockEnd]
 
-		// Decrypt with secretbox directly to verify
-		var blockNonce [24]byte
-		copy(blockNonce[:], fileNonce[:])
-		u := blockIdx
-		for i := 0; i < 8 && u > 0; i++ {
-			u += uint64(blockNonce[i])
-			blockNonce[i] = byte(u)
-			u >>= 8
-		}
-
-		plain, ok := secretbox.Open(nil, block, &blockNonce, &c.dataKey)
-		if !ok {
-			t.Fatalf("secretbox.Open failed at block %d", blockIdx)
+		plain, err := c.DecryptBlock(block, blockIdx, fileNonce)
+		if err != nil {
+			t.Fatalf("DecryptBlock failed at block %d: %v", blockIdx, err)
 		}
 		decrypted = append(decrypted, plain...)
 		pos = blockEnd
@@ -224,6 +215,6 @@ func TestEncryptingReader_NonceCompatibility(t *testing.T) {
 	}
 
 	if !bytes.Equal(plaintext, decrypted) {
-		t.Errorf("manual decrypt mismatch: got %d bytes, want %d", len(decrypted), len(plaintext))
+		t.Errorf("decrypt mismatch: got %d bytes, want %d", len(decrypted), len(plaintext))
 	}
 }

@@ -9,17 +9,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 type LocalDriver struct {
 	root    string
 	rootDir string
-	cipher  *qrypt.RcloneCipher
+	cipher  drivers.Cipher
 }
 
-func (d *LocalDriver) SetCipher(c *qrypt.RcloneCipher) { d.cipher = c }
+func (d *LocalDriver) SetCipher(c drivers.Cipher) { d.cipher = c }
 
 var (
 	_ drivers.Driver   = (*LocalDriver)(nil)

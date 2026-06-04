@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 type mockCipher struct{}
@@ -50,27 +52,27 @@ func (m *mockCipher) DecryptBlock(ciphertext []byte, blockIndex uint64, nonce [2
 
 func (m *mockCipher) EncryptedSize(plainSize int64) int64 {
 	if plainSize <= 0 {
-		return int64(FileHeaderSize)
+		return int64(drivers.FileHeaderSize)
 	}
-	blocks := plainSize / BlockDataSize
-	residue := plainSize % BlockDataSize
-	encSize := int64(FileHeaderSize) + blocks*(BlockHeaderSize+BlockDataSize)
+	blocks := plainSize / drivers.BlockDataSize
+	residue := plainSize % drivers.BlockDataSize
+	encSize := int64(drivers.FileHeaderSize) + blocks*(drivers.BlockHeaderSize+drivers.BlockDataSize)
 	if residue != 0 {
-		encSize += BlockHeaderSize + residue
+		encSize += drivers.BlockHeaderSize + residue
 	}
 	return encSize
 }
 
 func (m *mockCipher) DecryptedSize(cipherSize int64) (int64, error) {
-	if cipherSize <= int64(FileHeaderSize) {
+	if cipherSize <= int64(drivers.FileHeaderSize) {
 		return 0, nil
 	}
-	size := cipherSize - int64(FileHeaderSize)
-	blocks := size / BlockSize
-	residue := size % BlockSize
-	decSize := blocks * BlockDataSize
+	size := cipherSize - int64(drivers.FileHeaderSize)
+	blocks := size / drivers.BlockSize
+	residue := size % drivers.BlockSize
+	decSize := blocks * drivers.BlockDataSize
 	if residue > 0 {
-		residue -= BlockHeaderSize
+		residue -= drivers.BlockHeaderSize
 		if residue <= 0 {
 			return 0, io.ErrUnexpectedEOF
 		}
@@ -156,7 +158,7 @@ func (m *mockDriver) resolvePathLocked(path string) (string, error) {
 	return current.id, nil
 }
 
-func (m *mockDriver) List(ctx context.Context, parentID string) ([]Entry, error) {
+func (m *mockDriver) List(ctx context.Context, parentID string) ([]drivers.Entry, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -164,9 +166,9 @@ func (m *mockDriver) List(ctx context.Context, parentID string) ([]Entry, error)
 	if !ok {
 		return nil, NewErrorf(ErrNotFound, "entry not found")
 	}
-	var result []Entry
+	var result []drivers.Entry
 	for _, child := range parent.children {
-		result = append(result, Entry{
+		result = append(result, drivers.Entry{
 			ID: child.id, Name: child.name,
 			IsDir: child.isDir, Size: child.size, ModTime: child.modTime,
 		})
@@ -174,7 +176,7 @@ func (m *mockDriver) List(ctx context.Context, parentID string) ([]Entry, error)
 	return result, nil
 }
 
-func (m *mockDriver) Read(ctx context.Context, entry Entry, offset, size int64) (io.ReadCloser, error) {
+func (m *mockDriver) Read(ctx context.Context, entry drivers.Entry, offset, size int64) (io.ReadCloser, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -192,16 +194,16 @@ func (m *mockDriver) Read(ctx context.Context, entry Entry, offset, size int64) 
 	return io.NopCloser(bytes.NewReader(e.data[offset:end])), nil
 }
 
-func (m *mockDriver) Mkdir(ctx context.Context, parentID, name string) (Entry, error) {
+func (m *mockDriver) Mkdir(ctx context.Context, parentID, name string) (drivers.Entry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	parent, ok := m.entries[parentID]
 	if !ok {
-		return Entry{}, NewErrorf(ErrNotFound, "parent not found")
+		return drivers.Entry{}, NewErrorf(ErrNotFound, "parent not found")
 	}
 	if _, exists := parent.children[name]; exists {
-		return Entry{}, NewErrorf(ErrAlreadyExists, "already exists")
+		return drivers.Entry{}, NewErrorf(ErrAlreadyExists, "already exists")
 	}
 	id := m.nextID()
 	e := &mockEntry{
@@ -211,10 +213,10 @@ func (m *mockDriver) Mkdir(ctx context.Context, parentID, name string) (Entry, e
 	}
 	parent.children[name] = e
 	m.entries[id] = e
-	return Entry{ID: id, Name: name, IsDir: true}, nil
+	return drivers.Entry{ID: id, Name: name, IsDir: true}, nil
 }
 
-func (m *mockDriver) Move(ctx context.Context, entry Entry, dstParentID string) error {
+func (m *mockDriver) Move(ctx context.Context, entry drivers.Entry, dstParentID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -236,7 +238,7 @@ func (m *mockDriver) Move(ctx context.Context, entry Entry, dstParentID string) 
 	return nil
 }
 
-func (m *mockDriver) Rename(ctx context.Context, entry Entry, newName string) error {
+func (m *mockDriver) Rename(ctx context.Context, entry drivers.Entry, newName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -254,7 +256,7 @@ func (m *mockDriver) Rename(ctx context.Context, entry Entry, newName string) er
 	return nil
 }
 
-func (m *mockDriver) Remove(ctx context.Context, entry Entry) error {
+func (m *mockDriver) Remove(ctx context.Context, entry drivers.Entry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -271,13 +273,13 @@ func (m *mockDriver) Remove(ctx context.Context, entry Entry) error {
 	return nil
 }
 
-func (m *mockDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error) {
+func (m *mockDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drivers.Entry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	parent, ok := m.entries[parentID]
 	if !ok {
-		return Entry{}, NewErrorf(ErrNotFound, "parent not found")
+		return drivers.Entry{}, NewErrorf(ErrNotFound, "parent not found")
 	}
 	data, _ := io.ReadAll(body)
 	id := m.nextID()
@@ -287,14 +289,14 @@ func (m *mockDriver) Put(ctx context.Context, parentID, name string, size int64,
 	}
 	parent.children[name] = e
 	m.entries[id] = e
-	return Entry{ID: id, Name: name, Size: size}, nil
+	return drivers.Entry{ID: id, Name: name, Size: size}, nil
 }
 
 type mockDriverFactory struct {
 	drv *mockDriver
 }
 
-func (f *mockDriverFactory) CreateDriver(ctx context.Context, cfg SessionConfig) (Driver, error) {
+func (f *mockDriverFactory) CreateDriver(ctx context.Context, cfg SessionConfig) (drivers.Driver, error) {
 	return f.drv, nil
 }
 
@@ -827,11 +829,11 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 		t.Fatalf("encrypt: %v", err)
 	}
 
-	if len(encData) < FileHeaderSize {
+	if len(encData) < drivers.FileHeaderSize {
 		t.Fatal("encrypted data too short")
 	}
 
-	dr := NewDecryptingReader(bytes.NewReader(encData[FileHeaderSize:]), cp, nonce)
+	dr := NewDecryptingReader(bytes.NewReader(encData[drivers.FileHeaderSize:]), cp, nonce)
 	decrypted, err := io.ReadAll(dr)
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)

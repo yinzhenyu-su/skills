@@ -9,10 +9,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 type Options struct {
-	Cipher        Cipher
+	Cipher        drivers.Cipher
 	Dirs          DirResolver
 	Creds         CredentialStore
 	DriverFactory DriverFactory
@@ -23,7 +25,7 @@ type Options struct {
 }
 
 type FileAPI struct {
-	cp       Cipher
+	cp       drivers.Cipher
 	dirs     DirResolver
 	creds    CredentialStore
 
@@ -80,7 +82,7 @@ func (a *FileAPI) Events() EventBus          { return a.eventBus }
 func (a *FileAPI) Progress() ProgressHub     { return a.progress }
 func (a *FileAPI) Sessions() SessionManager  { return a.sessions }
 
-func (a *FileAPI) acquireDriver(ctx context.Context, mount string) (Driver, error) {
+func (a *FileAPI) acquireDriver(ctx context.Context, mount string) (drivers.Driver, error) {
 	if a.sessions == nil {
 		return nil, NewErrorf(ErrInternal, "no session manager")
 	}
@@ -124,8 +126,8 @@ func (a *FileAPI) baseOf(path string) string {
 	return path[idx+1:]
 }
 
-func (a *FileAPI) resolvePath(ctx context.Context, drv Driver, path string) (string, error) {
-	r, ok := drv.(PathResolver)
+func (a *FileAPI) resolvePath(ctx context.Context, drv drivers.Driver, path string) (string, error) {
+	r, ok := drv.(drivers.PathResolver)
 	if !ok {
 		return "", NewErrorf(ErrInternal, "driver does not support path resolution")
 	}
@@ -260,7 +262,7 @@ func (a *FileAPI) Mkdir(ctx context.Context, mount, path string) error {
 		}
 	}
 
-	w, ok := drv.(Writer)
+	w, ok := drv.(drivers.Writer)
 	if !ok {
 		return NewErrorf(ErrInternal, "driver does not support write operations")
 	}
@@ -303,7 +305,7 @@ func (a *FileAPI) Move(ctx context.Context, mount, oldPath, newPath string, opts
 		return WrapError(ErrNotFound, "resolve dest parent", err)
 	}
 
-	w, ok := drv.(Writer)
+	w, ok := drv.(drivers.Writer)
 	if !ok {
 		return NewErrorf(ErrInternal, "driver does not support move")
 	}
@@ -321,7 +323,7 @@ func (a *FileAPI) Move(ctx context.Context, mount, oldPath, newPath string, opts
 	srcParentFid, _ := a.resolvePath(ctx, drv, srcParentPath)
 
 	if srcParentFid != dstParentFid {
-		if err := w.Move(ctx, Entry{ID: srcFid}, dstParentFid); err != nil {
+		if err := w.Move(ctx, drivers.Entry{ID: srcFid}, dstParentFid); err != nil {
 			return WrapError(ErrInternal, "move", err)
 		}
 	}
@@ -329,7 +331,7 @@ func (a *FileAPI) Move(ctx context.Context, mount, oldPath, newPath string, opts
 	srcName := a.baseOf(oldPath)
 	srcEncName := a.cp.EncryptSegment(srcName)
 	if dstName != srcEncName {
-		if err := w.Rename(ctx, Entry{ID: srcFid}, dstName); err != nil {
+		if err := w.Rename(ctx, drivers.Entry{ID: srcFid}, dstName); err != nil {
 			return WrapError(ErrInternal, "rename", err)
 		}
 	}
@@ -358,7 +360,7 @@ func (a *FileAPI) Remove(ctx context.Context, mount, path string, recursive bool
 	}
 
 	encName := a.cp.EncryptSegment(baseName)
-	var target Entry
+	var target drivers.Entry
 	found := false
 	for _, e := range entries {
 		if e.Name == encName || e.Name == baseName {
@@ -387,7 +389,7 @@ func (a *FileAPI) Remove(ctx context.Context, mount, path string, recursive bool
 		}
 	}
 
-	w, ok := drv.(Writer)
+	w, ok := drv.(drivers.Writer)
 	if !ok {
 		return NewErrorf(ErrInternal, "driver does not support delete")
 	}
@@ -397,7 +399,7 @@ func (a *FileAPI) Remove(ctx context.Context, mount, path string, recursive bool
 	return nil
 }
 
-func (a *FileAPI) removeAll(ctx context.Context, drv Driver, dir Entry) error {
+func (a *FileAPI) removeAll(ctx context.Context, drv drivers.Driver, dir drivers.Entry) error {
 	children, err := drv.List(ctx, dir.ID)
 	if err != nil {
 		return WrapError(ErrNetwork, "list children", err)
@@ -408,7 +410,7 @@ func (a *FileAPI) removeAll(ctx context.Context, drv Driver, dir Entry) error {
 				return err
 			}
 		}
-		w, ok := drv.(Writer)
+		w, ok := drv.(drivers.Writer)
 		if !ok {
 			return NewErrorf(ErrInternal, "driver does not support delete")
 		}
@@ -440,7 +442,7 @@ func (a *FileAPI) Read(ctx context.Context, mount, path string) (io.ReadCloser, 
 	}
 
 	encName := a.cp.EncryptSegment(baseName)
-	var target Entry
+	var target drivers.Entry
 	found := false
 	for _, e := range entries {
 		if e.Name == encName || e.Name == baseName {
@@ -460,8 +462,8 @@ func (a *FileAPI) Read(ctx context.Context, mount, path string) (io.ReadCloser, 
 	return rc, nil
 }
 
-func (a *FileAPI) readFile(ctx context.Context, drv Driver, target Entry) (io.ReadCloser, error) {
-	headerSize := int64(FileHeaderSize)
+func (a *FileAPI) readFile(ctx context.Context, drv drivers.Driver, target drivers.Entry) (io.ReadCloser, error) {
+	headerSize := int64(drivers.FileHeaderSize)
 	rcHeader, err := drv.Read(ctx, target, 0, headerSize)
 	if err != nil {
 		return nil, WrapError(ErrNetwork, "read header", err)
@@ -473,8 +475,8 @@ func (a *FileAPI) readFile(ctx context.Context, drv Driver, target Entry) (io.Re
 	}
 	rcHeader.Close()
 
-	var fileNonce [FileNonceSize]byte
-	copy(fileNonce[:], header[FileMagicSize:])
+	var fileNonce [drivers.FileNonceSize]byte
+	copy(fileNonce[:], header[drivers.FileMagicSize:])
 
 	encBodySize := target.Size - headerSize
 	if encBodySize <= 0 {
@@ -541,7 +543,7 @@ func (a *FileAPI) pushFile(ctx context.Context, mount, localPath, remotePath str
 		return err
 	}
 
-	up, ok := drv.(Uploader)
+	up, ok := drv.(drivers.Uploader)
 	if !ok {
 		return NewErrorf(ErrInternal, "driver does not support upload")
 	}
@@ -618,11 +620,11 @@ func (a *FileAPI) pushDirectory(ctx context.Context, mount, localDir, remoteDir 
 	}
 	defer a.releaseDriver(ctx, mount)
 
-	up, upOK := drv.(Uploader)
+	up, upOK := drv.(drivers.Uploader)
 	if !upOK {
 		return NewErrorf(ErrInternal, "driver does not support upload")
 	}
-	w, wOK := drv.(Writer)
+	w, wOK := drv.(drivers.Writer)
 
 	rootFid, err := a.resolveOrCreateDir(ctx, drv, remoteDir, w, wOK)
 	if err != nil {
@@ -715,7 +717,7 @@ func (a *FileAPI) pushDirectory(ctx context.Context, mount, localDir, remoteDir 
 	return nil
 }
 
-func (a *FileAPI) resolveOrCreateDir(ctx context.Context, drv Driver, path string, w Writer, wOK bool) (string, error) {
+func (a *FileAPI) resolveOrCreateDir(ctx context.Context, drv drivers.Driver, path string, w drivers.Writer, wOK bool) (string, error) {
 	parentPath := a.dirOf(path)
 	dirName := a.baseOf(path)
 	if dirName == "" {
@@ -766,7 +768,7 @@ func (a *FileAPI) Pull(ctx context.Context, mount, remotePath, localPath string,
 	}
 
 	encName := a.cp.EncryptSegment(baseName)
-	var target Entry
+	var target drivers.Entry
 	found := false
 	for _, e := range entries {
 		if e.Name == encName || e.Name == baseName {
@@ -807,7 +809,7 @@ func (a *FileAPI) Pull(ctx context.Context, mount, remotePath, localPath string,
 		}
 	}()
 
-	headerSize := int64(FileHeaderSize)
+	headerSize := int64(drivers.FileHeaderSize)
 	rcHeader, err := drv.Read(ctx, target, 0, headerSize)
 	if err != nil {
 		return WrapError(ErrNetwork, "read header", err)
@@ -819,8 +821,8 @@ func (a *FileAPI) Pull(ctx context.Context, mount, remotePath, localPath string,
 	}
 	rcHeader.Close()
 
-	var fileNonce [FileNonceSize]byte
-	copy(fileNonce[:], header[FileMagicSize:])
+	var fileNonce [drivers.FileNonceSize]byte
+	copy(fileNonce[:], header[drivers.FileMagicSize:])
 
 	encBodySize := target.Size - headerSize
 	if encBodySize > 0 {
@@ -880,7 +882,7 @@ func (a *FileAPI) Find(ctx context.Context, mount, path, pattern string, maxDept
 	return result, nil
 }
 
-func (a *FileAPI) walkAndMatch(ctx context.Context, drv Driver, fid, displayPath string, depth, maxDepth, maxMatches int, pattern string, caseSensitive bool, result *[]FileEntry) error {
+func (a *FileAPI) walkAndMatch(ctx context.Context, drv drivers.Driver, fid, displayPath string, depth, maxDepth, maxMatches int, pattern string, caseSensitive bool, result *[]FileEntry) error {
 	if maxDepth >= 0 && depth > maxDepth {
 		return nil
 	}
