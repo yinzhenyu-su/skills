@@ -36,7 +36,7 @@ Use --daemon for headless mode (daemon without FUSE mount).`,
 		Run: runMount,
 	}
 	mountCmd.Flags().StringP("config", "f", "", "配置文件路径 (默认搜索 qrypt.toml)")
-	mountCmd.Flags().String("drive-type", "", "驱动类型: quark, yun139 (默认: 配置文件 backend.type)")
+	mountCmd.Flags().String("drive-type", "", "驱动类型: quark, yun139 (默认: 配置文件 drivers.type)")
 	mountCmd.Flags().StringP("cookie", "c", "", "Quark Drive Cookie")
 	mountCmd.Flags().StringP("cache", "a", "", "本地缓存目录")
 	mountCmd.Flags().StringP("mount", "m", "", "本地挂载点")

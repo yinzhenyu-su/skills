@@ -111,7 +111,7 @@ func newQryptAPI(cfg *Config, creds qrypt.CredentialStore) (*MobileAPI, error) {
 	}
 
 	return &MobileAPI{
-		inner:   api,
+		fileAPI: api,
 		creds:   creds,
 		streams: newStreamRegistry(),
 	}, nil

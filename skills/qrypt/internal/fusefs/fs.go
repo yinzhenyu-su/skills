@@ -68,7 +68,7 @@ func (fs *QryptFS) SetUploadQueue(q UploadQueue) {
 type QryptFS struct {
 	fuse.FileSystemBase
 
-	drv     backend.Driver
+	drv     drivers.Driver
 	cipher  *qrypt.RcloneCipher
 	cacheMgr *qrypt.CacheManager
 	staging *qrypt.Store
@@ -111,7 +111,7 @@ type FSOptions struct {
 }
 
 func NewFS(
-	drv backend.Driver,
+	drv drivers.Driver,
 	cipher *qrypt.RcloneCipher,
 	cacheMgr *qrypt.CacheManager,
 	rootFid string,

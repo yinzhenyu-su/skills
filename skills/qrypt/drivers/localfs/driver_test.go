@@ -172,7 +172,7 @@ func TestRead_NonExistent(t *testing.T) {
 	d := NewDriver(dir)
 	d.Init(context.Background())
 
-	_, err := d.Read(context.Background(), backend.Entry{ID: filepath.Join(dir, "nonexistent")}, 0, 10)
+	_, err := d.Read(context.Background(), drivers.Entry{ID: filepath.Join(dir, "nonexistent")}, 0, 10)
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
 	}
@@ -363,7 +363,7 @@ func TestResolvePath(t *testing.T) {
 func TestLocalDriver_ImplementsInterfaces(t *testing.T) {
 	// Compile-time interface checks (redundant with source, but explicit in tests)
 	var d *LocalDriver
-	var _ backend.Driver = d
-	var _ backend.Writer = d
-	var _ backend.Uploader = d
+	var _ drivers.Driver = d
+	var _ drivers.Writer = d
+	var _ drivers.Uploader = d
 }

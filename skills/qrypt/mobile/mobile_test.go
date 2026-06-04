@@ -42,7 +42,7 @@ func TestNewQryptAPI_Defaults(t *testing.T) {
 	}
 	defer api.Shutdown()
 
-	if api.Inner() == nil {
+	if api.fileAPI == nil {
 		t.Fatal("Inner() is nil")
 	}
 	if api.creds == nil {

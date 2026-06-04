@@ -12,7 +12,7 @@ import (
 	"github.com/hashicorp/golang-lru/v2"
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
-	"github.com/yinzhenyu/skills/qrypt/drivers/quarkmock"
+	"github.com/yinzhenyu/skills/qrypt/internal/quarkmock"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 

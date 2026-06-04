@@ -22,9 +22,9 @@ type LocalDriver struct {
 func (d *LocalDriver) SetCipher(c *qrypt.RcloneCipher) { d.cipher = c }
 
 var (
-	_ backend.Driver   = (*LocalDriver)(nil)
-	_ backend.Writer   = (*LocalDriver)(nil)
-	_ backend.Uploader = (*LocalDriver)(nil)
+	_ drivers.Driver   = (*LocalDriver)(nil)
+	_ drivers.Writer   = (*LocalDriver)(nil)
+	_ drivers.Uploader = (*LocalDriver)(nil)
 )
 
 func NewDriver(root string) *LocalDriver {
@@ -47,19 +47,19 @@ func (d *LocalDriver) Drop(ctx context.Context) error {
 	return nil
 }
 
-func (d *LocalDriver) List(ctx context.Context, parentID string) ([]backend.Entry, error) {
+func (d *LocalDriver) List(ctx context.Context, parentID string) ([]drivers.Entry, error) {
 	dir := d.resolve(parentID)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("localfs: readdir %s: %w", dir, err)
 	}
-	result := make([]backend.Entry, 0, len(entries))
+	result := make([]drivers.Entry, 0, len(entries))
 	for _, e := range entries {
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		result = append(result, backend.Entry{
+		result = append(result, drivers.Entry{
 			ID:      filepath.Join(dir, e.Name()),
 			Name:    e.Name(),
 			IsDir:   e.IsDir(),
@@ -70,7 +70,7 @@ func (d *LocalDriver) List(ctx context.Context, parentID string) ([]backend.Entr
 	return result, nil
 }
 
-func (d *LocalDriver) Read(ctx context.Context, entry backend.Entry, offset, size int64) (io.ReadCloser, error) {
+func (d *LocalDriver) Read(ctx context.Context, entry drivers.Entry, offset, size int64) (io.ReadCloser, error) {
 	f, err := os.Open(entry.ID)
 	if err != nil {
 		return nil, fmt.Errorf("localfs: open %s: %w", entry.ID, err)
@@ -91,51 +91,51 @@ func (d *LocalDriver) Read(ctx context.Context, entry backend.Entry, offset, siz
 	return f, nil
 }
 
-func (d *LocalDriver) Mkdir(ctx context.Context, parentID, name string) (backend.Entry, error) {
+func (d *LocalDriver) Mkdir(ctx context.Context, parentID, name string) (drivers.Entry, error) {
 	parent := d.resolve(parentID)
 	path := filepath.Join(parent, name)
 	err := os.Mkdir(path, 0755)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("localfs: mkdir %s: %w", path, err)
+		return drivers.Entry{}, fmt.Errorf("localfs: mkdir %s: %w", path, err)
 	}
-	return backend.Entry{ID: path, Name: name, IsDir: true, ModTime: time.Now()}, nil
+	return drivers.Entry{ID: path, Name: name, IsDir: true, ModTime: time.Now()}, nil
 }
 
-func (d *LocalDriver) Move(ctx context.Context, entry backend.Entry, dstParentID string) error {
+func (d *LocalDriver) Move(ctx context.Context, entry drivers.Entry, dstParentID string) error {
 	dst := filepath.Join(d.resolve(dstParentID), filepath.Base(entry.ID))
 	return os.Rename(entry.ID, dst)
 }
 
-func (d *LocalDriver) Rename(ctx context.Context, entry backend.Entry, newName string) error {
+func (d *LocalDriver) Rename(ctx context.Context, entry drivers.Entry, newName string) error {
 	parent := filepath.Dir(entry.ID)
 	dst := filepath.Join(parent, newName)
 	return os.Rename(entry.ID, dst)
 }
 
-func (d *LocalDriver) Remove(ctx context.Context, entry backend.Entry) error {
+func (d *LocalDriver) Remove(ctx context.Context, entry drivers.Entry) error {
 	if entry.IsDir {
 		return os.RemoveAll(entry.ID)
 	}
 	return os.Remove(entry.ID)
 }
 
-func (d *LocalDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (backend.Entry, error) {
+func (d *LocalDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drivers.Entry, error) {
 	parent := d.resolve(parentID)
 	path := filepath.Join(parent, name)
 	f, err := os.Create(path)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("localfs: create %s: %w", path, err)
+		return drivers.Entry{}, fmt.Errorf("localfs: create %s: %w", path, err)
 	}
 	defer f.Close()
 	_, err = io.Copy(f, body)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("localfs: write %s: %w", path, err)
+		return drivers.Entry{}, fmt.Errorf("localfs: write %s: %w", path, err)
 	}
 	info, err := f.Stat()
 	if err != nil {
-		return backend.Entry{ID: path, Name: name}, nil
+		return drivers.Entry{ID: path, Name: name}, nil
 	}
-	return backend.Entry{ID: path, Name: name, Size: info.Size(), ModTime: info.ModTime()}, nil
+	return drivers.Entry{ID: path, Name: name, Size: info.Size(), ModTime: info.ModTime()}, nil
 }
 
 func (d *LocalDriver) ResolvePath(ctx context.Context, path string) (string, error) {

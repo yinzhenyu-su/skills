@@ -1,4 +1,4 @@
-// Package factory provides factory functions for creating backend.Driver instances from config.
+// Package factory provides factory functions for creating drivers.Driver instances from config.
 package factory
 
 import (
@@ -12,7 +12,7 @@ import (
 )
 
 // NewDriverFromConfig creates a Driver from the given DriveConfig.
-func NewDriverFromConfig(cfg config.DriveConfig) (backend.Driver, error) {
+func NewDriverFromConfig(cfg config.DriveConfig) (drivers.Driver, error) {
 	switch cfg.Type {
 	case "quark":
 		if cfg.Quark == nil {
@@ -35,7 +35,7 @@ func NewDriverFromConfig(cfg config.DriveConfig) (backend.Driver, error) {
 }
 
 // NewDriverFromType creates a Driver from a type string and MountParams.
-func NewDriverFromType(driverType string, params config.MountParams) (backend.Driver, error) {
+func NewDriverFromType(driverType string, params config.MountParams) (drivers.Driver, error) {
 	switch driverType {
 	case "quark":
 		if params.Cookie == "" {

@@ -506,12 +506,12 @@ func (fs *QryptFS) persistPendingPath(oldPath, newPath string, n *Node) {
 }
 
 type fetchFilesResult struct {
-	files []backend.Entry
+	files []drivers.Entry
 	err   error
 	done  chan struct{}
 }
 
-func (fs *QryptFS) fetchFiles(fid string) ([]backend.Entry, error) {
+func (fs *QryptFS) fetchFiles(fid string) ([]drivers.Entry, error) {
 	if fid == "" {
 		return nil, nil
 	}

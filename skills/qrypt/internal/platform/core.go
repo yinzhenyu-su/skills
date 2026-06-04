@@ -44,7 +44,7 @@ func NewFileAPIFromConfig(cfg *config.Config, password, salt string) (*qrypt.Fil
 
 // NewFileAPIFromConfigWithAdapter is used when the caller already has a constructed
 // backend driver (e.g., daemon hot-path reuse).
-func NewFileAPIFromConfigWithAdapter(cfg *config.Config, drv backend.Driver, ciph *qrypt.RcloneCipher) (*qrypt.FileAPI, error) {
+func NewFileAPIFromConfigWithAdapter(cfg *config.Config, drv drivers.Driver, ciph *qrypt.RcloneCipher) (*qrypt.FileAPI, error) {
 	return qrypt.NewFileAPI(qrypt.Options{
 		Cipher:        ciph,
 		Dirs:          DesktopDirResolver{},

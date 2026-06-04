@@ -362,7 +362,7 @@ func (fs *QryptFS) asyncDelete(deleteFids, finalFids, finalPaths []string, valid
 		}
 	}()
 
-	w, ok := fs.drv.(backend.Writer)
+	w, ok := fs.drv.(drivers.Writer)
 	if !ok {
 		logging.L.Errorf("asyncDelete: driver does not support delete\n")
 		return
@@ -372,9 +372,9 @@ func (fs *QryptFS) asyncDelete(deleteFids, finalFids, finalPaths []string, valid
 	for attempt := 0; attempt < 3; attempt++ {
 		var lastErr error
 		for _, fid := range deleteFids {
-			entry := backend.Entry{ID: fid}
+			entry := drivers.Entry{ID: fid}
 			if e := w.Remove(context.Background(), entry); e != nil {
-				if !errors.Is(e, backend.ErrNotFound) {
+				if !errors.Is(e, drivers.ErrNotFound) {
 					lastErr = e
 					break
 				}

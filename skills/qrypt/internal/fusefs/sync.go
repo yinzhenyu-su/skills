@@ -259,8 +259,8 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 	// Put) may not find the old file, causing server auto-rename to
 	// name(1).  Use a direct fid-based delete instead.
 	if oldUploadedFid != "" && !strings.HasPrefix(oldUploadedFid, "local_") {
-		if w, ok := fs.drv.(backend.Writer); ok {
-			if err := w.Remove(context.Background(), backend.Entry{ID: oldUploadedFid}); err != nil {
+		if w, ok := fs.drv.(drivers.Writer); ok {
+			if err := w.Remove(context.Background(), drivers.Entry{ID: oldUploadedFid}); err != nil {
 				logging.L.Warnf("syncFile: remove old file %s: %v", oldUploadedFid, err)
 			}
 		}
@@ -341,7 +341,7 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 }
 
 func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snapshotName, parentFid string) {
-	w, wOk := fs.drv.(backend.Writer)
+	w, wOk := fs.drv.(drivers.Writer)
 
 	if newFid != "" && !strings.HasPrefix(newFid, "local_") {
 		n.mu.RLock()
@@ -356,14 +356,14 @@ func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snap
 			!strings.HasPrefix(curParentFid, "local_") {
 			logging.L.Infof("syncFilePostUpload: moving %s (fid=%s) from parent %s to %s\n", path, newFid, parentFid, curParentFid)
 			if wOk {
-				moveEntry := backend.Entry{ID: newFid, ParentID: parentFid}
+				moveEntry := drivers.Entry{ID: newFid, ParentID: parentFid}
 				var moveErr error
 				for attempt := 0; attempt < 3; attempt++ {
 					moveErr = w.Move(context.Background(), moveEntry, curParentFid)
 					if moveErr == nil {
 						break
 					}
-					if errors.Is(moveErr, backend.ErrDirAlreadyExists) || strings.Contains(moveErr.Error(), "conflict") {
+					if errors.Is(moveErr, drivers.ErrDirAlreadyExists) || strings.Contains(moveErr.Error(), "conflict") {
 						time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
 						continue
 					}
@@ -383,14 +383,14 @@ func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snap
 			encName := fs.cipher.EncryptSegment(curName)
 			logging.L.Infof("syncFilePostUpload: renaming %s from %s to %s\n", path, snapshotName, curName)
 			if wOk {
-				renameEntry := backend.Entry{ID: newFid, ParentID: curParentFid}
+				renameEntry := drivers.Entry{ID: newFid, ParentID: curParentFid}
 				var renameErr error
 				for attempt := 0; attempt < 3; attempt++ {
 					renameErr = w.Rename(context.Background(), renameEntry, encName)
 					if renameErr == nil {
 						break
 					}
-					if errors.Is(renameErr, backend.ErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
+					if errors.Is(renameErr, drivers.ErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
 						time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
 						continue
 					}
@@ -415,13 +415,13 @@ func (fs *QryptFS) syncFilePostUpload(path string, n *Node, newFid, oldFid, snap
 	}
 }
 
-func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*backend.Entry, error) {
+func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*drivers.Entry, error) {
 	if fid == "" || strings.HasPrefix(fid, "local_") {
 		return nil, nil
 	}
 	files, err := fs.drv.List(context.Background(), parentFid)
 	if err != nil {
-		if errors.Is(err, backend.ErrNotFound) || strings.Contains(err.Error(), "404") {
+		if errors.Is(err, drivers.ErrNotFound) || strings.Contains(err.Error(), "404") {
 			return nil, nil
 		}
 		return nil, err
@@ -537,7 +537,7 @@ func (fs *QryptFS) dirExistsOnServer(fid string) bool {
 	}
 	_, err := fs.drv.List(context.Background(), fid)
 	if err != nil {
-		if errors.Is(err, backend.ErrNotFound) || strings.Contains(err.Error(), "404") {
+		if errors.Is(err, drivers.ErrNotFound) || strings.Contains(err.Error(), "404") {
 			return false
 		}
 	}
@@ -558,7 +558,7 @@ func (fs *QryptFS) findChildDir(ctx context.Context, parentFid, encName string) 
 }
 
 func (fs *QryptFS) ensureRemoteDir(parentFid, encName string) (string, error) {
-	w, ok := fs.drv.(backend.Writer)
+	w, ok := fs.drv.(drivers.Writer)
 	if !ok {
 		return "", fmt.Errorf("driver does not support write operations")
 	}
@@ -566,7 +566,7 @@ func (fs *QryptFS) ensureRemoteDir(parentFid, encName string) (string, error) {
 	if err == nil {
 		return entry.ID, nil
 	}
-	if errors.Is(err, backend.ErrDirAlreadyExists) {
+	if errors.Is(err, drivers.ErrDirAlreadyExists) {
 		return fs.findChildDir(context.Background(), parentFid, encName)
 	}
 	return "", err

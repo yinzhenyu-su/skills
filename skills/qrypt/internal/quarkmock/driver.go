@@ -29,9 +29,9 @@ type MockDriver struct {
 }
 
 var (
-	_ backend.Driver   = (*MockDriver)(nil)
-	_ backend.Writer   = (*MockDriver)(nil)
-	_ backend.Uploader = (*MockDriver)(nil)
+	_ drivers.Driver   = (*MockDriver)(nil)
+	_ drivers.Writer   = (*MockDriver)(nil)
+	_ drivers.Uploader = (*MockDriver)(nil)
 )
 
 func NewDriver() *MockDriver {
@@ -52,30 +52,30 @@ func (d *MockDriver) Init(ctx context.Context) error { return nil }
 
 func (d *MockDriver) Drop(ctx context.Context) error { return nil }
 
-func (d *MockDriver) List(ctx context.Context, parentID string) ([]backend.Entry, error) {
+func (d *MockDriver) List(ctx context.Context, parentID string) ([]drivers.Entry, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	var result []backend.Entry
+	var result []drivers.Entry
 	for _, f := range d.files {
 		if f.parentID == parentID {
-			result = append(result, backend.Entry{
+			result = append(result, drivers.Entry{
 				ID: f.id, Name: f.name, IsDir: f.isDir,
 				Size: int64(len(f.data)), ModTime: f.modTime,
 			})
 		}
 	}
 	if result == nil {
-		result = []backend.Entry{}
+		result = []drivers.Entry{}
 	}
 	return result, nil
 }
 
-func (d *MockDriver) Read(ctx context.Context, entry backend.Entry, offset, size int64) (io.ReadCloser, error) {
+func (d *MockDriver) Read(ctx context.Context, entry drivers.Entry, offset, size int64) (io.ReadCloser, error) {
 	d.mu.RLock()
 	f, ok := d.files[entry.ID]
 	d.mu.RUnlock()
 	if !ok {
-		return nil, backend.ErrNotFound
+		return nil, drivers.ErrNotFound
 	}
 	if offset >= int64(len(f.data)) {
 		return io.NopCloser(bytes.NewReader(nil)), nil
@@ -87,7 +87,7 @@ func (d *MockDriver) Read(ctx context.Context, entry backend.Entry, offset, size
 	return io.NopCloser(bytes.NewReader(f.data[offset:end])), nil
 }
 
-func (d *MockDriver) Mkdir(ctx context.Context, parentID, name string) (backend.Entry, error) {
+func (d *MockDriver) Mkdir(ctx context.Context, parentID, name string) (drivers.Entry, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	id := d.allocID()
@@ -95,41 +95,41 @@ func (d *MockDriver) Mkdir(ctx context.Context, parentID, name string) (backend.
 		id: id, name: name, isDir: true, parentID: parentID,
 		modTime: time.Now(),
 	}
-	return backend.Entry{ID: id, Name: name, IsDir: true, ModTime: time.Now()}, nil
+	return drivers.Entry{ID: id, Name: name, IsDir: true, ModTime: time.Now()}, nil
 }
 
-func (d *MockDriver) Move(ctx context.Context, entry backend.Entry, dstParentID string) error {
+func (d *MockDriver) Move(ctx context.Context, entry drivers.Entry, dstParentID string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	f, ok := d.files[entry.ID]
 	if !ok {
-		return backend.ErrNotFound
+		return drivers.ErrNotFound
 	}
 	f.parentID = dstParentID
 	return nil
 }
 
-func (d *MockDriver) Rename(ctx context.Context, entry backend.Entry, newName string) error {
+func (d *MockDriver) Rename(ctx context.Context, entry drivers.Entry, newName string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	f, ok := d.files[entry.ID]
 	if !ok {
-		return backend.ErrNotFound
+		return drivers.ErrNotFound
 	}
 	for _, other := range d.files {
 		if other.id != entry.ID && other.parentID == f.parentID && other.name == newName {
-			return backend.ErrDirAlreadyExists
+			return drivers.ErrDirAlreadyExists
 		}
 	}
 	f.name = newName
 	return nil
 }
 
-func (d *MockDriver) Remove(ctx context.Context, entry backend.Entry) error {
+func (d *MockDriver) Remove(ctx context.Context, entry drivers.Entry) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, ok := d.files[entry.ID]; !ok {
-		return backend.ErrNotFound
+		return drivers.ErrNotFound
 	}
 	d.removeRecursive(entry.ID)
 	return nil
@@ -144,10 +144,10 @@ func (d *MockDriver) removeRecursive(id string) {
 	}
 }
 
-func (d *MockDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (backend.Entry, error) {
+func (d *MockDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drivers.Entry, error) {
 	data, err := io.ReadAll(body)
 	if err != nil {
-		return backend.Entry{}, err
+		return drivers.Entry{}, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -156,7 +156,7 @@ func (d *MockDriver) Put(ctx context.Context, parentID, name string, size int64,
 		id: id, name: name, isDir: false, parentID: parentID,
 		data: data, modTime: time.Now(),
 	}
-	return backend.Entry{ID: id, Name: name, Size: int64(len(data)), ModTime: time.Now()}, nil
+	return drivers.Entry{ID: id, Name: name, Size: int64(len(data)), ModTime: time.Now()}, nil
 }
 
 func (d *MockDriver) ResolvePath(ctx context.Context, path string) (string, error) {

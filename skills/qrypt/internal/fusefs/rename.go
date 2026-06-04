@@ -57,20 +57,20 @@ func (fs *QryptFS) Rename3(oldPath string, newPath string, flags uint32) (errc i
 	newName := filepath.Base(newPath)
 	isLocal := strings.HasPrefix(oldNode.fid, "local_")
 
-	w, wOk := fs.drv.(backend.Writer)
+	w, wOk := fs.drv.(drivers.Writer)
 
 	if !isLocal && wOk {
 		encName := fs.cipher.EncryptSegment(newName)
 		oldEncName := fs.cipher.EncryptSegment(oldNode.name)
 		if encName != oldEncName {
-			renameEntry := backend.Entry{ID: oldNode.fid, ParentID: oldNode.parentFid}
+			renameEntry := drivers.Entry{ID: oldNode.fid, ParentID: oldNode.parentFid}
 			var renameErr error
 			for attempt := 0; attempt < 5; attempt++ {
 				renameErr = w.Rename(context.Background(), renameEntry, encName)
 				if renameErr == nil {
 					break
 				}
-				if errors.Is(renameErr, backend.ErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
+				if errors.Is(renameErr, drivers.ErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
 					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 					continue
 				}
@@ -90,14 +90,14 @@ func (fs *QryptFS) Rename3(oldPath string, newPath string, flags uint32) (errc i
 		}
 
 		if !isLocal && wOk {
-			moveEntry := backend.Entry{ID: oldNode.fid, ParentID: oldNode.parentFid}
+			moveEntry := drivers.Entry{ID: oldNode.fid, ParentID: oldNode.parentFid}
 			var moveErr error
 			for attempt := 0; attempt < 5; attempt++ {
 				moveErr = w.Move(context.Background(), moveEntry, newParentNode.fid)
 				if moveErr == nil {
 					break
 				}
-				if errors.Is(moveErr, backend.ErrDirAlreadyExists) || strings.Contains(moveErr.Error(), "conflict") {
+				if errors.Is(moveErr, drivers.ErrDirAlreadyExists) || strings.Contains(moveErr.Error(), "conflict") {
 					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 					continue
 				}

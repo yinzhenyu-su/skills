@@ -301,10 +301,10 @@ processBatch:
 	return nil
 }
 
-func nodeToEntry(n *Node) backend.Entry {
+func nodeToEntry(n *Node) drivers.Entry {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return backend.Entry{
+	return drivers.Entry{
 		ID:   n.fid,
 		Name: n.name,
 		Size: n.encSize,

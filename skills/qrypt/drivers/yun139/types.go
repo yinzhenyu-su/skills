@@ -43,8 +43,8 @@ func personalTime(s string) time.Time {
 	return t
 }
 
-func toEntry(item personalItem) backend.Entry {
-	return backend.Entry{
+func toEntry(item personalItem) drivers.Entry {
+	return drivers.Entry{
 		ID:      item.FileId,
 		Name:    item.Name,
 		IsDir:   item.Type == "folder",
@@ -53,8 +53,8 @@ func toEntry(item personalItem) backend.Entry {
 	}
 }
 
-func toEntries(items []personalItem) []backend.Entry {
-	entries := make([]backend.Entry, len(items))
+func toEntries(items []personalItem) []drivers.Entry {
+	entries := make([]drivers.Entry, len(items))
 	for i := range items {
 		entries[i] = toEntry(items[i])
 	}

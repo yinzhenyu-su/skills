@@ -37,7 +37,7 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 
 	encName := fs.cipher.EncryptSegment(name)
 
-	w, ok := fs.drv.(backend.Writer)
+	w, ok := fs.drv.(drivers.Writer)
 	if !ok {
 		logging.L.Errorf("Mkdir: driver does not support write operations\n")
 		return -fuse.EIO
@@ -46,7 +46,7 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 	var fid string
 	entry, err := w.Mkdir(context.Background(), parentNode.fid, encName)
 	if err != nil {
-		if errors.Is(err, backend.ErrDirAlreadyExists) {
+		if errors.Is(err, drivers.ErrDirAlreadyExists) {
 			entries, listErr := fs.drv.List(context.Background(), parentNode.fid)
 			if listErr != nil {
 				return -fuse.EIO

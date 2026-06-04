@@ -121,7 +121,7 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 	return 0
 }
 
-func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remoteFiles []backend.Entry) {
+func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remoteFiles []drivers.Entry) {
 	if parentFid == "" {
 		return
 	}
@@ -144,7 +144,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 	}
 
 	seenFids := make(map[string]bool)
-	remoteMap := make(map[string]backend.Entry)
+	remoteMap := make(map[string]drivers.Entry)
 	remoteFids := make(map[string]bool)
 
 	for _, f := range remoteFiles {

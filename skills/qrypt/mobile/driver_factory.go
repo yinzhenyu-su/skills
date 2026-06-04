@@ -35,7 +35,7 @@ func newMobileDriverFactory(creds qrypt.CredentialStore) qrypt.DriverFactory {
 func (f *mobileDriverFactory) CreateDriver(ctx context.Context, cfg qrypt.SessionConfig) (qrypt.Driver, error) {
 	backendType, mountName := splitTypeMount(cfg.Type)
 
-	var drv backend.Driver
+	var drv drivers.Driver
 	switch backendType {
 	case "quark":
 		cookie, err := f.creds.Get("cookie_" + mountName)

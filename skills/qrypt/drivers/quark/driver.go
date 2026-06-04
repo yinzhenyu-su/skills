@@ -33,9 +33,9 @@ func (d *QuarkDriver) SetCipher(c *qrypt.RcloneCipher) {
 }
 
 var (
-	_ backend.Driver   = (*QuarkDriver)(nil)
-	_ backend.Writer   = (*QuarkDriver)(nil)
-	_ backend.Uploader = (*QuarkDriver)(nil)
+	_ drivers.Driver   = (*QuarkDriver)(nil)
+	_ drivers.Writer   = (*QuarkDriver)(nil)
+	_ drivers.Uploader = (*QuarkDriver)(nil)
 )
 
 func NewDriver(cookie, rootPath string) *QuarkDriver {
@@ -69,7 +69,7 @@ func (d *QuarkDriver) Drop(ctx context.Context) error {
 	return nil
 }
 
-func (d *QuarkDriver) List(ctx context.Context, parentID string) ([]backend.Entry, error) {
+func (d *QuarkDriver) List(ctx context.Context, parentID string) ([]drivers.Entry, error) {
 	if files, ok := d.cache.getDir(parentID); ok {
 		return toEntries(files), nil
 	}
@@ -137,7 +137,7 @@ func (d *QuarkDriver) List(ctx context.Context, parentID string) ([]backend.Entr
 	return toEntries(allFiles), nil
 }
 
-func (d *QuarkDriver) Read(ctx context.Context, entry backend.Entry, offset, size int64) (io.ReadCloser, error) {
+func (d *QuarkDriver) Read(ctx context.Context, entry drivers.Entry, offset, size int64) (io.ReadCloser, error) {
 	fid := entry.ID
 	downloadURL, err := d.getDownloadURL(fid)
 	if err != nil {
@@ -203,14 +203,14 @@ func apiError(resp resp) error {
 	}
 	switch resp.Code {
 	case 23001, 23004:
-		return backend.ErrNotFound
+		return drivers.ErrNotFound
 	case 23008:
-		return backend.ErrDirAlreadyExists
+		return drivers.ErrDirAlreadyExists
 	}
 	return fmt.Errorf("api error: status=%d code=%d msg=%s", resp.Status, resp.Code, resp.Message)
 }
 
-func (d *QuarkDriver) Mkdir(ctx context.Context, parentID, name string) (backend.Entry, error) {
+func (d *QuarkDriver) Mkdir(ctx context.Context, parentID, name string) (drivers.Entry, error) {
 	data := map[string]interface{}{
 		"pdir_fid":      parentID,
 		"file_name":     name,
@@ -220,20 +220,20 @@ func (d *QuarkDriver) Mkdir(ctx context.Context, parentID, name string) (backend
 	var resp createDirResp
 	err := d.cl.request(http.MethodPost, "/file", nil, data, &resp)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("mkdir: %w", err)
+		return drivers.Entry{}, fmt.Errorf("mkdir: %w", err)
 	}
 	if rerr := apiError(resp.resp); rerr != nil {
-		return backend.Entry{}, rerr
+		return drivers.Entry{}, rerr
 	}
 	d.cache.removeDir(parentID)
-	return backend.Entry{
+	return drivers.Entry{
 		ID:    resp.Data.Fid,
 		Name:  name,
 		IsDir: true,
 	}, nil
 }
 
-func (d *QuarkDriver) Move(ctx context.Context, entry backend.Entry, dstParentID string) error {
+func (d *QuarkDriver) Move(ctx context.Context, entry drivers.Entry, dstParentID string) error {
 	data := map[string]interface{}{
 		"filelist":     []string{entry.ID},
 		"to_pdir_fid":  dstParentID,
@@ -255,7 +255,7 @@ func (d *QuarkDriver) Move(ctx context.Context, entry backend.Entry, dstParentID
 	return nil
 }
 
-func (d *QuarkDriver) Rename(ctx context.Context, entry backend.Entry, newName string) error {
+func (d *QuarkDriver) Rename(ctx context.Context, entry drivers.Entry, newName string) error {
 	data := map[string]interface{}{
 		"fid":       entry.ID,
 		"file_name": newName,
@@ -274,7 +274,7 @@ func (d *QuarkDriver) Rename(ctx context.Context, entry backend.Entry, newName s
 	return nil
 }
 
-func (d *QuarkDriver) Remove(ctx context.Context, entry backend.Entry) error {
+func (d *QuarkDriver) Remove(ctx context.Context, entry drivers.Entry) error {
 	data := map[string]interface{}{
 		"action_type":  1,
 		"exclude_fids": []string{},
@@ -291,7 +291,7 @@ func (d *QuarkDriver) Remove(ctx context.Context, entry backend.Entry) error {
 	return nil
 }
 
-func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (backend.Entry, error) {
+func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drivers.Entry, error) {
 	d.deleteExistingFileByName(parentID, name)
 
 	mtime := time.Now()
@@ -310,10 +310,10 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 	var preResp upPreResp
 	err := d.cl.request(http.MethodPost, "/file/upload/pre", nil, preData, &preResp)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("upload pre: %w", err)
+		return drivers.Entry{}, fmt.Errorf("upload pre: %w", err)
 	}
 	if rerr := apiError(preResp.resp); rerr != nil {
-		return backend.Entry{}, rerr
+		return drivers.Entry{}, rerr
 	}
 
 	if preResp.Data.Finish && preResp.Data.Fid != "" {
@@ -325,7 +325,7 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 			"upload_id": preResp.Data.UploadId,
 		}
 		d.cl.request(http.MethodPost, "/file/upload/finish", nil, finishData, nil)
-		return backend.Entry{ID: preResp.Data.Fid, Name: name, Size: size}, nil
+		return drivers.Entry{ID: preResp.Data.Fid, Name: name, Size: size}, nil
 	}
 
 	partSize := preResp.Metadata.PartSize
@@ -335,7 +335,7 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 
 	allData, err := io.ReadAll(body)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("upload: read body: %w", err)
+		return drivers.Entry{}, fmt.Errorf("upload: read body: %w", err)
 	}
 	totalParts := int((size + int64(partSize) - 1) / int64(partSize))
 	if totalParts == 0 {
@@ -352,7 +352,7 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 		partData := allData[start:end]
 		etag, err := d.uploadPart(&preResp, partNumber, partData)
 		if err != nil {
-			return backend.Entry{}, fmt.Errorf("upload part %d: %w", partNumber, err)
+			return drivers.Entry{}, fmt.Errorf("upload part %d: %w", partNumber, err)
 		}
 		etags = append(etags, etag)
 	}
@@ -369,7 +369,7 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 	var hashResp hashResp
 	err = d.cl.request(http.MethodPost, "/file/update/hash", nil, hashData, &hashResp)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("upload hash: %w", err)
+		return drivers.Entry{}, fmt.Errorf("upload hash: %w", err)
 	}
 
 	if hashResp.Data.Finish {
@@ -377,7 +377,7 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 			preResp.Data.Fid = hashResp.Data.Fid
 		}
 		d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskId)
-		return backend.Entry{
+		return drivers.Entry{
 			ID:   preResp.Data.Fid,
 			Name: name,
 			Size: encSize,
@@ -385,11 +385,11 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 	}
 
 	if err := d.ossComplete(&preResp, etags); err != nil {
-		return backend.Entry{}, fmt.Errorf("upload complete: %w", err)
+		return drivers.Entry{}, fmt.Errorf("upload complete: %w", err)
 	}
 
 	d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskId)
-	return backend.Entry{
+	return drivers.Entry{
 		ID:   preResp.Data.Fid,
 		Name: name,
 		Size: encSize,

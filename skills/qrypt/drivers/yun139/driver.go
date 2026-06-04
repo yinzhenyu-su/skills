@@ -16,9 +16,9 @@ type Yun139Driver struct {
 }
 
 var (
-	_ backend.Driver   = (*Yun139Driver)(nil)
-	_ backend.Writer   = (*Yun139Driver)(nil)
-	_ backend.Uploader = (*Yun139Driver)(nil)
+	_ drivers.Driver   = (*Yun139Driver)(nil)
+	_ drivers.Writer   = (*Yun139Driver)(nil)
+	_ drivers.Uploader = (*Yun139Driver)(nil)
 )
 
 func NewDriver(authorization, rootID string) *Yun139Driver {
@@ -41,13 +41,13 @@ func (d *Yun139Driver) Init(ctx context.Context) error {
 
 func (d *Yun139Driver) Drop(ctx context.Context) error { return nil }
 
-func (d *Yun139Driver) List(ctx context.Context, parentID string) ([]backend.Entry, error) {
+func (d *Yun139Driver) List(ctx context.Context, parentID string) ([]drivers.Entry, error) {
 	fileID := parentID
 	if fileID == "" || fileID == "0" || fileID == "/" {
 		fileID = d.rootID
 	}
 
-	var allEntries []backend.Entry
+	var allEntries []drivers.Entry
 	cursor := ""
 	for {
 		data := map[string]interface{}{
@@ -77,7 +77,7 @@ func (d *Yun139Driver) List(ctx context.Context, parentID string) ([]backend.Ent
 	return allEntries, nil
 }
 
-func (d *Yun139Driver) Read(ctx context.Context, entry backend.Entry, offset, size int64) (io.ReadCloser, error) {
+func (d *Yun139Driver) Read(ctx context.Context, entry drivers.Entry, offset, size int64) (io.ReadCloser, error) {
 	url, err := d.getDownloadURL(entry.ID)
 	if err != nil {
 		return nil, err
@@ -118,7 +118,7 @@ func (d *Yun139Driver) getDownloadURL(fileID string) (string, error) {
 	return resp.Data.Url, nil
 }
 
-func (d *Yun139Driver) Mkdir(ctx context.Context, parentID, name string) (backend.Entry, error) {
+func (d *Yun139Driver) Mkdir(ctx context.Context, parentID, name string) (drivers.Entry, error) {
 	fileID := parentID
 	if fileID == "" || fileID == "0" || fileID == "/" {
 		fileID = d.rootID
@@ -133,15 +133,15 @@ func (d *Yun139Driver) Mkdir(ctx context.Context, parentID, name string) (backen
 	var resp createResp
 	err := d.cl.doRequest(http.MethodPost, "/file/create", data, &resp)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("139 mkdir: %w", err)
+		return drivers.Entry{}, fmt.Errorf("139 mkdir: %w", err)
 	}
 	if !resp.Success {
-		return backend.Entry{}, fmt.Errorf("139 mkdir failed: %s", resp.Message)
+		return drivers.Entry{}, fmt.Errorf("139 mkdir failed: %s", resp.Message)
 	}
-	return backend.Entry{ID: resp.Data.FileId, Name: resp.Data.Name, IsDir: true}, nil
+	return drivers.Entry{ID: resp.Data.FileId, Name: resp.Data.Name, IsDir: true}, nil
 }
 
-func (d *Yun139Driver) Move(ctx context.Context, entry backend.Entry, dstParentID string) error {
+func (d *Yun139Driver) Move(ctx context.Context, entry drivers.Entry, dstParentID string) error {
 	srcFileID := entry.ID
 	if srcFileID == "" || srcFileID == "0" || srcFileID == "/" {
 		srcFileID = d.rootID
@@ -165,7 +165,7 @@ func (d *Yun139Driver) Move(ctx context.Context, entry backend.Entry, dstParentI
 	return nil
 }
 
-func (d *Yun139Driver) Rename(ctx context.Context, entry backend.Entry, newName string) error {
+func (d *Yun139Driver) Rename(ctx context.Context, entry drivers.Entry, newName string) error {
 	srcFileID := entry.ID
 	if srcFileID == "" || srcFileID == "0" || srcFileID == "/" {
 		srcFileID = d.rootID
@@ -186,7 +186,7 @@ func (d *Yun139Driver) Rename(ctx context.Context, entry backend.Entry, newName 
 	return nil
 }
 
-func (d *Yun139Driver) Remove(ctx context.Context, entry backend.Entry) error {
+func (d *Yun139Driver) Remove(ctx context.Context, entry drivers.Entry) error {
 	data := map[string]interface{}{
 		"fileIds": []string{entry.ID},
 	}
@@ -201,7 +201,7 @@ func (d *Yun139Driver) Remove(ctx context.Context, entry backend.Entry) error {
 	return nil
 }
 
-func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (backend.Entry, error) {
+func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drivers.Entry, error) {
 	fileID := parentID
 	if fileID == "" || fileID == "0" || fileID == "/" {
 		fileID = d.rootID
@@ -209,7 +209,7 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 
 	allData, err := io.ReadAll(body)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("139 upload: read: %w", err)
+		return drivers.Entry{}, fmt.Errorf("139 upload: read: %w", err)
 	}
 
 	partSize := d.calcPartSize(size)
@@ -228,10 +228,10 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 	var preResp uploadPreResp
 	err = d.cl.doRequest(http.MethodPost, "/file/upload/init", initData, &preResp)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("139 upload init: %w", err)
+		return drivers.Entry{}, fmt.Errorf("139 upload init: %w", err)
 	}
 	if !preResp.Success {
-		return backend.Entry{}, fmt.Errorf("139 upload init failed: %s", preResp.Message)
+		return drivers.Entry{}, fmt.Errorf("139 upload init failed: %s", preResp.Message)
 	}
 
 	for i := 0; i < totalParts; i++ {
@@ -251,22 +251,22 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 			}
 		}
 		if uploadURL == "" {
-			return backend.Entry{}, fmt.Errorf("139 upload: no url for part %d", partNum)
+			return drivers.Entry{}, fmt.Errorf("139 upload: no url for part %d", partNum)
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(partData))
 		if err != nil {
-			return backend.Entry{}, fmt.Errorf("139 upload part %d: %w", partNum, err)
+			return drivers.Entry{}, fmt.Errorf("139 upload part %d: %w", partNum, err)
 		}
 		req.Header.Set("Content-Type", "application/octet-stream")
 		req.Header.Set("Authorization", d.cl.getAuthorization())
 		resp, err := d.cl.httpClient.Do(req)
 		if err != nil {
-			return backend.Entry{}, fmt.Errorf("139 upload part %d: %w", partNum, err)
+			return drivers.Entry{}, fmt.Errorf("139 upload part %d: %w", partNum, err)
 		}
 		resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return backend.Entry{}, fmt.Errorf("139 upload part %d: status %d", partNum, resp.StatusCode)
+			return drivers.Entry{}, fmt.Errorf("139 upload part %d: status %d", partNum, resp.StatusCode)
 		}
 	}
 
@@ -276,13 +276,13 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 	var commitResp uploadCommitResp
 	err = d.cl.doRequest(http.MethodPost, "/file/upload/complete", commitData, &commitResp)
 	if err != nil {
-		return backend.Entry{}, fmt.Errorf("139 upload complete: %w", err)
+		return drivers.Entry{}, fmt.Errorf("139 upload complete: %w", err)
 	}
 	if !commitResp.Success {
-		return backend.Entry{}, fmt.Errorf("139 upload complete failed: %s", commitResp.Message)
+		return drivers.Entry{}, fmt.Errorf("139 upload complete failed: %s", commitResp.Message)
 	}
 
-	return backend.Entry{ID: commitResp.Data.FileId, Name: name, Size: size}, nil
+	return drivers.Entry{ID: commitResp.Data.FileId, Name: name, Size: size}, nil
 }
 
 func (d *Yun139Driver) calcPartSize(fileSize int64) int64 {

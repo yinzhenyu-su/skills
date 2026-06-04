@@ -34,8 +34,8 @@ type quarkFileMeta struct {
 	Category int
 }
 
-func toEntry(f *file) backend.Entry {
-	return backend.Entry{
+func toEntry(f *file) drivers.Entry {
+	return drivers.Entry{
 		ID:      f.Fid,
 		Name:    f.FileName,
 		IsDir:   f.isDir(),
@@ -45,8 +45,8 @@ func toEntry(f *file) backend.Entry {
 	}
 }
 
-func toEntries(files []file) []backend.Entry {
-	entries := make([]backend.Entry, len(files))
+func toEntries(files []file) []drivers.Entry {
+	entries := make([]drivers.Entry, len(files))
 	for i := range files {
 		entries[i] = toEntry(&files[i])
 	}

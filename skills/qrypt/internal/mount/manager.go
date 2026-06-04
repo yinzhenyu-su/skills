@@ -66,7 +66,7 @@ func (mm *MountManager) GetOrchestrator() qrypt.Orchestrator {
 type MountInstance struct {
 	Name    string
 	State   protocol.MountState
-	Driver  backend.Driver
+	Driver  drivers.Driver
 	Cipher  *qrypt.RcloneCipher
 	Cache   *qrypt.CacheManager
 	Backend mountBackend

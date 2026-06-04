@@ -73,7 +73,7 @@ func newStreamID() string {
 
 // OpenRead opens a streaming read handle. Returns an opaque ID for ReadChunk/CloseRead.
 func (m *MobileAPI) OpenRead(mount, path string) (string, error) {
-	rc, err := m.inner.Read(context.Background(), mount, path)
+	rc, err := m.fileAPI.Read(context.Background(), mount, path)
 	if err != nil {
 		return "", err
 	}

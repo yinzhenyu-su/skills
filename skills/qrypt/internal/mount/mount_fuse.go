@@ -24,7 +24,7 @@ func newPlatformMountBackend() mountBackend {
 	return &fuseMountBackend{}
 }
 
-func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountConfig, drv backend.Driver, cipher *qrypt.RcloneCipher, cacheMgr *qrypt.CacheManager) error {
+func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drivers.Driver, cipher *qrypt.RcloneCipher, cacheMgr *qrypt.CacheManager) error {
 	rootFid := getRootFid(ctx, drv, rc)
 
 	writeBackDelay, _ := time.ParseDuration(rc.Sync.WriteBackTimeout)
@@ -61,7 +61,7 @@ func (fb *fuseMountBackend) unmount() error {
 	return nil
 }
 
-func getRootFid(ctx context.Context, drv backend.Driver, rc *config.ResolvedMountConfig) string {
+func getRootFid(ctx context.Context, drv drivers.Driver, rc *config.ResolvedMountConfig) string {
 	resolver, ok := drv.(interface {
 		ResolvePath(ctx context.Context, path string) (string, error)
 	})
