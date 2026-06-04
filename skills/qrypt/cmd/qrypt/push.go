@@ -10,18 +10,18 @@ import (
 )
 
 func runPush(cmd *cobra.Command, args []string) {
-	api, err := apiFromCmd(cmd)
-	if err != nil {
-		fmt.Printf("错误: %v\n", err)
-		os.Exit(1)
-	}
-
 	localPath := args[0]
 	remotePath := ""
 	if len(args) >= 2 {
 		remotePath = args[1]
 	}
 	mountName := resolveMount(cmd, &remotePath)
+
+	api, err := apiFromCmdForMount(cmd, mountName)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
 
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 
