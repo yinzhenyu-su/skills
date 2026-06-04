@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 )
 
 type ListEntry struct {
@@ -50,6 +53,12 @@ func runList(cmd *cobra.Command, args []string) {
 	if err != nil {
 		fmt.Printf("列出目录失败: %v\n", err)
 		os.Exit(1)
+	}
+
+	recursive, _ := cmd.Flags().GetBool("recursive")
+	if recursive {
+		listRecursive(context.Background(), api, mountName, path, entries)
+		return
 	}
 
 	allEntries := make([]ListEntry, 0, len(entries))
@@ -130,6 +139,45 @@ func runList(cmd *cobra.Command, args []string) {
 		} else {
 			fmt.Println(displayPath)
 		}
+	}
+}
+
+func listRecursive(ctx context.Context, api *qrypt.FileAPI, mountName, dirPath string, entries []qrypt.FileEntry) {
+	displayDir := dirPath
+	if dirPath == "/" {
+		displayDir = "."
+	}
+	fmt.Printf("%s:\n", displayDir)
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].IsDir != entries[j].IsDir {
+			return entries[i].IsDir
+		}
+		return strings.ToLower(entries[i].DecName) < strings.ToLower(entries[j].DecName)
+	})
+
+	for _, e := range entries {
+		name := e.DecName
+		if e.IsDir {
+			fmt.Printf("%s/\n", name)
+		} else {
+			fmt.Printf("%s\n", name)
+		}
+	}
+
+	fmt.Println()
+
+	for _, e := range entries {
+		if !e.IsDir {
+			continue
+		}
+		subPath := path.Join(dirPath, e.DecName)
+		subEntries, err := api.List(ctx, mountName, subPath)
+		if err != nil {
+			fmt.Printf("列出目录失败 (%s): %v\n", subPath, err)
+			continue
+		}
+		listRecursive(ctx, api, mountName, subPath, subEntries)
 	}
 }
 

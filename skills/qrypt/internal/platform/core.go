@@ -35,6 +35,10 @@ func NewFileAPIFromConfig(cfg *config.Config, password, salt string) (*qrypt.Fil
 		return nil, fmt.Errorf("驱动初始化失败: %w", err)
 	}
 
+	if setter, ok := drv.(interface{ SetCipher(drivers.Cipher) }); ok {
+		setter.SetCipher(ciph)
+	}
+
 	return qrypt.NewFileAPI(qrypt.Options{
 		Cipher:        ciph,
 		Dirs:          DesktopDirResolver{},
@@ -78,6 +82,10 @@ func NewFileAPIFromConfigForMount(cfg *config.Config, mountName, password, salt 
 
 	if err := drv.Init(context.Background()); err != nil {
 		return nil, fmt.Errorf("驱动初始化失败: %w", err)
+	}
+
+	if setter, ok := drv.(interface{ SetCipher(drivers.Cipher) }); ok {
+		setter.SetCipher(ciph)
 	}
 
 	return qrypt.NewFileAPI(qrypt.Options{
