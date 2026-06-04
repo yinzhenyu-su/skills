@@ -25,7 +25,7 @@ cmd/qrypt/       internal/daemon/    internal/mount/  mobile/
                           │
                           ▼
                 internal/backend/ — 具体实现
-          quark/ yun139/ localfs/ quarkmock/
+          quark/ yun139/ localfs/ mockdrive/
           driver.go (类型别名) errors.go (sentinel errors)
 ```
 

@@ -11,14 +11,16 @@ import (
 
 	"github.com/hashicorp/golang-lru/v2"
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
-	"github.com/yinzhenyu/skills/qrypt/internal/quarkmock"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
+	"github.com/yinzhenyu/skills/qrypt/internal/mockdrive"
 )
 
 type e2eSuite struct {
-	t   *testing.T
-	fs  *QryptFS
+	t  *testing.T
+	fs *QryptFS
 }
 
 func newE2E(t *testing.T) *e2eSuite {
@@ -37,9 +39,9 @@ func newE2EWithOpts(t *testing.T, opts FSOptions) *e2eSuite {
 	}
 
 	memCache, _ := lru.New[string, []byte](100)
-	cph, _ := qrypt.NewRcloneCipher("e2etest", "")
+	cph, _ := cipher.NewRcloneCipher("e2etest", "")
 
-	drv := quarkmock.NewDriver()
+	drv := mockdrive.NewDriver()
 	fs := NewFS(drv, cph, cm, "0", opts)
 	fs.memCache = memCache
 
@@ -620,7 +622,7 @@ func TestE2E_ConcurrentCreateDifferentFiles(t *testing.T) {
 func TestE2E_ChunkBoundaryRead(t *testing.T) {
 	s := newE2E(t)
 
-	blockSize := qrypt.BlockDataSize
+	blockSize := drivers.BlockDataSize
 	data := make([]byte, blockSize*3)
 	for i := range data {
 		data[i] = byte(i % 256)
@@ -1109,5 +1111,3 @@ func TestShutdown_SetsFlagAndRejectsOps(t *testing.T) {
 		t.Errorf("expected EIO for Rmdir after shutdown, got %d", errc)
 	}
 }
-
-

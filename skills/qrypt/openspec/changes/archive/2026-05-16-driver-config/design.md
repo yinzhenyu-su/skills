@@ -25,7 +25,7 @@ Drive Abstraction Layer 已完成 `drive.Driver` 接口定义和 Quark/yun139 �
 
 **Non-Goals:**
 - 不改 CLI 工具中仍用旧 `internal/quark/` 包的部分（ls/cat/rm/mv/find/pull）
-- 不改 `drive/localfs` 或 `drive/quarkmock`（无配置变化）
+- 不改 `drive/localfs` 或 `drive/mockdrive`（无配置变化）
 - 不改 FUSE/sync/cache 等公共配置项
 
 ## Decisions

@@ -1,4 +1,4 @@
-package quarkmock
+package mockdrive
 
 import (
 	"bytes"
