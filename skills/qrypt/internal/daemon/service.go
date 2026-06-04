@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	factory "github.com/yinzhenyu/skills/qrypt/drivers/factory"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
@@ -449,7 +450,7 @@ func (d *Daemon) resolveMountName(name string) string {
 	return ""
 }
 
-func (d *Daemon) makeCipher(rc *config.ResolvedMountConfig, pwd, salt string) (*qrypt.RcloneCipher, error) {
+func (d *Daemon) makeCipher(rc *config.ResolvedMountConfig, pwd, salt string) (*cipher.RcloneCipher, error) {
 	return config.MakeCipher(rc.Encryption, d.cfg.Defaults.Encryption, pwd, salt)
 }
 

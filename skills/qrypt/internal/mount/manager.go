@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
@@ -67,7 +68,7 @@ type MountInstance struct {
 	Name    string
 	State   protocol.MountState
 	Driver  drivers.Driver
-	Cipher  *qrypt.RcloneCipher
+	Cipher  *cipher.RcloneCipher
 	Cache   *qrypt.CacheManager
 	Backend mountBackend
 
@@ -218,7 +219,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 	}
 	inst.Driver = s.Drv
 
-	if setter, ok := inst.Driver.(interface{ SetCipher(*qrypt.RcloneCipher) }); ok {
+	if setter, ok := inst.Driver.(interface{ SetCipher(drivers.Cipher) }); ok {
 		setter.SetCipher(rcloneCipher)
 	}
 

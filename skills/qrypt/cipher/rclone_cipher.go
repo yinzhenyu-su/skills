@@ -1,4 +1,9 @@
-package qrypt
+// Package cipher provides the rclone-compatible encryption implementation.
+//
+// RcloneCipher implements the drivers.Cipher interface using NaCl secretbox
+// for block encryption and AES-EME for filename encryption, matching rclone's
+// crypt remote behavior for interoperability.
+package cipher
 
 import (
 	"bytes"
@@ -14,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rfjakob/eme"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/scrypt"
 )
@@ -69,8 +75,8 @@ func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, erro
 	return c, nil
 }
 
-func (c *RcloneCipher) DecryptBlock(ciphertext []byte, blockIndex uint64, fileNonce [FileNonceSize]byte) ([]byte, error) {
-	var nonce [FileNonceSize]byte
+func (c *RcloneCipher) DecryptBlock(ciphertext []byte, blockIndex uint64, fileNonce [drivers.FileNonceSize]byte) ([]byte, error) {
+	var nonce [drivers.FileNonceSize]byte
 	copy(nonce[:], fileNonce[:])
 	u := blockIndex
 	for i := 0; i < 8 && u > 0; i++ {
@@ -87,8 +93,8 @@ func (c *RcloneCipher) DecryptBlock(ciphertext []byte, blockIndex uint64, fileNo
 	return plaintext, nil
 }
 
-func (c *RcloneCipher) EncryptBlock(plaintext []byte, blockIndex uint64, fileNonce [FileNonceSize]byte) ([]byte, error) {
-	var nonce [FileNonceSize]byte
+func (c *RcloneCipher) EncryptBlock(plaintext []byte, blockIndex uint64, fileNonce [drivers.FileNonceSize]byte) ([]byte, error) {
+	var nonce [drivers.FileNonceSize]byte
 	copy(nonce[:], fileNonce[:])
 	u := blockIndex
 	for i := 0; i < 8 && u > 0; i++ {
@@ -101,8 +107,8 @@ func (c *RcloneCipher) EncryptBlock(plaintext []byte, blockIndex uint64, fileNon
 	return ciphertext, nil
 }
 
-func (c *RcloneCipher) GenerateRandomNonce() ([FileNonceSize]byte, error) {
-	var nonce [FileNonceSize]byte
+func (c *RcloneCipher) GenerateRandomNonce() ([drivers.FileNonceSize]byte, error) {
+	var nonce [drivers.FileNonceSize]byte
 	_, err := io.ReadFull(rand.Reader, nonce[:])
 	return nonce, err
 }
@@ -226,11 +232,11 @@ func (c *RcloneCipher) decodeAndDecrypt(encrypted, encoding string) (string, err
 }
 
 func (c *RcloneCipher) EncryptedSize(size int64) int64 {
-	blocks := size / BlockDataSize
-	residue := size % BlockDataSize
-	encSize := int64(FileHeaderSize) + blocks*(BlockHeaderSize+BlockDataSize)
+	blocks := size / drivers.BlockDataSize
+	residue := size % drivers.BlockDataSize
+	encSize := int64(drivers.FileHeaderSize) + blocks*(drivers.BlockHeaderSize+drivers.BlockDataSize)
 	if residue != 0 {
-		encSize += BlockHeaderSize + residue
+		encSize += drivers.BlockHeaderSize + residue
 	}
 	return encSize
 }
@@ -239,15 +245,15 @@ func (c *RcloneCipher) DecryptedSize(size int64) (int64, error) {
 	if size <= 0 {
 		return 0, nil
 	}
-	size -= int64(FileHeaderSize)
+	size -= int64(drivers.FileHeaderSize)
 	if size < 0 {
 		return 0, errors.New("file too short")
 	}
-	blocks := size / BlockSize
-	residue := size % BlockSize
-	decSize := blocks * BlockDataSize
+	blocks := size / drivers.BlockSize
+	residue := size % drivers.BlockSize
+	decSize := blocks * drivers.BlockDataSize
 	if residue != 0 {
-		residue -= BlockHeaderSize
+		residue -= drivers.BlockHeaderSize
 		if residue <= 0 {
 			return 0, errors.New("bad block header")
 		}

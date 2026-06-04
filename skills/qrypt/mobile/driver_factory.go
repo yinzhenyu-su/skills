@@ -32,7 +32,7 @@ func newMobileDriverFactory(creds qrypt.CredentialStore) qrypt.DriverFactory {
 	return &mobileDriverFactory{creds: creds}
 }
 
-func (f *mobileDriverFactory) CreateDriver(ctx context.Context, cfg qrypt.SessionConfig) (qrypt.Driver, error) {
+func (f *mobileDriverFactory) CreateDriver(ctx context.Context, cfg qrypt.SessionConfig) (drivers.Driver, error) {
 	backendType, mountName := splitTypeMount(cfg.Type)
 
 	var drv drivers.Driver

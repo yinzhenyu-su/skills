@@ -3,6 +3,7 @@ package mobile
 import (
 	"fmt"
 
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 )
 
@@ -87,7 +88,7 @@ func newQryptAPI(cfg *Config, creds qrypt.CredentialStore) (*MobileAPI, error) {
 		filenameEnc = "standard"
 	}
 
-	rc, err := qrypt.NewRcloneCipher(cfg.Password, cfg.Salt, encoding, filenameEnc)
+	rc, err := cipher.NewRcloneCipher(cfg.Password, cfg.Salt, encoding, filenameEnc)
 	if err != nil {
 		return nil, fmt.Errorf("create cipher: %w", err)
 	}

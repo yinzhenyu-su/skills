@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 )
 
 //go:embed default.toml
@@ -445,7 +445,7 @@ func FindMount(cfg *Config, name string) *MountInstance {
 }
 
 // MakeCipher creates an RcloneCipher from encryption config with optional overrides.
-func MakeCipher(enc EncryptionConfig, defaults EncryptionConfig, password, salt string) (*qrypt.RcloneCipher, error) {
+func MakeCipher(enc EncryptionConfig, defaults EncryptionConfig, password, salt string) (*cipher.RcloneCipher, error) {
 	if password == "" {
 		password = enc.Password
 	}
@@ -478,6 +478,6 @@ func MakeCipher(enc EncryptionConfig, defaults EncryptionConfig, password, salt 
 		filenameEncryption = "standard"
 	}
 
-	return qrypt.NewRcloneCipher(password, salt, filenameEnc, filenameEncryption)
+	return cipher.NewRcloneCipher(password, salt, filenameEnc, filenameEncryption)
 }
 

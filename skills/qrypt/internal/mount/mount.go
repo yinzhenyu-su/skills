@@ -4,13 +4,14 @@ import (
 	"context"
 
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 // mountBackend abstracts the FUSE filesystem lifecycle.
 type mountBackend interface {
-	mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drivers.Driver, cipher *qrypt.RcloneCipher, cacheMgr *qrypt.CacheManager) error
+	mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drivers.Driver, cp *cipher.RcloneCipher, cacheMgr *qrypt.CacheManager) error
 	unmount() error
 	VFS() CacheInvalidatable
 }

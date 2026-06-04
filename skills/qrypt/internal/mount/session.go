@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	factory "github.com/yinzhenyu/skills/qrypt/drivers/factory"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
@@ -44,7 +45,7 @@ func (f *DriverFactory) Unregister(mountName string) {
 // CreateDriver implements qrypt.DriverFactory. Splits cfg.Type on ":" to extract
 // the backend type and mount name, looks up registered params, and creates the
 // adapted driver.
-func (f *DriverFactory) CreateDriver(ctx context.Context, cfg qrypt.SessionConfig) (qrypt.Driver, error) {
+func (f *DriverFactory) CreateDriver(ctx context.Context, cfg qrypt.SessionConfig) (drivers.Driver, error) {
 	backendType, mountName := splitTypeMount(cfg.Type)
 	f.mu.RLock()
 	params, ok := f.paramsByMount[mountName]
