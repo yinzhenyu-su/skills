@@ -11,15 +11,47 @@ import (
 )
 
 func runMv(cmd *cobra.Command, args []string) {
-	api, err := apiFromCmd(cmd)
+	srcPath := args[0]
+	dstArg := args[1]
+
+	srcMount := resolveMount(cmd, &srcPath)
+	dstMount := resolveMount(cmd, &dstArg)
+
+	var mountName string
+	switch {
+	case srcMount != "" && dstMount != "":
+		if srcMount != dstMount {
+			fmt.Printf("错误: 源路径 (%s) 和目标路径 (%s) 必须属于同一挂载实例\n", srcMount, dstMount)
+			os.Exit(1)
+		}
+		mountName = srcMount
+	case srcMount != "":
+		mountName = srcMount
+	case dstMount != "":
+		mountName = dstMount
+	default:
+		mountName = ""
+	}
+
+	api, err := apiFromCmdForMount(cmd, mountName)
 	if err != nil {
 		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
 
-	srcPath := args[0]
-	dstArg := args[1]
-	mountName := resolveMount(cmd, &srcPath)
+	cfgPath, _ := cmd.Flags().GetString("config")
+	cfg, err := getCfg(cfgPath)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
+	mountCfg, err := resolveMountConfig(cfg, mountName)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
+	rootPath := mountCfg.Params.RootPath
+
 	interactive, _ := cmd.Flags().GetBool("interactive")
 
 	if interactive {
@@ -38,5 +70,8 @@ func runMv(cmd *cobra.Command, args []string) {
 		fmt.Printf("移动失败: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("已移动: %s → %s\n", srcPath, dstArg)
+
+	displaySrc := StripRootPath(rootPath, srcPath)
+	displayDst := StripRootPath(rootPath, dstArg)
+	fmt.Printf("已移动: %s → %s\n", displaySrc, displayDst)
 }

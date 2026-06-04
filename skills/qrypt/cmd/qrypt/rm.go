@@ -11,7 +11,40 @@ import (
 )
 
 func runRm(cmd *cobra.Command, args []string) {
-	api, err := apiFromCmd(cmd)
+	cfgPath, _ := cmd.Flags().GetString("config")
+	cfg, err := getCfg(cfgPath)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		os.Exit(1)
+	}
+
+	// First pass: resolve all mounts and verify they are the same
+	resolvedPaths := make([]string, len(args))
+	var resolvedMount string
+	for i, p := range args {
+		path := p
+		mountName := resolveMount(cmd, &path)
+		if i == 0 {
+			resolvedMount = mountName
+		} else if mountName != resolvedMount {
+			fmt.Printf("错误: 所有路径必须属于同一挂载实例\n")
+			os.Exit(1)
+		}
+		resolvedPaths[i] = path
+	}
+
+	// Get root_path for the resolved mount for stripping from success messages
+	rootPath := "/"
+	if resolvedMount != "" {
+		mountCfg, err := resolveMountConfig(cfg, resolvedMount)
+		if err != nil {
+			fmt.Printf("错误: %v\n", err)
+			os.Exit(1)
+		}
+		rootPath = mountCfg.Params.RootPath
+	}
+
+	api, err := apiFromCmdForMount(cmd, resolvedMount)
 	if err != nil {
 		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
@@ -24,10 +57,7 @@ func runRm(cmd *cobra.Command, args []string) {
 	interactive, _ := cmd.Flags().GetBool("interactive")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-	for _, p := range args {
-		path := p
-		mountName := resolveMount(cmd, &path)
-
+	for _, path := range resolvedPaths {
 		if interactive {
 			fmt.Printf("确认删除 %s? (y/N): ", path)
 			reader := bufio.NewReader(os.Stdin)
@@ -44,7 +74,7 @@ func runRm(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		err := api.Remove(context.Background(), mountName, path, isRecursive)
+		err := api.Remove(context.Background(), resolvedMount, path, isRecursive)
 		if err != nil {
 			if force {
 				continue
@@ -52,6 +82,7 @@ func runRm(cmd *cobra.Command, args []string) {
 			fmt.Printf("删除失败 (%s): %v\n", path, err)
 			os.Exit(1)
 		}
-		fmt.Printf("已删除: %s\n", path)
+		displayPath := StripRootPath(rootPath, path)
+		fmt.Printf("已删除: %s\n", displayPath)
 	}
 }
