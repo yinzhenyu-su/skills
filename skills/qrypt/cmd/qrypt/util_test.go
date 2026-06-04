@@ -49,6 +49,80 @@ func TestMaskStr(t *testing.T) {
 	}
 }
 
+func TestResolveMountConfig(t *testing.T) {
+	t.Run("valid mount name", func(t *testing.T) {
+		cfg := &config.Config{
+			Mounts: []config.MountInstance{
+				{
+					Name:    "mount-a",
+					Type:    "quark",
+					Default: false,
+					Params:  config.MountParams{Cookie: "cookie-a"},
+				},
+				{
+					Name:    "mount-b",
+					Type:    "localfs",
+					Default: true,
+					Params:  config.MountParams{LocalRoot: "/tmp/b"},
+				},
+			},
+		}
+		rc, err := resolveMountConfig(cfg, "mount-a")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if rc == nil {
+			t.Fatal("expected ResolvedMountConfig, got nil")
+		}
+		if rc.Name != "mount-a" {
+			t.Errorf("expected name mount-a, got %s", rc.Name)
+		}
+		if rc.Type != "quark" {
+			t.Errorf("expected type quark, got %s", rc.Type)
+		}
+	})
+
+	t.Run("empty mount name falls back to default", func(t *testing.T) {
+		cfg := &config.Config{
+			Mounts: []config.MountInstance{
+				{
+					Name:    "default-mount",
+					Type:    "localfs",
+					Default: true,
+					Params:  config.MountParams{LocalRoot: "/tmp/default"},
+				},
+			},
+		}
+		rc, err := resolveMountConfig(cfg, "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if rc == nil {
+			t.Fatal("expected ResolvedMountConfig, got nil")
+		}
+		if rc.Name != "default-mount" {
+			t.Errorf("expected name default-mount, got %s", rc.Name)
+		}
+	})
+
+	t.Run("non-existent mount name returns error", func(t *testing.T) {
+		cfg := &config.Config{
+			Mounts: []config.MountInstance{
+				{
+					Name:    "existing",
+					Type:    "localfs",
+					Default: true,
+					Params:  config.MountParams{LocalRoot: "/tmp/existing"},
+				},
+			},
+		}
+		_, err := resolveMountConfig(cfg, "missing")
+		if err == nil {
+			t.Fatal("expected error for missing mount, got nil")
+		}
+	})
+}
+
 func TestFormatBytes(t *testing.T) {
 	tests := []struct {
 		n    int64

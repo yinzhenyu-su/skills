@@ -38,3 +38,20 @@ func apiFromCmd(cmd *cobra.Command) (*qrypt.FileAPI, error) {
 	salt, _ := cmd.Flags().GetString("salt")
 	return newFileAPIFromCfgPath(cfgPath, password, salt)
 }
+
+// newFileAPIForMount creates a FileAPI for a specific mount instance.
+func newFileAPIForMount(cfg *config.Config, mountName, password, salt string) (*qrypt.FileAPI, error) {
+	return platform.NewFileAPIFromConfigForMount(cfg, mountName, password, salt)
+}
+
+// apiFromCmdForMount creates a FileAPI for the named mount from cobra command flags.
+func apiFromCmdForMount(cmd *cobra.Command, mountName string) (*qrypt.FileAPI, error) {
+	cfgPath, _ := cmd.Flags().GetString("config")
+	password, _ := cmd.Flags().GetString("password")
+	salt, _ := cmd.Flags().GetString("salt")
+	cfg, err := getCfg(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	return newFileAPIForMount(cfg, mountName, password, salt)
+}

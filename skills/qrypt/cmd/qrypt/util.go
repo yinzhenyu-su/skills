@@ -12,6 +12,8 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/rpc"
 )
 
+var osExit = os.Exit
+
 // ParseMountPath parses "mount_name:path" format.
 // Returns (mountName, path). If no prefix, mountName is empty.
 func ParseMountPath(s string) (mountName, path string) {
@@ -31,16 +33,32 @@ func ParseMountPath(s string) (mountName, path string) {
 
 // resolveMount returns the mount name from --flag or path prefix.
 func resolveMount(cmd *cobra.Command, path *string) string {
-	if mountName, _ := cmd.Flags().GetString("mount"); mountName != "" {
-		return mountName
-	}
+	flagMount, _ := cmd.Flags().GetString("mount")
+
+	var pathMount string
+	var cleanPath string
 	if path != nil {
-		mountName, cleanPath := ParseMountPath(*path)
-		if mountName != "" {
-			*path = cleanPath
-			return mountName
-		}
+		pathMount, cleanPath = ParseMountPath(*path)
 	}
+
+	if flagMount != "" && pathMount != "" {
+		if flagMount != pathMount {
+			cmd.PrintErrln(fmt.Sprintf("错误: --mount 标志与路径前缀指定了不同的挂载实例 ('%s' vs '%s')", flagMount, pathMount))
+			osExit(1)
+		}
+		*path = cleanPath
+		return flagMount
+	}
+
+	if flagMount != "" {
+		return flagMount
+	}
+
+	if pathMount != "" {
+		*path = cleanPath
+		return pathMount
+	}
+
 	return ""
 }
 
@@ -77,6 +95,30 @@ func startDaemonHeadless() error {
 	return nil
 }
 
+// resolveMountConfig returns the mount name to use and its resolved config.
+// If mountName is empty, returns the default mount.
+// Returns error if the named mount is not found.
+func resolveMountConfig(cfg *config.Config, mountName string) (*config.ResolvedMountConfig, error) {
+	var mountCfg *config.MountInstance
+	if mountName == "" {
+		mountCfg = config.FindDefaultMount(cfg)
+	} else {
+		for _, m := range cfg.Mounts {
+			if m.Name == mountName {
+				mountCfg = &m
+				break
+			}
+		}
+	}
+	if mountCfg == nil {
+		if mountName != "" {
+			return nil, fmt.Errorf("未找到挂载实例: %s", mountName)
+		}
+		return nil, fmt.Errorf("配置中未找到启用的挂载实例")
+	}
+	return cfg.MergeInstanceConfig(*mountCfg), nil
+}
+
 func maskStr(s string) string {
 	if s == "" {
 		return "(未设置)"
@@ -85,6 +127,22 @@ func maskStr(s string) string {
 		return "****"
 	}
 	return s[:1] + "****" + s[len(s)-1:]
+}
+
+func StripRootPath(rootPath, displayPath string) string {
+	if rootPath == "/" || rootPath == "" {
+		return displayPath
+	}
+
+	if displayPath == rootPath {
+		return "/"
+	}
+
+	if strings.HasPrefix(displayPath, rootPath+"/") {
+		return displayPath[len(rootPath):]
+	}
+
+	return displayPath
 }
 
 func formatBytes(n int64) string {
