@@ -57,13 +57,13 @@ func TestResolveMountConfig(t *testing.T) {
 					Name:    "mount-a",
 					Type:    "quark",
 					Default: false,
-					Params:  config.MountParams{Cookie: "cookie-a"},
+					Params:  config.MountParams{"cookie": "cookie-a"},
 				},
 				{
 					Name:    "mount-b",
 					Type:    "localfs",
 					Default: true,
-					Params:  config.MountParams{LocalRoot: "/tmp/b"},
+					Params:  config.MountParams{"local_root": "/tmp/b"},
 				},
 			},
 		}
@@ -89,7 +89,7 @@ func TestResolveMountConfig(t *testing.T) {
 					Name:    "default-mount",
 					Type:    "localfs",
 					Default: true,
-					Params:  config.MountParams{LocalRoot: "/tmp/default"},
+					Params:  config.MountParams{"local_root": "/tmp/default"},
 				},
 			},
 		}
@@ -112,7 +112,7 @@ func TestResolveMountConfig(t *testing.T) {
 					Name:    "existing",
 					Type:    "localfs",
 					Default: true,
-					Params:  config.MountParams{LocalRoot: "/tmp/existing"},
+					Params:  config.MountParams{"local_root": "/tmp/existing"},
 				},
 			},
 		}

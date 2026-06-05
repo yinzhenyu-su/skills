@@ -314,7 +314,7 @@ func TestResolveMountConfigWithFixture(t *testing.T) {
 				MountPoint: "~/QryptPrimary",
 				Default:    true,
 				Params: config.MountParams{
-					LocalRoot: "/data/primary",
+					"local_root": "/data/primary",
 				},
 			},
 			{
@@ -322,7 +322,7 @@ func TestResolveMountConfigWithFixture(t *testing.T) {
 				Type:       "localfs",
 				MountPoint: "~/QryptSecondary",
 				Params: config.MountParams{
-					LocalRoot: "/data/secondary",
+					"local_root": "/data/secondary",
 				},
 			},
 		},
@@ -339,8 +339,8 @@ func TestResolveMountConfigWithFixture(t *testing.T) {
 		if rc.Type != "localfs" {
 			t.Errorf("type = %q, want %q", rc.Type, "localfs")
 		}
-		if rc.Params.LocalRoot != "/data/secondary" {
-			t.Errorf("local_root = %q, want %q", rc.Params.LocalRoot, "/data/secondary")
+		if rc.Params["local_root"] != "/data/secondary" {
+			t.Errorf("local_root = %q, want %q", rc.Params["local_root"], "/data/secondary")
 		}
 	})
 
@@ -352,8 +352,8 @@ func TestResolveMountConfigWithFixture(t *testing.T) {
 		if rc.Name != "primary" {
 			t.Errorf("name = %q, want %q", rc.Name, "primary")
 		}
-		if rc.Params.LocalRoot != "/data/primary" {
-			t.Errorf("local_root = %q, want %q", rc.Params.LocalRoot, "/data/primary")
+		if rc.Params["local_root"] != "/data/primary" {
+			t.Errorf("local_root = %q, want %q", rc.Params["local_root"], "/data/primary")
 		}
 	})
 

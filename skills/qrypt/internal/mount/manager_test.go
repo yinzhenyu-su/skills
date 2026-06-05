@@ -27,8 +27,8 @@ func TestMountManagerList(t *testing.T) {
 				Type:       "quark",
 				MountPoint: "~/Qrypt/M1",
 				Params: config.MountParams{
-					Cookie:   "c1",
-					RootPath: "/",
+					"cookie":    "c1",
+					"root_path": "/",
 				},
 			},
 			{
@@ -36,8 +36,8 @@ func TestMountManagerList(t *testing.T) {
 				Type:       "quark",
 				MountPoint: "~/Qrypt/M2",
 				Params: config.MountParams{
-					Cookie:   "c2",
-					RootPath: "/Work",
+					"cookie":    "c2",
+					"root_path": "/Work",
 				},
 			},
 		},
@@ -66,8 +66,8 @@ func TestMountManagerResolvedConfig(t *testing.T) {
 				Type:       "quark",
 				MountPoint: "~/Qrypt/Test",
 				Params: config.MountParams{
-					Cookie:   "test-cookie",
-					RootPath: "/",
+					"cookie":    "test-cookie",
+					"root_path": "/",
 				},
 			},
 		},
@@ -77,8 +77,8 @@ func TestMountManagerResolvedConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("expected resolved config to be found")
 	}
-	if rc.Params.Cookie != "test-cookie" {
-		t.Errorf("expected test-cookie, got %s", rc.Params.Cookie)
+	if rc.Params["cookie"] != "test-cookie" {
+		t.Errorf("expected test-cookie, got %s", rc.Params["cookie"])
 	}
 	if rc.MountPoint[0] == '~' {
 		t.Errorf("mount_point not expanded: %s", rc.MountPoint)
@@ -100,13 +100,13 @@ func TestMountManagerLookupByPath(t *testing.T) {
 				Name:       "personal",
 				Type:       "quark",
 				MountPoint: "/Users/test/Qrypt/Personal",
-				Params: config.MountParams{Cookie: "c1"},
+				Params: config.MountParams{"cookie": "c1"},
 			},
 			{
 				Name:       "work",
 				Type:       "quark",
 				MountPoint: "/Users/test/Qrypt/Work",
-				Params: config.MountParams{Cookie: "c2"},
+				Params: config.MountParams{"cookie": "c2"},
 			},
 		},
 	}
@@ -133,7 +133,7 @@ func TestMountManagerListWithDefaults(t *testing.T) {
 				Name:       "m1",
 				Type:       "quark",
 				MountPoint: "/m1",
-				Params:     config.MountParams{Cookie: "c1"},
+				Params:     config.MountParams{"cookie": "c1"},
 			},
 		},
 	}
@@ -158,8 +158,8 @@ func TestMountManagerStartStopFailsWithoutAuth(t *testing.T) {
 				Type:       "quark",
 				MountPoint: "/tmp/qrypt-test-mount-manager",
 				Params: config.MountParams{
-					Cookie:   "bad-cookie",
-					RootPath: "/",
+					"cookie":    "bad-cookie",
+					"root_path": "/",
 				},
 			},
 		},

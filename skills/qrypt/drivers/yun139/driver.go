@@ -22,12 +22,20 @@ var (
 )
 
 func init() {
-	drivers.Register("yun139", func(params drivers.Params) (drivers.Driver, error) {
-		auth := params["authorization"]
-		if auth == "" {
-			return nil, fmt.Errorf("missing authorization for yun139 driver")
-		}
-		return NewDriver(auth, params["root_id"]), nil
+	drivers.Register("yun139", drivers.DriverMeta{
+		Ctor: func(params drivers.Params) (drivers.Driver, error) {
+			auth := params["authorization"]
+			if auth == "" {
+				return nil, fmt.Errorf("missing authorization for yun139 driver")
+			}
+			return NewDriver(auth, params["root_id"]), nil
+		},
+		Params: []drivers.ParamSpec{
+			{Key: "authorization", Required: true, Help: "139 authorization token"},
+			{Key: "root_id", Help: "Remote root folder ID", Default: "/"},
+		},
+		RootKey:       "root_id",
+		CredentialKey: "authorization",
 	})
 }
 

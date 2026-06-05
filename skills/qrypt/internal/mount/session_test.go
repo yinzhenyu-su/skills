@@ -12,8 +12,8 @@ func TestSessionKeyForMount_Quark(t *testing.T) {
 	rc := &config.ResolvedMountConfig{
 		Type: "quark",
 		Params: config.MountParams{
-			Cookie:   "test_cookie",
-			RootPath: "/",
+			"cookie":    "test_cookie",
+			"root_path": "/",
 		},
 	}
 	sk := SessionKeyForMount(rc)
@@ -27,8 +27,8 @@ func TestSessionKeyForMount_Quark(t *testing.T) {
 	rc2 := &config.ResolvedMountConfig{
 		Type: "quark",
 		Params: config.MountParams{
-			Cookie:   "test_cookie",
-			RootPath: "/different",
+			"cookie":    "test_cookie",
+			"root_path": "/different",
 		},
 	}
 	sk2 := SessionKeyForMount(rc2)
@@ -41,8 +41,8 @@ func TestSessionKeyForMount_Yun139(t *testing.T) {
 	rc := &config.ResolvedMountConfig{
 		Type: "yun139",
 		Params: config.MountParams{
-			Authorization: "token_abc",
-			RootID:        "root",
+			"authorization": "token_abc",
+			"root_id":       "root",
 		},
 	}
 	sk := SessionKeyForMount(rc)
@@ -53,8 +53,8 @@ func TestSessionKeyForMount_Yun139(t *testing.T) {
 	rc3 := &config.ResolvedMountConfig{
 		Type: "yun139",
 		Params: config.MountParams{
-			Authorization: "token_xyz",
-			RootID:        "root",
+			"authorization": "token_xyz",
+			"root_id":       "root",
 		},
 	}
 	sk3 := SessionKeyForMount(rc3)
@@ -66,11 +66,11 @@ func TestSessionKeyForMount_Yun139(t *testing.T) {
 func TestSessionKeyForMount_LocalFS_DistinctPaths(t *testing.T) {
 	rc1 := &config.ResolvedMountConfig{
 		Type:   "localfs",
-		Params: config.MountParams{LocalRoot: "/tmp/a"},
+		Params: config.MountParams{"local_root": "/tmp/a"},
 	}
 	rc2 := &config.ResolvedMountConfig{
 		Type:   "localfs",
-		Params: config.MountParams{LocalRoot: "/tmp/b"},
+		Params: config.MountParams{"local_root": "/tmp/b"},
 	}
 	sk1 := SessionKeyForMount(rc1)
 	sk2 := SessionKeyForMount(rc2)
@@ -81,7 +81,7 @@ func TestSessionKeyForMount_LocalFS_DistinctPaths(t *testing.T) {
 
 func TestDriverFactory_LocalFS(t *testing.T) {
 	df := NewDriverFactory()
-	df.Register("test_local", config.MountParams{LocalRoot: t.TempDir()})
+	df.Register("test_local", config.MountParams{"local_root": t.TempDir()})
 
 	cfg := qrypt.SessionConfig{Type: "localfs:test_local"}
 	drv, err := df.CreateDriver(context.Background(), cfg)
@@ -103,7 +103,7 @@ func TestDriverFactory_UnregisteredMount(t *testing.T) {
 
 func TestDriverFactory_UnknownType(t *testing.T) {
 	df := NewDriverFactory()
-	df.Register("x", config.MountParams{LocalRoot: t.TempDir()})
+	df.Register("x", config.MountParams{"local_root": t.TempDir()})
 	cfg := qrypt.SessionConfig{Type: "unknown:x"}
 	if _, err := df.CreateDriver(context.Background(), cfg); err == nil {
 		t.Fatal("expected error for unknown backend type")
@@ -138,11 +138,11 @@ func TestSessionManagerIntegration_LocalFS(t *testing.T) {
 	sm := qrypt.NewSessionManager(df)
 
 	root1 := t.TempDir()
-	df.Register("a", config.MountParams{LocalRoot: root1})
-	df.Register("b", config.MountParams{LocalRoot: root1})
+	df.Register("a", config.MountParams{"local_root": root1})
+	df.Register("b", config.MountParams{"local_root": root1})
 
-	rcA := &config.ResolvedMountConfig{Type: "localfs", Params: config.MountParams{LocalRoot: root1}}
-	rcB := &config.ResolvedMountConfig{Type: "localfs", Params: config.MountParams{LocalRoot: root1}}
+	rcA := &config.ResolvedMountConfig{Type: "localfs", Params: config.MountParams{"local_root": root1}}
+	rcB := &config.ResolvedMountConfig{Type: "localfs", Params: config.MountParams{"local_root": root1}}
 
 	keyA := SessionKeyForMount(rcA)
 	keyB := SessionKeyForMount(rcB)

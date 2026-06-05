@@ -50,7 +50,7 @@ func runMv(cmd *cobra.Command, args []string) {
 		fmt.Printf("错误: %v\n", err)
 		os.Exit(1)
 	}
-	rootPath := mountCfg.Params.RootPath
+	rootPath := mountCfg.Params["root_path"]
 
 	interactive, _ := cmd.Flags().GetBool("interactive")
 

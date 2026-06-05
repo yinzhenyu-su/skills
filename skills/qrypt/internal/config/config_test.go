@@ -5,6 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	// Side-effect imports: register built-in drivers so drivers.GetMeta works
+	// in tests that depend on driver metadata (e.g. RootPathForMount).
+	_ "github.com/yinzhenyu/skills/qrypt/drivers/localfs"
+	_ "github.com/yinzhenyu/skills/qrypt/drivers/quark"
+	_ "github.com/yinzhenyu/skills/qrypt/drivers/yun139"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -70,8 +76,8 @@ salt = "salt"
 	if len(cfg.Mounts) != 1 {
 		t.Fatalf("expected 1 mount, got %d", len(cfg.Mounts))
 	}
-	if cfg.Mounts[0].Params.Cookie != "test_cookie" {
-		t.Errorf("expected test_cookie, got %s", cfg.Mounts[0].Params.Cookie)
+	if cfg.Mounts[0].Params["cookie"] != "test_cookie" {
+		t.Errorf("expected test_cookie, got %s", cfg.Mounts[0].Params["cookie"])
 	}
 	if vr == nil {
 		t.Fatal("expected validation result")
@@ -193,7 +199,7 @@ func TestValidateConfig_BadDefaults(t *testing.T) {
 			Name:       "test",
 			Type:       "quark",
 			MountPoint: "~/Qrypt/Test",
-			Params:     MountParams{Cookie: "c"},
+			Params:     MountParams{"cookie": "c"},
 			Encryption: &EncryptionConfig{Password: "p"},
 		},
 	}
@@ -230,10 +236,10 @@ func TestRootPathForMount_AllTypes(t *testing.T) {
 		m    MountInstance
 		want string
 	}{
-		{MountInstance{Type: "quark", Params: MountParams{RootPath: "/MyPath"}}, "/MyPath"},
+		{MountInstance{Type: "quark", Params: MountParams{"root_path": "/MyPath"}}, "/MyPath"},
 		{MountInstance{Type: "quark"}, "/"},
-		{MountInstance{Type: "yun139", Params: MountParams{RootID: "123"}}, "123"},
-		{MountInstance{Type: "localfs", Params: MountParams{LocalRoot: "/data"}}, "/data"},
+		{MountInstance{Type: "yun139", Params: MountParams{"root_id": "123"}}, "123"},
+		{MountInstance{Type: "localfs", Params: MountParams{"local_root": "/data"}}, "/data"},
 	}
 	for _, tt := range tests {
 		got := RootPathForMount(tt.m)
@@ -283,10 +289,10 @@ password = "default_pass"
 	if len(cfg.Mounts) != 2 {
 		t.Fatalf("expected 2 mounts, got %d", len(cfg.Mounts))
 	}
-	if cfg.Mounts[0].Name != "personal" || cfg.Mounts[0].Params.Cookie != "cookie_a" {
+	if cfg.Mounts[0].Name != "personal" || cfg.Mounts[0].Params["cookie"] != "cookie_a" {
 		t.Errorf("bad first mount: %+v", cfg.Mounts[0])
 	}
-	if cfg.Mounts[1].Name != "work" || cfg.Mounts[1].Params.Cookie != "cookie_b" {
+	if cfg.Mounts[1].Name != "work" || cfg.Mounts[1].Params["cookie"] != "cookie_b" {
 		t.Errorf("bad second mount: %+v", cfg.Mounts[1])
 	}
 }
@@ -300,7 +306,7 @@ func TestMergeInstanceConfig(t *testing.T) {
 		Name:       "test",
 		Type:       "quark",
 		MountPoint: "~/Qrypt/Test",
-		Params: MountParams{Cookie: "test_cookie", RootPath: "/"},
+		Params: MountParams{"cookie": "test_cookie", "root_path": "/"},
 	}
 	rc := cfg.MergeInstanceConfig(m)
 	if rc.Encryption.Password != "global_pass" {
@@ -327,7 +333,7 @@ func TestMergeInstanceConfig_EncryptionDefaults(t *testing.T) {
 		Name:       "test",
 		Type:       "quark",
 		MountPoint: "~/Qrypt/Test",
-		Params:     MountParams{Cookie: "test_cookie", RootPath: "/"},
+		Params:     MountParams{"cookie": "test_cookie", "root_path": "/"},
 	}
 	rc := cfg.MergeInstanceConfig(m)
 	if rc.Encryption.FileNameEncryption != "standard" {
@@ -452,9 +458,9 @@ cookie = "a"
 func TestFindDefaultMount_Explicit(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Mounts = []MountInstance{
-		{Name: "a", Type: "quark", Params: MountParams{Cookie: "a"}, MountPoint: "~/A"},
-		{Name: "b", Type: "quark", Default: true, Params: MountParams{Cookie: "b"}, MountPoint: "~/B"},
-		{Name: "c", Type: "quark", Params: MountParams{Cookie: "c"}, MountPoint: "~/C"},
+		{Name: "a", Type: "quark", Params: MountParams{"cookie": "a"}, MountPoint: "~/A"},
+		{Name: "b", Type: "quark", Default: true, Params: MountParams{"cookie": "b"}, MountPoint: "~/B"},
+		{Name: "c", Type: "quark", Params: MountParams{"cookie": "c"}, MountPoint: "~/C"},
 	}
 	m := FindDefaultMount(cfg)
 	if m == nil || m.Name != "b" {
@@ -467,9 +473,9 @@ func TestFindDefaultMount_FirstEnabled(t *testing.T) {
 	f := false
 	t2 := true
 	cfg.Mounts = []MountInstance{
-		{Name: "a", Type: "quark", Enabled: &f, Params: MountParams{Cookie: "a"}, MountPoint: "~/A"},
-		{Name: "b", Type: "quark", Enabled: &t2, Params: MountParams{Cookie: "b"}, MountPoint: "~/B"},
-		{Name: "c", Type: "quark", Params: MountParams{Cookie: "c"}, MountPoint: "~/C"},
+		{Name: "a", Type: "quark", Enabled: &f, Params: MountParams{"cookie": "a"}, MountPoint: "~/A"},
+		{Name: "b", Type: "quark", Enabled: &t2, Params: MountParams{"cookie": "b"}, MountPoint: "~/B"},
+		{Name: "c", Type: "quark", Params: MountParams{"cookie": "c"}, MountPoint: "~/C"},
 	}
 	m := FindDefaultMount(cfg)
 	if m == nil || m.Name != "b" {
@@ -481,8 +487,8 @@ func TestFindDefaultMount_AllDisabled_FirstMount(t *testing.T) {
 	cfg := DefaultConfig()
 	f := false
 	cfg.Mounts = []MountInstance{
-		{Name: "a", Type: "quark", Enabled: &f, Params: MountParams{Cookie: "a"}, MountPoint: "~/A"},
-		{Name: "b", Type: "quark", Enabled: &f, Params: MountParams{Cookie: "b"}, MountPoint: "~/B"},
+		{Name: "a", Type: "quark", Enabled: &f, Params: MountParams{"cookie": "a"}, MountPoint: "~/A"},
+		{Name: "b", Type: "quark", Enabled: &f, Params: MountParams{"cookie": "b"}, MountPoint: "~/B"},
 	}
 	m := FindDefaultMount(cfg)
 	if m != nil {

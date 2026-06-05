@@ -66,16 +66,10 @@ func (f *DriverFactory) CreateDriver(ctx context.Context, cfg qrypt.SessionConfi
 //   - localfs: keyed by SHA-256(local_root)[:16] so each path gets its own
 //     driver instance (no pooling collapse)
 func SessionKeyForMount(rc *config.ResolvedMountConfig) qrypt.SessionKey {
-	switch rc.Type {
-	case "localfs":
-		return qrypt.SessionKey{Type: "localfs", CredKey: hashShort(rc.Params.LocalRoot)}
-	case "quark":
-		return qrypt.SessionKey{Type: "quark", CredKey: hashShort(rc.Params.Cookie)}
-	case "yun139":
-		return qrypt.SessionKey{Type: "yun139", CredKey: hashShort(rc.Params.Authorization)}
-	default:
-		return qrypt.SessionKey{Type: rc.Type, CredKey: rc.Name}
+	if meta, ok := drivers.GetMeta(rc.Type); ok && meta.CredentialKey != "" {
+		return qrypt.SessionKey{Type: rc.Type, CredKey: hashShort(rc.Params[meta.CredentialKey])}
 	}
+	return qrypt.SessionKey{Type: rc.Type, CredKey: rc.Name}
 }
 
 // SessionConfigForMount builds a qrypt.SessionConfig with composite Type

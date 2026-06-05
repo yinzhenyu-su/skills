@@ -64,8 +64,8 @@ func runList(cmd *cobra.Command, args []string) {
 	allEntries := make([]ListEntry, 0, len(entries))
 	for _, e := range entries {
 		decName := e.DecName
-		if mountCfg.Params.RootPath != "/" && mountCfg.Params.RootPath != "" {
-			decName = StripRootPath(mountCfg.Params.RootPath, e.DecName)
+		if mountCfg.Params["root_path"] != "/" && mountCfg.Params["root_path"] != "" {
+			decName = StripRootPath(mountCfg.Params["root_path"], e.DecName)
 		}
 		allEntries = append(allEntries, ListEntry{
 			Path:    decName,

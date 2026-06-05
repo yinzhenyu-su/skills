@@ -28,7 +28,7 @@ func TestNewFileAPIFromConfigForMount(t *testing.T) {
 				MountPoint: filepath.Join(dir, "mp1"),
 				Default:    true,
 				Params: config.MountParams{
-					LocalRoot: localRoot1,
+					"local_root": localRoot1,
 				},
 				Encryption: &config.EncryptionConfig{
 					Password: "testpass1",
@@ -41,7 +41,7 @@ func TestNewFileAPIFromConfigForMount(t *testing.T) {
 				MountPoint: filepath.Join(dir, "mp2"),
 				Default:    false,
 				Params: config.MountParams{
-					LocalRoot: localRoot2,
+					"local_root": localRoot2,
 				},
 				Encryption: &config.EncryptionConfig{
 					Password: "testpass2",
@@ -83,7 +83,7 @@ func TestNewFileAPIFromConfigForMount_NotFound(t *testing.T) {
 				Type:    "localfs",
 				Default: true,
 				Params: config.MountParams{
-					LocalRoot: t.TempDir(),
+					"local_root": t.TempDir(),
 				},
 				Encryption: &config.EncryptionConfig{
 					Password: "testpass",
@@ -114,7 +114,7 @@ func TestNewFileAPIFromConfigForMount_Default(t *testing.T) {
 				Type:    "localfs",
 				Default: true,
 				Params: config.MountParams{
-					LocalRoot: localRoot,
+					"local_root": localRoot,
 				},
 				Encryption: &config.EncryptionConfig{
 					Password: "testpass",

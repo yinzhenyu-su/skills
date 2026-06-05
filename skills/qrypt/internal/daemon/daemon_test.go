@@ -25,7 +25,7 @@ func newTestDaemon(t *testing.T) (*Daemon, *rpc.WSClient, string) {
 		Mounts: []config.MountInstance{{
 			Name:   "test",
 			Type:   "localfs",
-			Params: config.MountParams{LocalRoot: dataDir},
+			Params: config.MountParams{"local_root": dataDir},
 			Encryption: &config.EncryptionConfig{
 				Password: "test",
 			},

@@ -54,8 +54,8 @@ func runMkdir(cmd *cobra.Command, args []string) {
 	}
 
 	displayPath := path
-	if mountCfg.Params.RootPath != "/" && mountCfg.Params.RootPath != "" {
-		displayPath = StripRootPath(mountCfg.Params.RootPath, path)
+	if mountCfg.Params["root_path"] != "/" && mountCfg.Params["root_path"] != "" {
+		displayPath = StripRootPath(mountCfg.Params["root_path"], path)
 	}
 	fmt.Printf("已创建: %s\n", displayPath)
 }

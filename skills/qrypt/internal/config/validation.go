@@ -71,25 +71,15 @@ func ValidateConfig(cfg *Config) *ValidationResult {
 				r.addCheck(prefix+".mount_point", "error", "mount_point is required")
 			}
 
-			// Driver-specific params
-			switch m.Type {
-			case "quark":
-				if m.Params.Cookie == "" {
-					r.addCheck(prefix+".params.cookie", "error", "cookie is required for quark driver")
-				} else {
-					r.addCheck(prefix+".params.cookie", "ok", "set")
-				}
-			case "yun139":
-				if m.Params.Authorization == "" {
-					r.addCheck(prefix+".params.authorization", "error", "authorization is required for yun139 driver")
-				} else {
-					r.addCheck(prefix+".params.authorization", "ok", "set")
-				}
-			case "localfs":
-				if m.Params.LocalRoot == "" && m.Params.RootPath == "" {
-					r.addCheck(prefix+".params.local_root", "error", "local_root is required for localfs driver")
-				} else {
-					r.addCheck(prefix+".params.local_root", "ok", "set")
+			// Driver-specific params (dynamic from driver registry)
+			if meta, ok := drivers.GetMeta(m.Type); ok {
+				for _, spec := range meta.Params {
+					val := m.Params[spec.Key]
+					if val == "" && spec.Required {
+						r.addCheck(prefix+".params."+spec.Key, "error", spec.Key+" is required for "+m.Type+" driver")
+					} else if val != "" {
+						r.addCheck(prefix+".params."+spec.Key, "ok", "set")
+					}
 				}
 			}
 

@@ -39,12 +39,20 @@ var (
 )
 
 func init() {
-	drivers.Register("quark", func(params drivers.Params) (drivers.Driver, error) {
-		cookie := params["cookie"]
-		if cookie == "" {
-			return nil, fmt.Errorf("missing cookie for quark driver")
-		}
-		return NewDriver(cookie, params["root_path"]), nil
+	drivers.Register("quark", drivers.DriverMeta{
+		Ctor: func(params drivers.Params) (drivers.Driver, error) {
+			cookie := params["cookie"]
+			if cookie == "" {
+				return nil, fmt.Errorf("missing cookie for quark driver")
+			}
+			return NewDriver(cookie, params["root_path"]), nil
+		},
+		Params: []drivers.ParamSpec{
+			{Key: "cookie", Required: true, Help: "Quark cookie string"},
+			{Key: "root_path", Help: "Remote root folder path", Default: "/"},
+		},
+		RootKey:       "root_path",
+		CredentialKey: "cookie",
 	})
 }
 

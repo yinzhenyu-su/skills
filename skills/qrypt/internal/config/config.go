@@ -11,6 +11,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/yinzhenyu/skills/qrypt/cipher"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 )
 
 //go:embed default.toml
@@ -36,9 +37,6 @@ type Config struct {
 	Log LogConfig `toml:"log"`
 
 	// Legacy fields (no TOML tags — no longer read from config files).
-	// Kept as Go fields for internal code that still references them.
-	Quark QuarkConfig
-	Drive DriveConfig
 	Mount MountConfig
 
 	Encryption EncryptionConfig
@@ -70,19 +68,10 @@ type MountInstance struct {
 	Cache      *CacheConfig       `toml:"cache"`      // nil = use defaults
 }
 
-// MountParams holds driver-specific configuration parameters.
-type MountParams struct {
-	// quark
-	Cookie   string `toml:"cookie"`
-	RootPath string `toml:"root_path"`
-
-	// yun139
-	Authorization string `toml:"authorization"`
-	RootID        string `toml:"root_id"`
-
-	// localfs
-	LocalRoot string `toml:"local_root"`
-}
+// MountParams holds driver-specific configuration as a flat key-value map.
+// Keys correspond to the driver's registered ParamSpec.Key values.
+// TOML decodes [mounts.params] sections directly into this map.
+type MountParams = map[string]string
 
 // ResolvedMountConfig is a mount instance with all defaults merged in.
 type ResolvedMountConfig struct {
@@ -100,32 +89,7 @@ type ResolvedMountConfig struct {
 	CacheDir   string // computed: ~/.qrypt/cache/<name>/
 }
 
-// Legacy types (no TOML tags — kept for internal code).
-type QuarkConfig struct {
-	Cookie   string
-	RootPath string
-}
 
-type LocalFSOptions struct {
-	RootPath string
-}
-
-type DriveConfig struct {
-	Type    string
-	Quark   *QuarkOptions
-	Yun139  *Yun139Options
-	LocalFS *LocalFSOptions
-}
-
-type QuarkOptions struct {
-	Cookie   string
-	RootPath string
-}
-
-type Yun139Options struct {
-	Authorization string
-	RootID        string
-}
 
 type EncryptionConfig struct {
 	Password           string `toml:"password"`
@@ -352,18 +316,9 @@ func FindDefaultMount(cfg *Config) *MountInstance {
 
 // RootPathForMount returns the root path/ID for a specific mount instance.
 func RootPathForMount(m MountInstance) string {
-	switch m.Type {
-	case "quark":
-		if m.Params.RootPath != "" {
-			return m.Params.RootPath
-		}
-	case "yun139":
-		if m.Params.RootID != "" {
-			return m.Params.RootID
-		}
-	case "localfs":
-		if m.Params.LocalRoot != "" {
-			return m.Params.LocalRoot
+	if meta, ok := drivers.GetMeta(m.Type); ok && meta.RootKey != "" {
+		if v := m.Params[meta.RootKey]; v != "" {
+			return v
 		}
 	}
 	return "/"

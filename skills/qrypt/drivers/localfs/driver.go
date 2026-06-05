@@ -29,15 +29,22 @@ var (
 )
 
 func init() {
-	drivers.Register("localfs", func(params drivers.Params) (drivers.Driver, error) {
-		root := params["local_root"]
-		if root == "" {
-			root = params["root_path"]
-		}
-		if root == "" {
-			return nil, fmt.Errorf("missing local_root for localfs driver")
-		}
-		return NewDriver(root), nil
+	drivers.Register("localfs", drivers.DriverMeta{
+		Ctor: func(params drivers.Params) (drivers.Driver, error) {
+			root := params["local_root"]
+			if root == "" {
+				root = params["root_path"]
+			}
+			if root == "" {
+				return nil, fmt.Errorf("missing local_root for localfs driver")
+			}
+			return NewDriver(root), nil
+		},
+		Params: []drivers.ParamSpec{
+			{Key: "local_root", Required: true, Help: "Local filesystem root path"},
+		},
+		RootKey:       "local_root",
+		CredentialKey: "local_root",
 	})
 }
 

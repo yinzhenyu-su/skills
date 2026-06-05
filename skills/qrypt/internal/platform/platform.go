@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
 
@@ -28,11 +29,13 @@ type TomlCredentialStore struct {
 
 func (s *TomlCredentialStore) Get(key string) (string, error) {
 	for _, m := range s.cfg.Mounts {
-		if "cookie_"+m.Name == key {
-			return m.Params.Cookie, nil
+		meta, ok := drivers.GetMeta(m.Type)
+		if !ok || meta.CredentialKey == "" {
+			continue
 		}
-		if "auth_"+m.Name == key {
-			return m.Params.Authorization, nil
+		prefix := credKeyPrefix(m.Type)
+		if prefix+m.Name == key {
+			return m.Params[meta.CredentialKey], nil
 		}
 	}
 	return "", qrypt.NewErrorf(qrypt.ErrNotFound, "credential not found: %s", key)
@@ -44,4 +47,16 @@ func (s *TomlCredentialStore) Set(_, _ string) error {
 
 func (s *TomlCredentialStore) Delete(_ string) error {
 	return fmt.Errorf("toml credential store is read-only; edit qrypt.toml directly")
+}
+
+// credKeyPrefix returns the CredentialStore key prefix for the given backend type.
+func credKeyPrefix(backendType string) string {
+	switch backendType {
+	case "quark":
+		return "cookie_"
+	case "yun139":
+		return "auth_"
+	default:
+		return "cred_"
+	}
 }
