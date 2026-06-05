@@ -22,10 +22,24 @@ type LocalDriver struct {
 func (d *LocalDriver) SetCipher(c cipher.Cipher) { d.cipher = c }
 
 var (
-	_ drivers.Driver   = (*LocalDriver)(nil)
-	_ drivers.Writer   = (*LocalDriver)(nil)
-	_ drivers.Uploader = (*LocalDriver)(nil)
+	_ drivers.Driver       = (*LocalDriver)(nil)
+	_ drivers.Writer       = (*LocalDriver)(nil)
+	_ drivers.Uploader     = (*LocalDriver)(nil)
+	_ drivers.CipherSetter = (*LocalDriver)(nil)
 )
+
+func init() {
+	drivers.Register("localfs", func(params drivers.Params) (drivers.Driver, error) {
+		root := params["local_root"]
+		if root == "" {
+			root = params["root_path"]
+		}
+		if root == "" {
+			return nil, fmt.Errorf("missing local_root for localfs driver")
+		}
+		return NewDriver(root), nil
+	})
+}
 
 func NewDriver(root string) *LocalDriver {
 	return &LocalDriver{root: filepath.Clean(root)}

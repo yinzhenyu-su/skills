@@ -32,10 +32,21 @@ func (d *QuarkDriver) SetCipher(c cipher.Cipher) {
 }
 
 var (
-	_ drivers.Driver   = (*QuarkDriver)(nil)
-	_ drivers.Writer   = (*QuarkDriver)(nil)
-	_ drivers.Uploader = (*QuarkDriver)(nil)
+	_ drivers.Driver       = (*QuarkDriver)(nil)
+	_ drivers.Writer       = (*QuarkDriver)(nil)
+	_ drivers.Uploader     = (*QuarkDriver)(nil)
+	_ drivers.CipherSetter = (*QuarkDriver)(nil)
 )
+
+func init() {
+	drivers.Register("quark", func(params drivers.Params) (drivers.Driver, error) {
+		cookie := params["cookie"]
+		if cookie == "" {
+			return nil, fmt.Errorf("missing cookie for quark driver")
+		}
+		return NewDriver(cookie, params["root_path"]), nil
+	})
+}
 
 func NewDriver(cookie, rootPath string) *QuarkDriver {
 	return &QuarkDriver{

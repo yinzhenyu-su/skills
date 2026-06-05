@@ -35,7 +35,7 @@ func NewFileAPIFromConfig(cfg *config.Config, password, salt string) (*qrypt.Fil
 		return nil, fmt.Errorf("驱动初始化失败: %w", err)
 	}
 
-	if setter, ok := drv.(interface{ SetCipher(cipher.Cipher) }); ok {
+	if setter, ok := drv.(drivers.CipherSetter); ok {
 		setter.SetCipher(ciph)
 	}
 
@@ -84,7 +84,7 @@ func NewFileAPIFromConfigForMount(cfg *config.Config, mountName, password, salt 
 		return nil, fmt.Errorf("驱动初始化失败: %w", err)
 	}
 
-	if setter, ok := drv.(interface{ SetCipher(cipher.Cipher) }); ok {
+	if setter, ok := drv.(drivers.CipherSetter); ok {
 		setter.SetCipher(ciph)
 	}
 

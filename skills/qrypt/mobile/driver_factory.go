@@ -6,8 +6,11 @@ import (
 
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
-	"github.com/yinzhenyu/skills/qrypt/drivers/quark"
-	"github.com/yinzhenyu/skills/qrypt/drivers/yun139"
+
+	// Register drivers available on mobile.
+	_ "github.com/yinzhenyu/skills/qrypt/drivers/quark"
+	_ "github.com/yinzhenyu/skills/qrypt/drivers/yun139"
+	// localfs intentionally omitted on mobile
 )
 
 // mobileDriverFactory creates backend drivers on demand, looking up credentials from the
@@ -35,25 +38,17 @@ func newMobileDriverFactory(creds qrypt.CredentialStore) qrypt.DriverFactory {
 func (f *mobileDriverFactory) CreateDriver(ctx context.Context, cfg qrypt.SessionConfig) (drivers.Driver, error) {
 	backendType, mountName := splitTypeMount(cfg.Type)
 
-	var drv drivers.Driver
-	switch backendType {
-	case "quark":
-		cookie, err := f.creds.Get("cookie_" + mountName)
-		if err != nil {
-			return nil, fmt.Errorf("get quark cookie for mount %q: %w", mountName, err)
-		}
-		drv = quark.NewDriver(cookie, cfg.RootID)
-	case "yun139":
-		auth, err := f.creds.Get("auth_" + mountName)
-		if err != nil {
-			return nil, fmt.Errorf("get yun139 auth for mount %q: %w", mountName, err)
-		}
-		drv = yun139.NewDriver(auth, cfg.RootID)
-	default:
-		return nil, fmt.Errorf("unsupported backend type: %q (supported: quark, yun139)", backendType)
+	credKey := credKeyPrefix(backendType) + mountName
+	cred, err := f.creds.Get(credKey)
+	if err != nil {
+		return nil, fmt.Errorf("get credential for %s mount %q: %w", backendType, mountName, err)
 	}
 
-	return drv, nil
+	params := drivers.Params{
+		credParamName(backendType): cred,
+		"root_id":                  cfg.RootID,
+	}
+	return drivers.New(backendType, params)
 }
 
 func splitTypeMount(t string) (backendType, mount string) {
@@ -63,4 +58,28 @@ func splitTypeMount(t string) (backendType, mount string) {
 		}
 	}
 	return t, t
+}
+
+// credKeyPrefix returns the CredentialStore key prefix for the given backend type.
+func credKeyPrefix(backendType string) string {
+	switch backendType {
+	case "quark":
+		return "cookie_"
+	case "yun139":
+		return "auth_"
+	default:
+		return "cred_"
+	}
+}
+
+// credParamName returns the drivers.Params key name for the credential value.
+func credParamName(backendType string) string {
+	switch backendType {
+	case "quark":
+		return "cookie"
+	case "yun139":
+		return "authorization"
+	default:
+		return "credential"
+	}
 }

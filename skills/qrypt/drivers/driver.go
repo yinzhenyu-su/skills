@@ -9,6 +9,8 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"github.com/yinzhenyu/skills/qrypt/cipher"
 )
 
 // Entry is a single file-system entry returned by a storage backend.
@@ -48,6 +50,11 @@ type PathResolver interface {
 	ResolvePath(ctx context.Context, path string) (string, error)
 }
 
+// CipherSetter is implemented by drivers that support client-side encryption.
+// After construction, callers should check for this interface and inject the cipher.
+type CipherSetter interface {
+	SetCipher(c cipher.Cipher)
+}
 
 
 type mtimeKey struct{}

@@ -21,6 +21,16 @@ var (
 	_ drivers.Uploader = (*Yun139Driver)(nil)
 )
 
+func init() {
+	drivers.Register("yun139", func(params drivers.Params) (drivers.Driver, error) {
+		auth := params["authorization"]
+		if auth == "" {
+			return nil, fmt.Errorf("missing authorization for yun139 driver")
+		}
+		return NewDriver(auth, params["root_id"]), nil
+	})
+}
+
 func NewDriver(authorization, rootID string) *Yun139Driver {
 	return &Yun139Driver{
 		cl:     newClient(authorization),

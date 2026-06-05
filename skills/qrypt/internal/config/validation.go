@@ -1,6 +1,12 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/yinzhenyu/skills/qrypt/drivers"
+)
 
 type ValidationCheck struct {
 	Field   string `json:"field"`
@@ -162,14 +168,14 @@ func (r *ValidationResult) addCheck(field, status, message string) {
 }
 
 func validateDriveType(t string) (string, string) {
-	switch t {
-	case "quark", "yun139", "localfs":
-		return "ok", t
-	case "":
-		return "error", "drive type not set (must be quark, yun139, or localfs)"
-	default:
-		return "error", fmt.Sprintf("unknown drive type: %s", t)
+	supported := drivers.SupportedTypes()
+	if t == "" {
+		return "error", fmt.Sprintf("drive type not set (must be %s)", strings.Join(supported, ", "))
 	}
+	if slices.Contains(supported, t) {
+		return "ok", t
+	}
+	return "error", fmt.Sprintf("unknown drive type: %s (supported: %s)", t, strings.Join(supported, ", "))
 }
 
 func validateRequired(field, value string, required bool) (string, string) {
