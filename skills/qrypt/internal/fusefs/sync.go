@@ -246,9 +246,18 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		if err := fs.ensureParentDirExists(path, parentFid); err != nil {
 			return fmt.Errorf("failed to ensure parent dir: %v", err)
 		}
-		n.mu.RLock()
-		parentFid = n.parentFid
-		n.mu.RUnlock()
+		// After ensureParentDirExists, the parent directory's fid has been
+		// updated from local_ to a real cloud fid. Update the file's parentFid
+		// to match, so the upload targets the correct remote parent.
+		parentPath := filepath.Dir(path)
+		if parentNode, errc := fs.lookup(parentPath); errc == 0 {
+			parentNode.mu.RLock()
+			parentFid = parentNode.fid
+			parentNode.mu.RUnlock()
+			n.mu.Lock()
+			n.parentFid = parentFid
+			n.mu.Unlock()
+		}
 	}
 
 	// ── Delete previous uploaded file by fid ──────────────────────
@@ -544,6 +553,10 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 func (fs *QryptFS) dirExistsOnServer(fid string) bool {
 	if fid == "" || fid == "0" || fid == "root" {
 		return true
+	}
+	// Local-only fids haven't been synced to the cloud yet.
+	if strings.HasPrefix(fid, "local_") {
+		return false
 	}
 	_, err := fs.drv.List(context.Background(), fid)
 	if err != nil {

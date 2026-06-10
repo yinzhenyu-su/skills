@@ -40,6 +40,13 @@ type Writer interface {
 	Remove(ctx context.Context, entry Entry) error
 }
 
+// BatchRemover is an optional interface for backends that can remove
+// multiple entries in a single API call, avoiding N round-trips for
+// bulk operations like recursive directory deletion.
+type BatchRemover interface {
+	BatchRemove(ctx context.Context, entries []Entry) error
+}
+
 // Uploader handles streaming uploads to the backend.
 type Uploader interface {
 	Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error)

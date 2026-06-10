@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
@@ -147,19 +148,28 @@ func (d *Yun139Driver) Mkdir(ctx context.Context, parentID, name string) (driver
 		fileID = d.rootID
 	}
 	data := map[string]interface{}{
-		"parentFileId":   fileID,
-		"name":           name,
-		"description":    "",
-		"type":           "folder",
-		"fileRenameMode": "force_rename",
+		"parentFileId": fileID,
+		"name":         name,
+		"description":  "",
+		"type":         "folder",
 	}
 	var resp createResp
 	err := d.cl.personalPost( "/file/create", data, &resp)
 	if err != nil {
+		// HTTP/network error — could be a conflict that the API rejected at
+		// transport level (HTTP 409 etc). Treat as already-exists so the FUSE
+		// layer falls back to listing the parent and using the existing dir.
+		if strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "exist") {
+			return drivers.Entry{}, drivers.ErrDirAlreadyExists
+		}
 		return drivers.Entry{}, fmt.Errorf("139 mkdir: %w", err)
 	}
 	if !resp.Success {
-		return drivers.Entry{}, fmt.Errorf("139 mkdir failed: %s", resp.Message)
+		// API returned success:false — almost certainly a name collision
+		// ("文件名已存在", "目录已存在", etc.) since no fileRenameMode is set.
+		// Treat all non-success Mkdir responses as already-exists; the FUSE
+		// layer handles this by looking up the existing dir's fid.
+		return drivers.Entry{}, drivers.ErrDirAlreadyExists
 	}
 	return drivers.Entry{ID: resp.Data.FileId, Name: resp.Data.Name, IsDir: true}, nil
 }
@@ -210,16 +220,24 @@ func (d *Yun139Driver) Rename(ctx context.Context, entry drivers.Entry, newName 
 }
 
 func (d *Yun139Driver) Remove(ctx context.Context, entry drivers.Entry) error {
+	return d.BatchRemove(ctx, []drivers.Entry{entry})
+}
+
+func (d *Yun139Driver) BatchRemove(ctx context.Context, entries []drivers.Entry) error {
+	ids := make([]string, len(entries))
+	for i, e := range entries {
+		ids[i] = e.ID
+	}
 	data := map[string]interface{}{
-		"fileIds": []string{entry.ID},
+		"fileIds": ids,
 	}
 	var resp baseResp
-	err := d.cl.personalPost( "/recyclebin/batchTrash", data, &resp)
+	err := d.cl.personalPost("/recyclebin/batchTrash", data, &resp)
 	if err != nil {
-		return fmt.Errorf("139 remove: %w", err)
+		return fmt.Errorf("139 batch remove: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("139 remove failed: %s", resp.Message)
+		return fmt.Errorf("139 batch remove failed: %s", resp.Message)
 	}
 	return nil
 }

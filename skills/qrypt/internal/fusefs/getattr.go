@@ -3,16 +3,10 @@
 package fusefs
 
 import (
-	"strings"
-
 	"github.com/winfsp/cgofuse/fuse"
 )
 
 func (fs *QryptFS) Getattr(path string, stat *fuse.Stat_t, fh uint64) (errc int) {
-	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
-		return -fuse.ENOENT
-	}
-
 	n, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
 		return errc
@@ -40,9 +34,6 @@ func (fs *QryptFS) Getattr(path string, stat *fuse.Stat_t, fh uint64) (errc int)
 }
 
 func (fs *QryptFS) Access(path string, mask uint32) (errc int) {
-	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
-		return -fuse.ENOENT
-	}
 	_, errc = fs.lookup(path)
 	return
 }

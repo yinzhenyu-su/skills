@@ -23,15 +23,21 @@ type memFile struct {
 }
 
 type MockDriver struct {
-	mu     sync.RWMutex
-	files  map[string]*memFile
-	nextID atomic.Int64
+	mu            sync.RWMutex
+	files         map[string]*memFile
+	nextID        atomic.Int64
+	listCallCount atomic.Int64
+}
+
+func (d *MockDriver) ListCallCount() int {
+	return int(d.listCallCount.Load())
 }
 
 var (
-	_ drivers.Driver   = (*MockDriver)(nil)
-	_ drivers.Writer   = (*MockDriver)(nil)
-	_ drivers.Uploader = (*MockDriver)(nil)
+	_ drivers.Driver       = (*MockDriver)(nil)
+	_ drivers.Writer       = (*MockDriver)(nil)
+	_ drivers.Uploader     = (*MockDriver)(nil)
+	_ drivers.BatchRemover = (*MockDriver)(nil)
 )
 
 func NewDriver() *MockDriver {
@@ -53,6 +59,7 @@ func (d *MockDriver) Init(ctx context.Context) error { return nil }
 func (d *MockDriver) Drop(ctx context.Context) error { return nil }
 
 func (d *MockDriver) List(ctx context.Context, parentID string) ([]drivers.Entry, error) {
+	d.listCallCount.Add(1)
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	var result []drivers.Entry
@@ -90,6 +97,12 @@ func (d *MockDriver) Read(ctx context.Context, entry drivers.Entry, offset, size
 func (d *MockDriver) Mkdir(ctx context.Context, parentID, name string) (drivers.Entry, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// Check for name conflict — same parent + same name.
+	for _, f := range d.files {
+		if f.parentID == parentID && f.name == name {
+			return drivers.Entry{}, drivers.ErrDirAlreadyExists
+		}
+	}
 	id := d.allocID()
 	d.files[id] = &memFile{
 		id: id, name: name, isDir: true, parentID: parentID,
@@ -142,6 +155,17 @@ func (d *MockDriver) removeRecursive(id string) {
 			d.removeRecursive(f.id)
 		}
 	}
+}
+
+func (d *MockDriver) BatchRemove(ctx context.Context, entries []drivers.Entry) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, e := range entries {
+		if _, ok := d.files[e.ID]; ok {
+			d.removeRecursive(e.ID)
+		}
+	}
+	return nil
 }
 
 func (d *MockDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drivers.Entry, error) {

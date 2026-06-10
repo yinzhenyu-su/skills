@@ -16,16 +16,31 @@ const (
 	pageInitialBufSize = 4096
 )
 
+// roundUpPow2 rounds v up to the next power of 2.
+// Returns 0 when v is 0 (caller should avoid passing 0).
+func roundUpPow2(v uint64) uint64 {
+	v--
+	v |= v >> 1
+	v |= v >> 2
+	v |= v >> 4
+	v |= v >> 8
+	v |= v >> 16
+	v |= v >> 32
+	v++
+	return v
+}
+
 // Page buffers writes for a single staging file. Consecutive writes to the
 // same file are coalesced in memory and flushed asynchronously.
 type Page struct {
-	mu     sync.Mutex
-	buf    []byte // backing buffer; grows via append / overwrite
-	dirty  bool
-	timer  *time.Timer
-	fid    string
-	flush  func(fid string, buf []byte) error // calls staging's write-to-disk
-	onDone func(fid string)                    // cleanup after flush/close
+	mu        sync.Mutex
+	buf       []byte // backing buffer; grows via append / overwrite
+	dirty     bool
+	timer     *time.Timer
+	fid       string
+	maxOffset int64  // highest off+len(data) seen; actual data size in buf
+	flush     func(fid string, buf []byte) error // calls staging's write-to-disk
+	onDone    func(fid string)                    // cleanup after flush/close
 }
 
 // Store manages staging files on disk with an optional writeback page cache.
@@ -125,7 +140,7 @@ func (s *Store) getPage(fid string) *Page {
 	return p
 }
 
-// writePage writes a Page's full buffer to the staging file on disk.
+// writePage writes buf to the staging file on disk and truncates to its size.
 func (s *Store) writePage(fid string, buf []byte) error {
 	path := s.Path(fid)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
@@ -135,9 +150,14 @@ func (s *Store) writePage(fid string, buf []byte) error {
 	defer f.Close()
 	n, err := f.WriteAt(buf, 0)
 	if err == nil && n != len(buf) {
-		err = io.ErrShortWrite
+		return io.ErrShortWrite
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// Truncate to actual data size — buf may be shorter than the on-disk file
+	// if previous data was removed or overwritten with a smaller amount.
+	return f.Truncate(int64(len(buf)))
 }
 
 // WriteAt buffers data in a Page if one exists or can be created for the fid
@@ -182,12 +202,21 @@ func (p *Page) WriteAt(data []byte, off int64) (int, error) {
 
 	need := off + int64(len(data))
 	if need > int64(len(p.buf)) {
-		newBuf := make([]byte, need)
+		newSize := need
+		// Exponential growth below pageMaxSize to avoid O(n²) copying
+		// from repeated exact-fit reallocation on sequential writes.
+		if newSize < pageMaxSize {
+			newSize = int64(roundUpPow2(uint64(need)))
+		}
+		newBuf := make([]byte, newSize)
 		copy(newBuf, p.buf)
 		p.buf = newBuf
 	}
 	copy(p.buf[off:], data)
 	p.dirty = true
+	if end := off + int64(len(data)); end > p.maxOffset {
+		p.maxOffset = end
+	}
 
 	// Flush early if page exceeds threshold.
 	if len(p.buf) > pageMaxSize {
@@ -206,16 +235,18 @@ func (p *Page) WriteAt(data []byte, off int64) (int, error) {
 // extend it without losing data. Caller must NOT hold p.mu.
 func (p *Page) flushBuf() error {
 	p.mu.Lock()
-	if len(p.buf) == 0 {
+	if p.maxOffset == 0 {
 		p.mu.Unlock()
 		return nil
 	}
-	buf := make([]byte, len(p.buf))
-	copy(buf, p.buf)
+	buf := p.flushDataLocked()
 	p.dirty = false
 	p.stopTimer()
 	p.mu.Unlock()
 
+	if buf == nil {
+		return nil
+	}
 	return p.flush(p.fid, buf)
 }
 
@@ -229,12 +260,14 @@ func (p *Page) flushNow() error {
 		p.mu.Unlock()
 		return nil
 	}
-	buf := make([]byte, len(p.buf))
-	copy(buf, p.buf)
+	buf := p.flushDataLocked()
 	p.dirty = false
 	p.stopTimer()
 	p.mu.Unlock()
 
+	if buf == nil {
+		return nil
+	}
 	return p.flush(p.fid, buf)
 }
 
@@ -257,17 +290,44 @@ func (p *Page) stopTimer() {
 	}
 }
 
+// flushDataLocked returns a copy of the buffer containing only the actual data
+// (up to maxOffset). Caller must hold p.mu.
+func (p *Page) flushDataLocked() []byte {
+	dataLen := p.maxOffset
+	if dataLen > int64(len(p.buf)) {
+		dataLen = int64(len(p.buf))
+	}
+	if dataLen == 0 {
+		return nil
+	}
+	buf := make([]byte, dataLen)
+	copy(buf, p.buf[:dataLen])
+	return buf
+}
+
 func (s *Store) ReadAt(path string, buf []byte, off int64) (int, error) {
 	fid := FidFromPath(path)
 	if v, ok := s.pages.Load(fid); ok {
 		p := v.(*Page)
 		p.mu.Lock()
-		if int(off)+len(buf) <= len(p.buf) {
+		if off < p.maxOffset {
 			// Read directly from page buffer — it holds the latest data
 			// regardless of dirty state. Avoids disk reads that may hit
 			// a stale empty file (replaced by concurrent Snapshot).
-			n := copy(buf, p.buf[off:])
+			// Cap at actual data (maxOffset), not rounded-up buffer length.
+			readLen := p.maxOffset - off
+			if readLen > int64(len(buf)) {
+				readLen = int64(len(buf))
+			}
+			n := copy(buf, p.buf[off:off+readLen])
 			p.mu.Unlock()
+
+			// Caller asked for more data than the buffer has — flush to
+			// disk so subsequent reads/stats see a consistent on-disk file.
+			if int64(len(buf)) > readLen {
+				_ = p.flushNow()
+			}
+
 			return n, nil
 		}
 		// Partial or beyond page — flush to disk first for consistency.
@@ -418,7 +478,7 @@ func (s *Store) Close(path string) error {
 			p.timer = nil
 		}
 		dirty := p.dirty
-		buf := p.buf
+		buf := p.flushDataLocked()
 		p.buf = nil
 		p.dirty = false
 		p.mu.Unlock()

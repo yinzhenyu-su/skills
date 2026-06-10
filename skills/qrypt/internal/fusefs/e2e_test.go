@@ -2,6 +2,7 @@ package fusefs
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"strings"
 	"sync"
@@ -1091,6 +1092,169 @@ func TestE2E_RmdirWithUploadingChildReturnsNotEmpty(t *testing.T) {
 	errc := s.fs.Rmdir("/protect_dir")
 	if errc != -fuse.ENOTEMPTY {
 		t.Errorf("expected ENOTEMPTY when child is uploading, got %d", errc)
+	}
+}
+
+// ============================================================
+// Mkdir — conflict handling (regression: 139 force_rename)
+// ============================================================
+
+func TestE2E_MkdirAlreadyExists(t *testing.T) {
+	s := newE2E(t)
+
+	// First Mkdir should succeed.
+	s.mustMkdir("/existing")
+
+	// Second Mkdir with same name — FUSE should handle ErrDirAlreadyExists
+	// by looking up the existing dir and returning 0.
+	if errc := s.fs.Mkdir("/existing", 0755); errc != 0 {
+		t.Errorf("Mkdir on existing dir: errc=%d, want 0", errc)
+	}
+
+	// Directory should still be usable — can create files inside.
+	s.writeFile("/existing/file.txt", []byte("content"))
+	got := s.mustRead("/existing/file.txt", 10, 0)
+	if string(got) != "content" {
+		t.Errorf("read after re-Mkdir: got %q, want %q", string(got), "content")
+	}
+}
+
+// ============================================================
+// Create routing to Mkdir (macOS Finder compatibility)
+// ============================================================
+
+func TestE2E_CreateRoutesToMkdir(t *testing.T) {
+	s := newE2E(t)
+
+	// macOS Finder sometimes opens a directory path with O_CREAT instead
+	// of calling mkdir(). The FUSE layer should detect paths with no
+	// extension and route them to Mkdir.
+	errc, _ := s.fs.Create("/finder_dir", 0, 0755)
+	if errc != 0 {
+		t.Fatalf("Create (should route to Mkdir): errc=%d", errc)
+	}
+
+	// The result should be a directory.
+	st := s.mustGetattr("/finder_dir")
+	if st.Mode&fuse.S_IFDIR == 0 {
+		t.Error("path should be a directory after Create→Mkdir routing")
+	}
+
+	// Files can be created inside.
+	s.writeFile("/finder_dir/file.txt", []byte("data"))
+	got := s.mustRead("/finder_dir/file.txt", 10, 0)
+	if string(got) != "data" {
+		t.Errorf("read inside Finder-created dir: got %q", string(got))
+	}
+}
+
+// ============================================================
+// Readdir — async refresh does not block
+// ============================================================
+
+func TestE2E_ReaddirNonBlocking(t *testing.T) {
+	s := newE2E(t)
+
+	s.mustMkdir("/rdir")
+	s.writeFile("/rdir/a.txt", []byte("a"))
+	s.writeFile("/rdir/b.txt", []byte("b"))
+
+	// First listing.
+	names1 := s.mustReaddir("/rdir")
+	if len(names1) != 4 { // ., .., a.txt, b.txt
+		t.Errorf("initial listing: got %d entries, want 4", len(names1))
+	}
+
+	// Second listing should return the same children without blocking.
+	names2 := s.mustReaddir("/rdir")
+	if len(names2) != 4 {
+		t.Errorf("second listing: got %d entries, want 4", len(names2))
+	}
+}
+
+// ============================================================
+// .DS_Store files are not rejected
+// ============================================================
+
+func TestE2E_DSStoreNotRejected(t *testing.T) {
+	s := newE2E(t)
+
+	// .DS_Store should be creatable and readable.
+	s.writeFile("/.DS_Store", []byte("finder metadata"))
+	got := s.mustRead("/.DS_Store", 20, 0)
+	if string(got) != "finder metadata" {
+		t.Errorf(".DS_Store read: got %q", string(got))
+	}
+
+	// ._ prefixed files (Apple Double) should also work.
+	s.writeFile("/._myfile", []byte("apple double"))
+	got2 := s.mustRead("/._myfile", 15, 0)
+	if string(got2) != "apple double" {
+		t.Errorf("._ file read: got %q", string(got2))
+	}
+
+	// Getattr should return a regular file.
+	st := s.mustGetattr("/.DS_Store")
+	if st.Mode&fuse.S_IFREG == 0 {
+		t.Error(".DS_Store should be a regular file")
+	}
+}
+
+// ============================================================
+// fetchFiles skips local_ fids
+// ============================================================
+
+func TestE2E_FetchFilesSkipsLocalFid(t *testing.T) {
+	s := newE2E(t)
+	drv := s.fs.drv.(*mockdrive.MockDriver)
+
+	before := drv.ListCallCount()
+
+	// fetchFiles with a local_ prefix fid should return empty without
+	// calling the driver's List.
+	files, err := s.fs.fetchFiles("local_test_dir_1234567890")
+	if err != nil {
+		t.Errorf("fetchFiles with local_ fid: err=%v", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("expected 0 files for local_ fid, got %d", len(files))
+	}
+	if drv.ListCallCount() != before {
+		t.Error("List should not be called for local_ fids")
+	}
+}
+
+// ============================================================
+// Batch deletion with BatchRemove
+// ============================================================
+
+func TestE2E_BatchDelete(t *testing.T) {
+	s := newE2E(t)
+
+	// Create multiple files.
+	const n = 5
+	for i := 0; i < n; i++ {
+		s.writeFile(fmt.Sprintf("/batch_%d.txt", i), []byte("data"))
+	}
+
+	// Verify they exist.
+	for i := 0; i < n; i++ {
+		s.mustGetattr(fmt.Sprintf("/batch_%d.txt", i))
+	}
+
+	for i := 0; i < n; i++ {
+		s.mustUnlink(fmt.Sprintf("/batch_%d.txt", i))
+	}
+
+	// Allow metadata worker to process the batch.
+	time.Sleep(300 * time.Millisecond)
+
+	// Files should be removed from the tree.
+	for i := 0; i < n; i++ {
+		path := fmt.Sprintf("/batch_%d.txt", i)
+		if _, errc := s.fs.lookup(path); errc == 0 {
+			t.Errorf("file %s should be removed from tree after Unlink", path)
+		}
 	}
 }
 

@@ -3,23 +3,23 @@
 package fusefs
 
 import (
-	"context"
-	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
-	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
 func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
+	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
 			errc = -fuse.EIO
 		}
+		logging.L.Debugf("[TIMER] Mkdir(%s): took %v\n", path, time.Since(start))
 	}()
 	if fs.IsShuttingDown() {
 		logging.L.Warnf("[SHUTDOWN] Rejecting Mkdir: %s\n", path)
@@ -35,49 +35,14 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 		return errc
 	}
 
-	encName := fs.cp.EncryptSegment(name)
-
-	w, ok := fs.drv.(drivers.Writer)
-	if !ok {
-		logging.L.Errorf("Mkdir: driver does not support write operations\n")
-		return -fuse.EIO
-	}
-
-	var fid string
-	entry, err := w.Mkdir(context.Background(), parentNode.fid, encName)
-	if err != nil {
-		if errors.Is(err, drivers.ErrDirAlreadyExists) {
-			entries, listErr := fs.drv.List(context.Background(), parentNode.fid)
-			if listErr != nil {
-				return -fuse.EIO
-			}
-			for _, e := range entries {
-				if e.Name == encName && e.IsDir {
-					fid = e.ID
-					break
-				}
-			}
-			if fid == "" {
-				return -fuse.EIO
-			}
-			if _, inDeletion := fs.activeDeletions.Load(fid); inDeletion {
-				fs.activeDeletions.Delete(fid)
-				if val, ok := fs.deletionsByParent.Load(parentNode.fid); ok {
-					val.(*sync.Map).Delete(fid)
-				}
-			}
-		} else {
-			return -fuse.EIO
-		}
-	} else {
-		fid = entry.ID
-	}
+	// Create the directory locally with a local_ fid, same as files.
+	// The remote directory is created asynchronously during the first
+	// file upload inside it (via ensureParentDirExists in syncFile).
+	// This avoids blocking the FUSE callback on a slow remote API call.
+	fid := "local_" + name + "_" + fmt.Sprint(time.Now().UnixNano())
 
 	fs.deletingPaths.Delete(path)
-	prefix := path
-	if !strings.HasSuffix(prefix, "/") {
-		prefix += "/"
-	}
+	prefix := path + "/"
 	fs.deletingPaths.Range(func(key, value interface{}) bool {
 		if strings.HasPrefix(key.(string), prefix) {
 			fs.deletingPaths.Delete(key)
@@ -103,7 +68,7 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 		currentPath:       path,
 		isFolder:          true,
 		mtime:             time.Now(),
-		baseServerMtime:   time.Now().UnixMilli(),
+		baseServerMtime:   0,
 		baseServerSize:    0,
 		lastMetadataCheck: time.Now(),
 		source:            "local",

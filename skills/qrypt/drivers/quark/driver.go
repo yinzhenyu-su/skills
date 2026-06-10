@@ -300,15 +300,23 @@ func (d *QuarkDriver) Rename(ctx context.Context, entry drivers.Entry, newName s
 }
 
 func (d *QuarkDriver) Remove(ctx context.Context, entry drivers.Entry) error {
+	return d.BatchRemove(ctx, []drivers.Entry{entry})
+}
+
+func (d *QuarkDriver) BatchRemove(ctx context.Context, entries []drivers.Entry) error {
+	ids := make([]string, len(entries))
+	for i, e := range entries {
+		ids[i] = e.ID
+	}
 	data := map[string]interface{}{
 		"action_type":  1,
 		"exclude_fids": []string{},
-		"filelist":     []string{entry.ID},
+		"filelist":     ids,
 	}
 	var resp resp
 	err := d.cl.request(http.MethodPost, "/file/delete", nil, data, &resp)
 	if err != nil {
-		return fmt.Errorf("delete: %w", err)
+		return fmt.Errorf("batch delete: %w", err)
 	}
 	if rerr := apiError(resp); rerr != nil {
 		return rerr

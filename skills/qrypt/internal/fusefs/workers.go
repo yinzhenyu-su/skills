@@ -273,7 +273,12 @@ func (fs *QryptFS) replayOpsLog() {
 		return
 	}
 	entries, err := fs.cacheMgr.LoadOpsLog()
-	if err != nil || len(entries) == 0 {
+	if err != nil {
+		logging.L.Warnf("replayOpsLog: failed to load ops log: %v\n", err)
+		return
+	}
+	if len(entries) == 0 {
+		logging.L.Debugf("replayOpsLog: no pending operations to replay\n")
 		return
 	}
 	var pending int
@@ -352,6 +357,34 @@ func (fs *QryptFS) evictStaleNodes() {
 	}
 }
 
+// removeFids deletes the given fids from the driver, using BatchRemove when
+// available to avoid N sequential API calls for bulk operations.
+func (fs *QryptFS) removeFids(w drivers.Writer, fids []string) error {
+	if br, ok := w.(drivers.BatchRemover); ok && len(fids) > 0 {
+		entries := make([]drivers.Entry, len(fids))
+		for i, fid := range fids {
+			entries[i] = drivers.Entry{ID: fid}
+		}
+		if err := br.BatchRemove(context.Background(), entries); err != nil {
+			if errors.Is(err, drivers.ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
+	// Fallback: individual removes for drivers without batch support.
+	for _, fid := range fids {
+		entry := drivers.Entry{ID: fid}
+		if err := w.Remove(context.Background(), entry); err != nil {
+			if !errors.Is(err, drivers.ErrNotFound) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (fs *QryptFS) asyncDelete(deleteFids, finalFids, finalPaths []string, validTasks []metadataTask) {
 	start := time.Now()
 	logging.L.Infof("asyncDelete: start deleting %d FIDs\n", len(deleteFids))
@@ -370,17 +403,7 @@ func (fs *QryptFS) asyncDelete(deleteFids, finalFids, finalPaths []string, valid
 
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		var lastErr error
-		for _, fid := range deleteFids {
-			entry := drivers.Entry{ID: fid}
-			if e := w.Remove(context.Background(), entry); e != nil {
-				if !errors.Is(e, drivers.ErrNotFound) {
-					lastErr = e
-					break
-				}
-			}
-		}
-		err = lastErr
+		err = fs.removeFids(w, deleteFids)
 
 		if err != nil {
 			logging.L.Warnf("asyncDelete: attempt %d/3 returned error: %v\n", attempt+1, err)

@@ -8,24 +8,22 @@ import (
 	"strings"
 	"time"
 	"unsafe"
-
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
 func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uint64) {
+	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
 			logging.L.Errorf("PANIC in Create(%s): %v\n", path, r)
 			errc = -fuse.EIO
 		}
+		logging.L.Debugf("[TIMER] Create(%s): took %v\n", path, time.Since(start))
 	}()
 	if fs.IsShuttingDown() {
 	logging.L.Warnf("[SHUTDOWN] Rejecting Create: %s\n", path)
 		return -fuse.EIO, 0
-	}
-	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
-		return -fuse.ENOENT, 0
 	}
 	logging.L.Infof("[FUSE] Create: path=%s, flags=%d, mode=%o\n", path, flags, mode)
 	parentPath := filepath.Dir(path)
@@ -34,7 +32,24 @@ func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uin
 		return errc, 0
 	}
 
+	// macOS Finder drag-and-drop can route directory creation through Create()
+	// instead of Mkdir() — typically for paths like "/dist" with no extension.
+	// Detect this by checking if the last path component has no dot AND doesn't
+	// already exist as a file; if so, delegate to Mkdir.
 	name := filepath.Base(path)
+	if !strings.Contains(name, ".") && !strings.HasPrefix(name, ".") {
+		// No extension — likely a directory that macOS tried to create via
+		// open(O_CREAT) instead of mkdir(). Route to Mkdir.
+		if errc = fs.Mkdir(path, mode); errc != 0 {
+			return errc, 0
+		}
+		// Mkdir succeeded — re-lookup the directory node for a file handle.
+		if dirNode, dirErr := fs.lookup(path); dirErr == 0 {
+			return 0, uint64(uintptr(unsafe.Pointer(dirNode)))
+		}
+		return 0, 0
+	}
+
 	n := &Node{
 		fid:               "local_" + name + "_" + fmt.Sprint(time.Now().UnixNano()),
 		parentFid:         parentNode.fid,
@@ -76,22 +91,30 @@ func (fs *QryptFS) Mknod(path string, mode uint32, dev uint64) (errc int) {
 }
 
 func (fs *QryptFS) Write(path string, buff []byte, ofst int64, fh uint64) (n int) {
+	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
 			logging.L.Errorf("PANIC in Write(%s): %v\n", path, r)
 			n = 0
 		}
+		logging.L.Debugf("[TIMER] Write(%s): len=%d took %v\n", path, len(buff), time.Since(start))
 	}()
 	if fs.IsShuttingDown() {
 		logging.L.Warnf("[SHUTDOWN] Rejecting Write: %s\n", path)
 		return 0
 	}
-	if strings.Contains(path, "/.DS_Store") || strings.Contains(path, "/._") {
-		return 0
-	}
 	logging.L.Infof("[FUSE] Write: path=%s, len=%d, offset=%d, fh=%d\n", path, len(buff), ofst, fh)
 	node, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
+		return 0
+	}
+
+	node.mu.RLock()
+	isDir := node.isFolder
+	node.mu.RUnlock()
+	if isDir {
+		// macOS Finder may call Write on a path that was created as a directory
+		// (via Create→Mkdir routing). Refuse to write to directories.
 		return 0
 	}
 
@@ -225,11 +248,13 @@ func (fs *QryptFS) Listxattr(path string, fill func(name string) bool) (errc int
 }
 
 func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
+	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
 			logging.L.Errorf("PANIC in Release(%s): %v\n", path, r)
 			errc = -fuse.EIO
 		}
+		logging.L.Debugf("[TIMER] Release(%s): took %v\n", path, time.Since(start))
 	}()
 	if fs.IsShuttingDown() {
 		logging.L.Warnf("[SHUTDOWN] Rejecting Release: %s\n", path)

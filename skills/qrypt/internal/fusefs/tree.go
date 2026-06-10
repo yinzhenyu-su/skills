@@ -518,6 +518,10 @@ func (fs *QryptFS) fetchFiles(fid string) ([]drivers.Entry, error) {
 	if fid == "" {
 		return nil, nil
 	}
+	// Local-only fids haven't been synced to the cloud — no listing to fetch.
+	if strings.HasPrefix(fid, "local_") {
+		return nil, nil
+	}
 	start := time.Now()
 	logging.L.Debugf("fetchFiles: fid=%s\n", fid)
 

@@ -30,63 +30,23 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 	forceRefresh := childCount == 0 && time.Since(lastCheck) > 5*time.Second
 
 	if time.Since(lastCheck) > MetadataTTL || forceRefresh {
-		files, err := fs.fetchFiles(parentFid)
-		if err != nil {
-			logging.L.Warnf("Readdir: fetchFiles failed for %s: %v, using cached children\n", path, err)
-		} else {
-			fs.MergeRemoteChanges(path, parentFid, files)
-
+		if forceRefresh {
+			// Empty directory — block on remote listing so the caller
+			// immediately sees existing files/subdirs.
+			files, err := fs.fetchFiles(parentFid)
+			if err == nil {
+				fs.MergeRemoteChanges(path, parentFid, files)
+			}
 			n.mu.Lock()
 			n.lastMetadataCheck = time.Now()
 			n.mu.Unlock()
-
-			n.mu.RLock()
-			var childrenToPrefetch []*Node
-			for _, child := range n.children {
-				childrenToPrefetch = append(childrenToPrefetch, child)
-			}
-			n.mu.RUnlock()
-
-			for _, child := range childrenToPrefetch {
-				child.mu.RLock()
-				isDir := child.isFolder
-				childFid := child.fid
-				childPath := child.currentPath
-				childLastCheck := child.lastMetadataCheck
-				child.mu.RUnlock()
-
-				if isDir && childFid != "" && !strings.HasPrefix(childFid, "local_") && time.Since(childLastCheck) > MetadataTTL {
-					if _, inDeletion := fs.activeDeletions.Load(childFid); inDeletion {
-						continue
-					}
-					if fs.isUnderDeletingDir(childPath) {
-						continue
-					}
-
-					go func(fid, cpath string) {
-						select {
-						case fs.prefetchSem <- struct{}{}:
-							defer func() { <-fs.prefetchSem }()
-						default:
-							return
-						}
-						prefetchFiles, err := fs.fetchFiles(fid)
-						if err != nil {
-							return
-						}
-						if fs.isUnderDeletingDir(cpath) {
-							return
-						}
-						fs.MergeRemoteChanges(cpath, fid, prefetchFiles)
-						if cpn, ok := fs.fidNodes.Load(fid); ok {
-							cn := cpn.(*Node)
-							cn.mu.Lock()
-							cn.lastMetadataCheck = time.Now()
-							cn.mu.Unlock()
-						}
-					}(childFid, childPath)
-				}
-			}
+		} else {
+			// Non-empty directory: return cached children immediately,
+			// refresh in the background to avoid blocking the FUSE callback.
+			n.mu.Lock()
+			n.lastMetadataCheck = time.Now()
+			n.mu.Unlock()
+			go fs.refreshDirAsync(path, parentFid)
 		}
 	}
 
@@ -119,6 +79,82 @@ func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t
 	}
 
 	return 0
+}
+
+// refreshDirAsync fetches the remote directory listing and merges it into the
+// local tree, running in a background goroutine so the FUSE callback returns
+// immediately with cached children.
+func (fs *QryptFS) refreshDirAsync(path, parentFid string) {
+	if parentFid == "" || path == "" {
+		return
+	}
+	files, err := fs.fetchFiles(parentFid)
+	if err != nil {
+		logging.L.Warnf("refreshDirAsync: fetchFiles failed for %s: %v\n", path, err)
+		return
+	}
+	if fs.isUnderDeletingDir(path) {
+		return
+	}
+
+	v, errc := fs.lookup(path)
+	if errc != 0 {
+		return
+	}
+	parent := v
+
+	fs.MergeRemoteChanges(path, parentFid, files)
+
+	parent.mu.Lock()
+	parent.lastMetadataCheck = time.Now()
+	parent.mu.Unlock()
+
+	parent.mu.RLock()
+	var childrenToPrefetch []*Node
+	for _, child := range parent.children {
+		childrenToPrefetch = append(childrenToPrefetch, child)
+	}
+	parent.mu.RUnlock()
+
+	for _, child := range childrenToPrefetch {
+		child.mu.RLock()
+		isDir := child.isFolder
+		childFid := child.fid
+		childPath := child.currentPath
+		childLastCheck := child.lastMetadataCheck
+		child.mu.RUnlock()
+
+		if isDir && childFid != "" && !strings.HasPrefix(childFid, "local_") && time.Since(childLastCheck) > MetadataTTL {
+			if _, inDeletion := fs.activeDeletions.Load(childFid); inDeletion {
+				continue
+			}
+			if fs.isUnderDeletingDir(childPath) {
+				continue
+			}
+			go func(fid, cpath string) {
+				select {
+				case fs.prefetchSem <- struct{}{}:
+					defer func() { <-fs.prefetchSem }()
+				default:
+					return
+				}
+				prefetchFiles, err := fs.fetchFiles(fid)
+				if err != nil {
+					return
+				}
+				if fs.isUnderDeletingDir(cpath) {
+					return
+				}
+				fs.MergeRemoteChanges(cpath, fid, prefetchFiles)
+				if cpn, ok := fs.fidNodes.Load(fid); ok {
+					cn := cpn.(*Node)
+					cn.mu.Lock()
+					cn.lastMetadataCheck = time.Now()
+					cn.mu.Unlock()
+				}
+			}(childFid, childPath)
+		}
+	}
 }
 
 func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remoteFiles []drivers.Entry) {
