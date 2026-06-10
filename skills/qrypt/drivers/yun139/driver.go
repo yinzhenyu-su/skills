@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/yinzhenyu/skills/qrypt/drivers"
+	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
 type Yun139Driver struct {
@@ -300,6 +301,10 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 		return drivers.Entry{}, fmt.Errorf("139 upload create failed: %s", createResp.Message)
 	}
 
+	logging.L.Debugf("139 upload create: fileId=%s exist=%v rapid=%v parts=%d uploadId=%s",
+		createResp.Data.FileId, createResp.Data.Exist, createResp.Data.RapidUpload,
+		len(createResp.Data.PartInfos), createResp.Data.UploadId)
+
 	// File already exists on server (duplicate).
 	if createResp.Data.Exist {
 		return drivers.Entry{
@@ -378,10 +383,29 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 		if err != nil {
 			return drivers.Entry{}, fmt.Errorf("139 upload part %d: %w", up.partNumber, err)
 		}
-		resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return drivers.Entry{}, fmt.Errorf("139 upload part %d: status %d", up.partNumber, resp.StatusCode)
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return drivers.Entry{}, fmt.Errorf("139 upload part %d: status %d body=%s", up.partNumber, resp.StatusCode, string(bodyBytes))
 		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	// Finalize: commit the uploaded parts to create the file.
+	completeData := map[string]interface{}{
+		"contentHash":          sha256Hex,
+		"contentHashAlgorithm": "SHA256",
+		"fileId":               createResp.Data.FileId,
+		"uploadId":             createResp.Data.UploadId,
+	}
+	var completeResp baseResp
+	err = d.cl.personalPost("/file/complete", completeData, &completeResp)
+	if err != nil {
+		return drivers.Entry{}, fmt.Errorf("139 upload complete: %w", err)
+	}
+	if !completeResp.Success {
+		return drivers.Entry{}, fmt.Errorf("139 upload complete failed: %s", completeResp.Message)
 	}
 
 	return drivers.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
