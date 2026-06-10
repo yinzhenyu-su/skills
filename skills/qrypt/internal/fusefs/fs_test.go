@@ -73,6 +73,40 @@ func (d *duplicateMkdirDriver) Remove(ctx context.Context, entry drivers.Entry) 
 	return nil
 }
 
+type countingBatchRemoveDriver struct {
+	mu      sync.Mutex
+	batches [][]drivers.Entry
+}
+
+func (d *countingBatchRemoveDriver) Init(ctx context.Context) error { return nil }
+func (d *countingBatchRemoveDriver) Drop(ctx context.Context) error { return nil }
+func (d *countingBatchRemoveDriver) List(ctx context.Context, parentID string) ([]drivers.Entry, error) {
+	return []drivers.Entry{}, nil
+}
+func (d *countingBatchRemoveDriver) Read(ctx context.Context, entry drivers.Entry, offset, size int64) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (d *countingBatchRemoveDriver) Mkdir(ctx context.Context, parentID, name string) (drivers.Entry, error) {
+	return drivers.Entry{}, nil
+}
+func (d *countingBatchRemoveDriver) Move(ctx context.Context, entry drivers.Entry, dstParentID string) error {
+	return nil
+}
+func (d *countingBatchRemoveDriver) Rename(ctx context.Context, entry drivers.Entry, newName string) error {
+	return nil
+}
+func (d *countingBatchRemoveDriver) Remove(ctx context.Context, entry drivers.Entry) error {
+	return d.BatchRemove(ctx, []drivers.Entry{entry})
+}
+func (d *countingBatchRemoveDriver) BatchRemove(ctx context.Context, entries []drivers.Entry) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	cp := make([]drivers.Entry, len(entries))
+	copy(cp, entries)
+	d.batches = append(d.batches, cp)
+	return nil
+}
+
 func newTestFS(t *testing.T) *QryptFS {
 	t.Helper()
 
@@ -171,6 +205,51 @@ func TestEnsureRemoteDirSingleflightsConcurrentCreate(t *testing.T) {
 	if got := len(drv.dirs["0"]); got != 1 {
 		t.Fatalf("root dir count = %d, want 1", got)
 	}
+}
+
+func TestRmdirNonEmptyBatchBackendDeletesOnlyDirectoryFid(t *testing.T) {
+	logger, _ := logging.New("off", "", nil)
+	logging.L = logger
+
+	cph, _ := cipher.NewRcloneCipher("testpassword", "")
+	drv := &countingBatchRemoveDriver{}
+	fs := NewFS(drv, cph, nil, "0", FSOptions{
+		MaxRetries:        3,
+		ConcurrentUploads: 1,
+	})
+	t.Cleanup(fs.Shutdown)
+
+	fs.storeNode("/", &Node{fid: "0", name: "", currentPath: "/", isFolder: true, source: "remote"})
+	dir := newNode("dir_fid", "0", "dir", "/dir", true)
+	fs.storeNode("/dir", dir)
+	fs.storeNode("/dir/a.txt", newNode("fid_a", "dir_fid", "a.txt", "/dir/a.txt", false))
+	fs.storeNode("/dir/b.txt", newNode("fid_b", "dir_fid", "b.txt", "/dir/b.txt", false))
+
+	if errc := fs.Rmdir("/dir"); errc != 0 {
+		t.Fatalf("Rmdir: errc=%d", errc)
+	}
+
+	if _, ok := fs.nodes.Load("/dir/a.txt"); ok {
+		t.Fatal("child node should be removed immediately")
+	}
+	if _, ok := fs.nodes.Load("/dir/b.txt"); ok {
+		t.Fatal("child node should be removed immediately")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		drv.mu.Lock()
+		batches := append([][]drivers.Entry(nil), drv.batches...)
+		drv.mu.Unlock()
+		if len(batches) > 0 {
+			if len(batches[0]) != 1 || batches[0][0].ID != "dir_fid" {
+				t.Fatalf("BatchRemove entries = %#v, want only dir_fid", batches[0])
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("BatchRemove was not called")
 }
 
 func TestStoreNode(t *testing.T) {

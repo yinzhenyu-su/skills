@@ -3,11 +3,13 @@
 package fusefs
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
@@ -97,16 +99,7 @@ func (fs *QryptFS) rmdirEmpty(path string, n *Node, parentFid string) int {
 func (fs *QryptFS) rmdirNonEmpty(path string, n *Node, parentFid string) int {
 	logging.L.Infof("Rmdir: %s is NOT empty, deleting children recursively\n", path)
 
-	var allFids []string
-	var allNodes []*Node
-	collectAllChildren(n, &allFids, &allNodes)
-
-	var realFids []string
-	for _, f := range allFids {
-		if f != "" && !strings.HasPrefix(f, "local_") {
-			realFids = append(realFids, f)
-		}
-	}
+	realFids := fs.rmdirDeleteFids(n)
 
 	for _, fid := range realFids {
 		if _, exists := fs.activeDeletions.Load(fid); exists {
@@ -134,14 +127,23 @@ func (fs *QryptFS) rmdirNonEmpty(path string, n *Node, parentFid string) int {
 		}
 	}
 
-	for _, child := range allNodes {
-		if child.localPath != "" && fs.staging != nil {
-			fs.staging.Remove(child.localPath)
-		}
+	fs.cleanupLocalUploadState(path, n, true)
+	fs.deleteSubtreePaths(path, n)
+	fs.deleteNodePath(path, n)
+	logging.L.Infof("Rmdir: queued recursive delete for %s\n", path)
+	return 0
+}
+
+func (fs *QryptFS) rmdirLocalNonEmpty(path string, n *Node) int {
+	fs.metadataOpChan <- metadataTask{
+		opType: "LOCAL_CLEANUP_DIR",
+		path:   path,
+		node:   n,
 	}
 
+	fs.cleanupLocalUploadState(path, n, true)
+	fs.deleteSubtreePaths(path, n)
 	fs.deleteNodePath(path, n)
-	logging.L.Infof("Rmdir: done deleting %s and %d children\n", path, len(allNodes))
 	return 0
 }
 
@@ -178,14 +180,8 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 	fs.deletingPaths.Store(path, struct{}{})
 
 	if hasChildren && strings.HasPrefix(n.fid, "local_") {
-		fs.metadataOpChan <- metadataTask{
-			opType: "LOCAL_CLEANUP_DIR",
-			path:   path,
-			node:   n,
-		}
 		fs.deletingPaths.Delete(path)
-		fs.deleteNodePath(path, n)
-		return 0
+		return fs.rmdirLocalNonEmpty(path, n)
 	}
 
 	if hasChildren {
@@ -195,25 +191,46 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 	return fs.rmdirEmpty(path, n, parentFid)
 }
 
-func collectAllChildren(n *Node, fids *[]string, nodes *[]*Node) {
+func (fs *QryptFS) rmdirDeleteFids(n *Node) []string {
+	if n == nil {
+		return nil
+	}
+	if _, ok := fs.drv.(interface {
+		BatchRemove(context.Context, []drivers.Entry) error
+	}); ok {
+		n.mu.RLock()
+		fid := n.fid
+		n.mu.RUnlock()
+		if fid != "" && !strings.HasPrefix(fid, "local_") {
+			return []string{fid}
+		}
+		return nil
+	}
+
+	var fids []string
+	collectRemoteFidsPostorder(n, &fids)
+	return fids
+}
+
+func collectRemoteFidsPostorder(n *Node, fids *[]string) {
 	if n == nil {
 		return
 	}
 	n.mu.RLock()
-	if n.fid != "" {
-		*fids = append(*fids, n.fid)
-	}
-	if !n.isFolder {
-		n.mu.RUnlock()
-		return
-	}
+	fid := n.fid
+	isFolder := n.isFolder
 	var children []*Node
-	for _, child := range n.children {
-		children = append(children, child)
+	if isFolder {
+		for _, child := range n.children {
+			children = append(children, child)
+		}
 	}
 	n.mu.RUnlock()
 
 	for _, child := range children {
-		collectAllChildren(child, fids, nodes)
+		collectRemoteFidsPostorder(child, fids)
+	}
+	if fid != "" && !strings.HasPrefix(fid, "local_") {
+		*fids = append(*fids, fid)
 	}
 }
