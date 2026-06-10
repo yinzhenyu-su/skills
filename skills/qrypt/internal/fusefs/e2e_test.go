@@ -47,6 +47,11 @@ func newE2EWithOpts(t *testing.T, opts FSOptions) *e2eSuite {
 	fs.storeNode("/", &Node{
 		fid: "0", name: "", currentPath: "/", isFolder: true, source: "remote",
 	})
+
+	// Shutdown background workers before t.TempDir cleanup runs (LIFO
+	// order), so staging files are removed before the temp dir is deleted.
+	t.Cleanup(fs.Shutdown)
+
 	return &e2eSuite{t: t, fs: fs}
 }
 

@@ -51,6 +51,8 @@ func newTestFS(t *testing.T) *QryptFS {
 		source:     "remote",
 	})
 
+	t.Cleanup(vfs.Shutdown)
+
 	return vfs
 }
 
@@ -247,7 +249,10 @@ func TestUnlink(t *testing.T) {
 func TestRename(t *testing.T) {
 	fs := newTestFS(t)
 	if fs.staging == nil {
-		fs.staging, _ = qrypt.NewStore(t.TempDir())
+		stagingDir := t.TempDir()
+		fs.staging, _ = qrypt.NewStore(stagingDir)
+		// Clean up staging files when the test ends, before TempDir removal.
+		t.Cleanup(func() { os.RemoveAll(stagingDir) })
 	}
 
 	fs.Create("/old.txt", 0, 0o644)

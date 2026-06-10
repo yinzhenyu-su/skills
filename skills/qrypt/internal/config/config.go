@@ -29,6 +29,11 @@ type Config struct {
 	// Schema version.
 	Version string `toml:"version"`
 
+	// Working directory for cache, logs, and socket.
+	// Defaults to ~/.qrypt or $QRYPT_WORK_DIR.
+	// This does NOT affect config file discovery — see FindConfigFile.
+	WorkDir string `toml:"work_dir"`
+
 	// Mount instances.
 	Mounts   []MountInstance `toml:"mounts"`
 	Defaults DefaultsConfig  `toml:"defaults"`
@@ -42,6 +47,9 @@ type Config struct {
 	Encryption EncryptionConfig
 	Cache      CacheConfig
 	Sync       SyncConfig
+
+	// computed: resolved after loading config
+	effectiveWorkDir string
 }
 
 // DefaultsConfig holds global default values inherited by each mount instance.
@@ -66,6 +74,16 @@ type MountInstance struct {
 	Encryption *EncryptionConfig  `toml:"encryption"` // nil = use defaults
 	Sync       *SyncConfig        `toml:"sync"`       // nil = use defaults
 	Cache      *CacheConfig       `toml:"cache"`      // nil = use defaults
+
+	// TestEnabled marks this mount for inclusion in integration tests.
+	// When running `go test -tags=integration`, mounts with test_enabled = true
+	// are discovered and tested against the real cloud drive.
+	TestEnabled *bool `toml:"test_enabled"` // nil = false
+}
+
+// IsTestEnabled reports whether this mount is included in integration tests.
+func (m MountInstance) IsTestEnabled() bool {
+	return m.TestEnabled != nil && *m.TestEnabled
 }
 
 // MountParams holds driver-specific configuration as a flat key-value map.
@@ -120,15 +138,15 @@ type SyncConfig struct {
 type LogConfig struct {
 	Level      string `toml:"level"`
 	File       string `toml:"-"`      // computed: $QRYPT_WORK_DIR/qrypt.log
-	MaxSize    int    `toml:"max_size"`
-	MaxBackups int    `toml:"max_backups"`
-	MaxAge     int    `toml:"max_age"`
+	MaxSize    int    `toml:"max_size"`    // MB, single log file max before rotation
+	MaxBackups int    `toml:"max_backups"` // count, old log files to retain
+	MaxAge     int    `toml:"max_age"`     // days, old log files to retain
 	Compress   *bool  `toml:"compress"`
 }
 
 func DefaultConfig() *Config {
 	workDir := WorkDir()
-	return &Config{
+	cfg := &Config{
 		Version: CurrentVersion,
 		Log: LogConfig{
 			Level: "debug",
@@ -147,6 +165,35 @@ func DefaultConfig() *Config {
 			},
 		},
 	}
+	cfg.resolveWorkDir()
+	return cfg
+}
+
+// resolveWorkDir sets effectiveWorkDir based on config or default.
+func (c *Config) resolveWorkDir() {
+	if c.WorkDir != "" {
+		c.effectiveWorkDir = ExpandHome(c.WorkDir)
+	} else {
+		c.effectiveWorkDir = WorkDir()
+	}
+}
+
+// EffectiveWorkDir returns the resolved working directory.
+// Priority: config file's work_dir > $QRYPT_WORK_DIR > ~/.qrypt
+func (c *Config) EffectiveWorkDir() string {
+	return c.effectiveWorkDir
+}
+
+// DiscoverTestMounts returns mounts with test_enabled = true,
+// suitable for integration test suite.
+func (c *Config) DiscoverTestMounts() []MountInstance {
+	var result []MountInstance
+	for _, m := range c.Mounts {
+		if m.IsTestEnabled() {
+			result = append(result, m)
+		}
+	}
+	return result
 }
 
 // MergeInstanceConfig applies global defaults to a MountInstance and returns a resolved config.
@@ -177,7 +224,7 @@ func (c *Config) MergeInstanceConfig(m MountInstance) *ResolvedMountConfig {
 		cache = *m.Cache
 	}
 
-	cacheDir := filepath.Join(WorkDir(), "cache", m.Name)
+	cacheDir := filepath.Join(c.EffectiveWorkDir(), "cache", m.Name)
 
 	volName := m.VolName
 	if volName == "" {
@@ -256,8 +303,8 @@ func LoadConfig(path string) (*Config, *ValidationResult, error) {
 		return nil, nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	workDir := WorkDir()
-	config.Log.File = filepath.Join(workDir, "qrypt.log")
+	config.resolveWorkDir()
+	config.Log.File = filepath.Join(config.effectiveWorkDir, "qrypt.log")
 
 	result := ValidateConfig(config)
 	return config, result, nil

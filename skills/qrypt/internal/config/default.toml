@@ -3,6 +3,11 @@
 
 version = "1"
 
+# 工作目录（可选，默认 ~/.qrypt 或 $QRYPT_WORK_DIR）
+# 用于存放日志、缓存和 socket 文件。
+# 注意：此路径不影响配置文件本身的查找位置（参见 FindConfigFile）。
+# work_dir = "~/.qrypt"
+
 # 全局默认值（可被每个 [[mounts]] 的对应字段覆盖）
 [defaults]
 
@@ -18,7 +23,7 @@ concurrent_uploads = 3
 # 目录列表缓存时间 (支持 s, m, h)
 dir_cache_ttl = "5m"
 # FUSE 写入后延迟上传时间 (0s=立即, 5s=写入停止后等5秒再上传)
-write_back_timeout = "0s"
+write_back_timeout = "5s"
 
 [defaults.cache]
 # 最大缓存大小 (支持 KB, MB, GB, TB)
@@ -41,6 +46,9 @@ default = true
 allow_other = false
 # macOS Finder 卷标（可选，覆盖 defaults.mount.volname）
 volname = "QryptDrive"
+# 是否将此挂载纳入集成测试（可选，默认 false）
+# 当设置为 true 时，go test -tags=integration 会对此 mount 执行真实网盘测试
+# test_enabled = true
 
   [mounts.params]
   # Quark 网盘 Cookie（必填）
@@ -78,7 +86,11 @@ volname = "QryptDrive"
 #   local_root = "/tmp/qrypt-data"
 
 [log]
+# 日志级别: debug, info, warn, error
 level = "debug"
+# 单日志文件大小上限（MB），达到后自动轮转
 max_size = 100
+# 保留的旧日志文件数
 max_backups = 7
+# 保留旧日志文件的天数
 max_age = 30
