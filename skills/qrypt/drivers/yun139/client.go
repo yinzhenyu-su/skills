@@ -79,6 +79,12 @@ func (c *client) getAuthorization() string {
 	return c.authorization
 }
 
+func (c *client) getAccount() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.account
+}
+
 func (c *client) setAuthorization(auth string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

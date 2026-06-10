@@ -3,6 +3,7 @@ package yun139
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -229,87 +230,161 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 	}
 
 	partSize := d.calcPartSize(size)
-	totalParts := int((size + partSize - 1) / partSize)
-	if totalParts == 0 {
-		totalParts = 1
+	part := size / partSize
+	if size%partSize > 0 {
+		part++
+	} else if part == 0 {
+		part = 1
 	}
 
-	initData := map[string]interface{}{
-		"parentFileId": fileID,
-		"fileName":     name,
-		"fileSize":     size,
-		"partCount":    totalParts,
-		"partSize":     partSize,
-	}
-	var preResp uploadPreResp
-	err := d.cl.doRequest(http.MethodPost, "/file/upload/init", initData, &preResp)
+	// Read body into memory to compute SHA256 (required by 139 API).
+	// For large files this could be optimised with a temp file, but the
+	// FUSE upload path already stages on disk so this is acceptable.
+	allData, err := io.ReadAll(body)
 	if err != nil {
-		return drivers.Entry{}, fmt.Errorf("139 upload init: %w", err)
-	}
-	if !preResp.Success {
-		return drivers.Entry{}, fmt.Errorf("139 upload init failed: %s", preResp.Message)
+		return drivers.Entry{}, fmt.Errorf("139 upload: read body: %w", err)
 	}
 
-	// Streaming upload: read and upload parts one at a time.
-	buf := make([]byte, partSize)
-	for i := 0; i < totalParts; i++ {
-		partNum := i + 1
-
-		var partData []byte
-		if partNum < totalParts {
-			n, err := io.ReadFull(body, buf)
-			if err != nil {
-				return drivers.Entry{}, fmt.Errorf("139 upload: read part %d: %w", partNum, err)
-			}
-			partData = buf[:n]
-		} else {
-			var err error
-			partData, err = io.ReadAll(body)
-			if err != nil {
-				return drivers.Entry{}, fmt.Errorf("139 upload: read last part: %w", err)
-			}
+	// Build part infos.
+	type partInfo struct {
+		PartNumber int64 `json:"partNumber"`
+		PartSize   int64 `json:"partSize"`
+		ParallelHashCtx struct {
+			PartOffset int64 `json:"partOffset"`
+		} `json:"parallelHashCtx"`
+	}
+	partInfos := make([]partInfo, 0, part)
+	for i := int64(0); i < part; i++ {
+		start := i * partSize
+		byteSize := size - start
+		if byteSize > partSize {
+			byteSize = partSize
 		}
+		partInfos = append(partInfos, partInfo{
+			PartNumber: i + 1,
+			PartSize:   byteSize,
+			ParallelHashCtx: struct {
+				PartOffset int64 `json:"partOffset"`
+			}{PartOffset: start},
+		})
+	}
 
-		var uploadURL string
-		for _, p := range preResp.Data.Parts {
-			if p.PartNumber == partNum {
-				uploadURL = p.UploadUrl
-				break
-			}
-		}
-		if uploadURL == "" {
-			return drivers.Entry{}, fmt.Errorf("139 upload: no url for part %d", partNum)
-		}
+	// For the first 100 partInfos only (the rest will be fetched via
+	// /file/getUploadUrl after the create call).
+	firstPartInfos := partInfos
+	if len(firstPartInfos) > 100 {
+		firstPartInfos = firstPartInfos[:100]
+	}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(partData))
+	// Compute SHA256 of the full content (for dedup).
+	sha256Hex := fmt.Sprintf("%X", sha256.Sum256(allData))
+
+	createData := map[string]interface{}{
+		"contentHash":          sha256Hex,
+		"contentHashAlgorithm": "SHA256",
+		"contentType":          "application/octet-stream",
+		"parallelUpload":       false,
+		"partInfos":            firstPartInfos,
+		"size":                 size,
+		"parentFileId":         fileID,
+		"name":                 name,
+		"type":                 "file",
+		"fileRenameMode":       "auto_rename",
+	}
+	var createResp personalUploadResp
+	err = d.cl.personalPost("/file/create", createData, &createResp)
+	if err != nil {
+		return drivers.Entry{}, fmt.Errorf("139 upload create: %w", err)
+	}
+	if !createResp.Success {
+		return drivers.Entry{}, fmt.Errorf("139 upload create failed: %s", createResp.Message)
+	}
+
+	// File already exists on server (duplicate).
+	if createResp.Data.Exist {
+		return drivers.Entry{
+			ID:   createResp.Data.FileId,
+			Name: name,
+			Size: size,
+		}, nil
+	}
+
+	// Gather all upload URLs.
+	type uploadPart struct {
+		partNumber int
+		uploadURL  string
+	}
+	var uploadParts []uploadPart
+
+	if createResp.Data.PartInfos != nil {
+		for _, p := range createResp.Data.PartInfos {
+			uploadParts = append(uploadParts, uploadPart{
+				partNumber: p.PartNumber,
+				uploadURL:  p.UploadUrl,
+			})
+		}
+	}
+
+	// Fetch upload URLs for parts beyond the first 100.
+	for i := 101; i <= len(partInfos); i += 100 {
+		end := i + 100
+		if end > len(partInfos) {
+			end = len(partInfos)
+		}
+		batchPartInfos := partInfos[i-1 : end]
+		moreData := map[string]interface{}{
+			"fileId":   createResp.Data.FileId,
+			"uploadId": createResp.Data.UploadId,
+			"partInfos": batchPartInfos,
+			"commonAccountInfo": map[string]interface{}{
+				"account":     d.cl.getAccount(),
+				"accountType": 1,
+			},
+		}
+		var moreResp personalUploadUrlResp
+		err = d.cl.personalPost("/file/getUploadUrl", moreData, &moreResp)
 		if err != nil {
-			return drivers.Entry{}, fmt.Errorf("139 upload part %d: %w", partNum, err)
+			return drivers.Entry{}, fmt.Errorf("139 upload get urls: %w", err)
+		}
+		if !moreResp.Success {
+			return drivers.Entry{}, fmt.Errorf("139 upload get urls failed: %s", moreResp.Message)
+		}
+		for _, p := range moreResp.Data.PartInfos {
+			uploadParts = append(uploadParts, uploadPart{
+				partNumber: p.PartNumber,
+				uploadURL:  p.UploadUrl,
+			})
+		}
+	}
+
+	// Upload parts.
+	for _, up := range uploadParts {
+		start := int64(up.partNumber-1) * partSize
+		end := start + partSize
+		if end > size {
+			end = size
+		}
+		partData := allData[start:end]
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, up.uploadURL, bytes.NewReader(partData))
+		if err != nil {
+			return drivers.Entry{}, fmt.Errorf("139 upload part %d: %w", up.partNumber, err)
 		}
 		req.Header.Set("Content-Type", "application/octet-stream")
-		req.Header.Set("Authorization", d.cl.getAuthorization())
+		req.Header.Set("Content-Length", fmt.Sprint(len(partData)))
+		req.Header.Set("Origin", "https://yun.139.com")
+		req.Header.Set("Referer", "https://yun.139.com/")
 		resp, err := d.cl.httpClient.Do(req)
 		if err != nil {
-			return drivers.Entry{}, fmt.Errorf("139 upload part %d: %w", partNum, err)
+			return drivers.Entry{}, fmt.Errorf("139 upload part %d: %w", up.partNumber, err)
 		}
 		resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return drivers.Entry{}, fmt.Errorf("139 upload part %d: status %d", partNum, resp.StatusCode)
+			return drivers.Entry{}, fmt.Errorf("139 upload part %d: status %d", up.partNumber, resp.StatusCode)
 		}
 	}
 
-	commitData := map[string]interface{}{
-		"fileId": preResp.Data.FileId,
-	}
-	var commitResp uploadCommitResp
-	err = d.cl.doRequest(http.MethodPost, "/file/upload/complete", commitData, &commitResp)
-	if err != nil {
-		return drivers.Entry{}, fmt.Errorf("139 upload complete: %w", err)
-	}
-	if !commitResp.Success {
-		return drivers.Entry{}, fmt.Errorf("139 upload complete failed: %s", commitResp.Message)
-	}
-
-	return drivers.Entry{ID: commitResp.Data.FileId, Name: name, Size: size}, nil
+	return drivers.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
 }
 
 func (d *Yun139Driver) calcPartSize(fileSize int64) int64 {

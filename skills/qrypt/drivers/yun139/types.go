@@ -101,3 +101,29 @@ type uploadCommitResp struct {
 		FileId string `json:"fileId"`
 	} `json:"data"`
 }
+
+type personalPartInfo struct {
+	PartNumber int    `json:"partNumber"`
+	UploadUrl  string `json:"uploadUrl"`
+}
+
+type personalUploadResp struct {
+	baseResp
+	Data struct {
+		FileId      string             `json:"fileId"`
+		FileName    string             `json:"fileName"`
+		PartInfos   []personalPartInfo `json:"partInfos"`
+		Exist       bool               `json:"exist"`
+		RapidUpload bool               `json:"rapidUpload"`
+		UploadId    string             `json:"uploadId"`
+	} `json:"data"`
+}
+
+type personalUploadUrlResp struct {
+	baseResp
+	Data struct {
+		FileId    string             `json:"fileId"`
+		UploadId  string             `json:"uploadId"`
+		PartInfos []personalPartInfo `json:"partInfos"`
+	} `json:"data"`
+}
