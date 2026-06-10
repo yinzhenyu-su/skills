@@ -125,9 +125,12 @@ type cacheManager struct {
 	negCache sync.Map
 }
 
-func newCacheManager() *cacheManager {
+func newCacheManager(dirCacheTTL time.Duration) *cacheManager {
+	if dirCacheTTL <= 0 {
+		dirCacheTTL = 60 * time.Second
+	}
 	return &cacheManager{
-		dirCacheTTL: 60 * time.Second,
+		dirCacheTTL: dirCacheTTL,
 		negCacheTTL: 60 * time.Second,
 	}
 }

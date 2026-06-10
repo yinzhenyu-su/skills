@@ -45,25 +45,32 @@ func init() {
 			if cookie == "" {
 				return nil, fmt.Errorf("missing cookie for quark driver")
 			}
-			return NewDriver(cookie, params["root_path"]), nil
+			dirCacheTTL, _ := time.ParseDuration(params["dir_cache_ttl"])
+			if dirCacheTTL <= 0 {
+				dirCacheTTL = 60 * time.Second
+			}
+			return NewDriver(cookie, params["root_path"], dirCacheTTL), nil
 		},
 		Params: []drivers.ParamSpec{
 			{Key: "cookie", Required: true, Help: "Quark cookie string"},
 			{Key: "root_path", Help: "Remote root folder path", Default: "/"},
+			{Key: "dir_cache_ttl", Help: "Directory cache TTL (e.g. 30s, 5m)", Default: "60s"},
 		},
 		RootKey:       "root_path",
 		CredentialKey: "cookie",
 	})
 }
 
-func NewDriver(cookie, rootPath string) *QuarkDriver {
+func NewDriver(cookie, rootPath string, dirCacheTTL time.Duration) *QuarkDriver {
 	return &QuarkDriver{
 		cl:       newClient(cookie),
-		cache:    newCacheManager(),
+		cache:    newCacheManager(dirCacheTTL),
 		cookie:   cookie,
 		rootPath: rootPath,
 	}
 }
+
+
 
 func (d *QuarkDriver) Init(ctx context.Context) error {
 	if d.cookie == "" {
@@ -351,33 +358,49 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 		partSize = 4 * 1024 * 1024
 	}
 
-	allData, err := io.ReadAll(body)
-	if err != nil {
-		return drivers.Entry{}, fmt.Errorf("upload: read body: %w", err)
-	}
-	totalParts := int((size + int64(partSize) - 1) / int64(partSize))
-	if totalParts == 0 {
-		totalParts = 1
+	// Streaming upload: read and upload parts one at a time to avoid
+	// loading the entire file into memory.
+	md5Hash := md5.New()
+	sha1Hash := sha1.New()
+	hashWriter := io.MultiWriter(md5Hash, sha1Hash)
+	teeReader := io.TeeReader(body, hashWriter)
+
+	var etags []string
+	buf := make([]byte, partSize)
+	totalRead := int64(0)
+	partNumber := 1
+
+	for {
+		n, readErr := io.ReadFull(teeReader, buf)
+		if n > 0 {
+			etag, err := d.uploadPart(&preResp, partNumber, buf[:n])
+			if err != nil {
+				return drivers.Entry{}, fmt.Errorf("upload part %d: %w", partNumber, err)
+			}
+			etags = append(etags, etag)
+			totalRead += int64(n)
+			partNumber++
+		}
+		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+			break
+		}
+		if readErr != nil {
+			return drivers.Entry{}, fmt.Errorf("upload: read body: %w", readErr)
+		}
 	}
 
-	etags := make([]string, 0, totalParts)
-	for partNumber := 1; partNumber <= totalParts; partNumber++ {
-		start := (partNumber - 1) * partSize
-		end := start + partSize
-		if end > int(size) {
-			end = int(size)
-		}
-		partData := allData[start:end]
-		etag, err := d.uploadPart(&preResp, partNumber, partData)
+	// Empty file: upload one empty part so Quark creates the file entry.
+	if totalRead == 0 {
+		etag, err := d.uploadPart(&preResp, 1, []byte{})
 		if err != nil {
-			return drivers.Entry{}, fmt.Errorf("upload part %d: %w", partNumber, err)
+			return drivers.Entry{}, fmt.Errorf("upload part 1: %w", err)
 		}
 		etags = append(etags, etag)
 	}
 
-	encSize := int64(len(allData))
-	md5Hex := fmt.Sprintf("%X", md5.Sum(allData))
-	sha1Hex := fmt.Sprintf("%X", sha1.Sum(allData))
+	encSize := totalRead
+	md5Hex := fmt.Sprintf("%X", md5Hash.Sum(nil))
+	sha1Hex := fmt.Sprintf("%X", sha1Hash.Sum(nil))
 
 	hashData := map[string]interface{}{
 		"md5":     md5Hex,

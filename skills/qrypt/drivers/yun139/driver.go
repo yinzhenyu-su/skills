@@ -225,11 +225,6 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 		fileID = d.rootID
 	}
 
-	allData, err := io.ReadAll(body)
-	if err != nil {
-		return drivers.Entry{}, fmt.Errorf("139 upload: read: %w", err)
-	}
-
 	partSize := d.calcPartSize(size)
 	totalParts := int((size + partSize - 1) / partSize)
 	if totalParts == 0 {
@@ -244,7 +239,7 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 		"partSize":     partSize,
 	}
 	var preResp uploadPreResp
-	err = d.cl.doRequest(http.MethodPost, "/file/upload/init", initData, &preResp)
+	err := d.cl.doRequest(http.MethodPost, "/file/upload/init", initData, &preResp)
 	if err != nil {
 		return drivers.Entry{}, fmt.Errorf("139 upload init: %w", err)
 	}
@@ -252,14 +247,25 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 		return drivers.Entry{}, fmt.Errorf("139 upload init failed: %s", preResp.Message)
 	}
 
+	// Streaming upload: read and upload parts one at a time.
+	buf := make([]byte, partSize)
 	for i := 0; i < totalParts; i++ {
-		start := int64(i) * partSize
-		end := start + partSize
-		if end > size {
-			end = size
-		}
-		partData := allData[start:end]
 		partNum := i + 1
+
+		var partData []byte
+		if partNum < totalParts {
+			n, err := io.ReadFull(body, buf)
+			if err != nil {
+				return drivers.Entry{}, fmt.Errorf("139 upload: read part %d: %w", partNum, err)
+			}
+			partData = buf[:n]
+		} else {
+			var err error
+			partData, err = io.ReadAll(body)
+			if err != nil {
+				return drivers.Entry{}, fmt.Errorf("139 upload: read last part: %w", err)
+			}
+		}
 
 		var uploadURL string
 		for _, p := range preResp.Data.Parts {
