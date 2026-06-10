@@ -9,9 +9,13 @@ import (
 	"net/http"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
+
+const uploadPartConcurrency = 4
 
 type Yun139Driver struct {
 	cl     *client
@@ -85,7 +89,7 @@ func (d *Yun139Driver) List(ctx context.Context, parentID string) ([]drivers.Ent
 			"parentFileId": fileID,
 		}
 		var resp personalListResp
-		err := 	d.cl.personalPost("/file/list", data, &resp)
+		err := d.cl.personalPost("/file/list", data, &resp)
 		if err != nil {
 			return nil, fmt.Errorf("139 list: %w", err)
 		}
@@ -129,7 +133,7 @@ func (d *Yun139Driver) Read(ctx context.Context, entry drivers.Entry, offset, si
 func (d *Yun139Driver) getDownloadURL(fileID string) (string, error) {
 	data := map[string]interface{}{"fileId": fileID}
 	var resp downloadResp
-	err := d.cl.personalPost( "/file/getDownloadUrl", data, &resp)
+	err := d.cl.personalPost("/file/getDownloadUrl", data, &resp)
 	if err != nil {
 		return "", fmt.Errorf("139 download url: %w", err)
 	}
@@ -154,7 +158,7 @@ func (d *Yun139Driver) Mkdir(ctx context.Context, parentID, name string) (driver
 		"type":         "folder",
 	}
 	var resp createResp
-	err := d.cl.personalPost( "/file/create", data, &resp)
+	err := d.cl.personalPost("/file/create", data, &resp)
 	if err != nil {
 		// HTTP/network error — could be a conflict that the API rejected at
 		// transport level (HTTP 409 etc). Treat as already-exists so the FUSE
@@ -188,7 +192,7 @@ func (d *Yun139Driver) Move(ctx context.Context, entry drivers.Entry, dstParentI
 		"toParentFileId": toParentID,
 	}
 	var resp baseResp
-	err := d.cl.personalPost( "/file/batchMove", data, &resp)
+	err := d.cl.personalPost("/file/batchMove", data, &resp)
 	if err != nil {
 		return fmt.Errorf("139 move: %w", err)
 	}
@@ -209,7 +213,7 @@ func (d *Yun139Driver) Rename(ctx context.Context, entry drivers.Entry, newName 
 		"description": "",
 	}
 	var resp baseResp
-	err := d.cl.personalPost( "/file/update", data, &resp)
+	err := d.cl.personalPost("/file/update", data, &resp)
 	if err != nil {
 		return fmt.Errorf("139 rename: %w", err)
 	}
@@ -266,8 +270,8 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 
 	// Build part infos.
 	type partInfo struct {
-		PartNumber int64 `json:"partNumber"`
-		PartSize   int64 `json:"partSize"`
+		PartNumber      int64 `json:"partNumber"`
+		PartSize        int64 `json:"partSize"`
 		ParallelHashCtx struct {
 			PartOffset int64 `json:"partOffset"`
 		} `json:"parallelHashCtx"`
@@ -356,8 +360,8 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 		}
 		batchPartInfos := partInfos[i-1 : end]
 		moreData := map[string]interface{}{
-			"fileId":   createResp.Data.FileId,
-			"uploadId": createResp.Data.UploadId,
+			"fileId":    createResp.Data.FileId,
+			"uploadId":  createResp.Data.UploadId,
 			"partInfos": batchPartInfos,
 			"commonAccountInfo": map[string]interface{}{
 				"account":     d.cl.getAccount(),
@@ -380,34 +384,42 @@ func (d *Yun139Driver) Put(ctx context.Context, parentID, name string, size int6
 		}
 	}
 
-	// Upload parts.
+	// Upload parts concurrently, while keeping create and complete sequential.
+	g, uploadCtx := errgroup.WithContext(ctx)
+	g.SetLimit(uploadPartConcurrency)
 	for _, up := range uploadParts {
-		start := int64(up.partNumber-1) * partSize
-		end := start + partSize
-		if end > size {
-			end = size
-		}
-		partData := allData[start:end]
+		up := up
+		g.Go(func() error {
+			start := int64(up.partNumber-1) * partSize
+			end := start + partSize
+			if end > size {
+				end = size
+			}
+			partData := allData[start:end]
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, up.uploadURL, bytes.NewReader(partData))
-		if err != nil {
-			return drivers.Entry{}, fmt.Errorf("139 upload part %d: %w", up.partNumber, err)
-		}
-		req.Header.Set("Content-Type", "application/octet-stream")
-		req.Header.Set("Content-Length", fmt.Sprint(len(partData)))
-		req.Header.Set("Origin", "https://yun.139.com")
-		req.Header.Set("Referer", "https://yun.139.com/")
-		resp, err := d.cl.httpClient.Do(req)
-		if err != nil {
-			return drivers.Entry{}, fmt.Errorf("139 upload part %d: %w", up.partNumber, err)
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			bodyBytes, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return drivers.Entry{}, fmt.Errorf("139 upload part %d: status %d body=%s", up.partNumber, resp.StatusCode, string(bodyBytes))
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+			req, err := http.NewRequestWithContext(uploadCtx, http.MethodPut, up.uploadURL, bytes.NewReader(partData))
+			if err != nil {
+				return fmt.Errorf("139 upload part %d: %w", up.partNumber, err)
+			}
+			req.Header.Set("Content-Type", "application/octet-stream")
+			req.Header.Set("Content-Length", fmt.Sprint(len(partData)))
+			req.Header.Set("Origin", "https://yun.139.com")
+			req.Header.Set("Referer", "https://yun.139.com/")
+			resp, err := d.cl.httpClient.Do(req)
+			if err != nil {
+				return fmt.Errorf("139 upload part %d: %w", up.partNumber, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				bodyBytes, _ := io.ReadAll(resp.Body)
+				return fmt.Errorf("139 upload part %d: status %d body=%s", up.partNumber, resp.StatusCode, string(bodyBytes))
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return drivers.Entry{}, err
 	}
 
 	// Finalize: commit the uploaded parts to create the file.

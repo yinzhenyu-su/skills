@@ -38,9 +38,9 @@ type Page struct {
 	dirty     bool
 	timer     *time.Timer
 	fid       string
-	maxOffset int64  // highest off+len(data) seen; actual data size in buf
+	maxOffset int64                              // highest off+len(data) seen; actual data size in buf
 	flush     func(fid string, buf []byte) error // calls staging's write-to-disk
-	onDone    func(fid string)                    // cleanup after flush/close
+	onDone    func(fid string)                   // cleanup after flush/close
 }
 
 // Store manages staging files on disk with an optional writeback page cache.
@@ -438,6 +438,19 @@ func (s *Store) Snapshot(path string) (string, error) {
 
 func (s *Store) ReleaseSnapshot(snapPath string) error {
 	return os.Remove(snapPath)
+}
+
+func (s *Store) RestoreSnapshot(path, snapPath string) error {
+	if snapPath == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(snapPath, path); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Remove(path string) error {

@@ -245,6 +245,45 @@ func TestEnsure(t *testing.T) {
 	}
 }
 
+func TestRestoreSnapshotRestoresLiveStaging(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewStore(dir)
+	path, _ := s.Create("fid_snapshot_restore")
+	content := []byte("data that must survive upload failure")
+
+	if _, err := s.WriteAt(path, content, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	snapPath, err := s.Snapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	liveSize, err := s.FileSize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if liveSize != 0 {
+		t.Fatalf("expected live staging placeholder to be empty, got %d", liveSize)
+	}
+
+	if err := s.RestoreSnapshot(path, snapPath); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("restored content mismatch: got %q want %q", got, content)
+	}
+	if _, err := os.Stat(snapPath); !os.IsNotExist(err) {
+		t.Fatalf("expected snapshot to be moved back, stat err=%v", err)
+	}
+}
+
 // ============================================================
 // Writeback page buffer tests
 // ============================================================

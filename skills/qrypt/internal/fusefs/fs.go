@@ -18,15 +18,16 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 	upload "github.com/yinzhenyu/skills/qrypt/internal/upload"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
-	FetchBatchSizeMB    = 32
-	FetchBatchBlocks    = (FetchBatchSizeMB * 1024) / 64
-	MemCacheSizeMB      = 512
-	MemCacheMaxEntries  = (MemCacheSizeMB * 1024) / 64
-	MaxAutoRetries      = 5
-	MetadataTTL         = 15 * time.Second
+	FetchBatchSizeMB   = 32
+	FetchBatchBlocks   = (FetchBatchSizeMB * 1024) / 64
+	MemCacheSizeMB     = 512
+	MemCacheMaxEntries = (MemCacheSizeMB * 1024) / 64
+	MaxAutoRetries     = 5
+	MetadataTTL        = 15 * time.Second
 )
 
 // UploadQueue allows the daemon to provide a shared worker pool for VFS uploads.
@@ -44,7 +45,7 @@ const (
 )
 
 type syncTask struct {
-	node    *Node
+	node *Node
 }
 
 type metadataTask struct {
@@ -69,39 +70,40 @@ func (fs *QryptFS) SetUploadQueue(q UploadQueue) {
 type QryptFS struct {
 	fuse.FileSystemBase
 
-	drv     drivers.Driver
-	cp  *cipher.RcloneCipher
+	drv      drivers.Driver
+	cp       *cipher.RcloneCipher
 	cacheMgr *qrypt.CacheManager
-	staging *qrypt.Store
+	staging  *qrypt.Store
 
-	rootFid string
-	nodes   sync.Map
+	rootFid  string
+	nodes    sync.Map
 	fidNodes sync.Map
 
-	fetchingFiles   sync.Map
-	fetchingChunks  sync.Map
-	merging         sync.Map
-	prefetchSem     chan struct{}
-	lruStop         chan struct{}
-	deletingPaths   sync.Map
-	activeDeletions sync.Map
+	fetchingFiles     sync.Map
+	fetchingChunks    sync.Map
+	merging           sync.Map
+	prefetchSem       chan struct{}
+	lruStop           chan struct{}
+	deletingPaths     sync.Map
+	activeDeletions   sync.Map
 	deletionsByParent sync.Map
-	retryState      sync.Map
+	retryState        sync.Map
 
 	memCache *lru.Cache[string, []byte]
 
-	uploader      *upload.Uploader
-	uploadChan    chan syncTask
-	uploadQueue   UploadQueue // optional: replaces uploadChan when set
+	uploader       *upload.Uploader
+	uploadChan     chan syncTask
+	uploadQueue    UploadQueue // optional: replaces uploadChan when set
 	metadataOpChan chan metadataTask
 
-	shuttingDown    int32
-	workerWg        sync.WaitGroup
-	maxRetries      int
-	writeBackDelay  time.Duration
+	shuttingDown   int32
+	workerWg       sync.WaitGroup
+	maxRetries     int
+	writeBackDelay time.Duration
 
 	syncDelayMu   sync.Mutex
 	syncTimers    map[string]*time.Timer // path → resettable upload timer
+	remoteDirSync singleflight.Group
 }
 
 type FSOptions struct {
@@ -143,20 +145,20 @@ func NewFS(
 	uploader := upload.NewUploader(drv, cp)
 
 	fs := &QryptFS{
-		drv:             drv,
-		cp:              cp,
-		cacheMgr:        cacheMgr,
-		staging:         stg,
-		rootFid:         rootFid,
-		uploader:        uploader,
-		uploadChan:      make(chan syncTask, 1000),
-		metadataOpChan:  make(chan metadataTask, 100000),
-		prefetchSem:     make(chan struct{}, 30),
-		lruStop:         make(chan struct{}),
-		memCache:        memCache,
-		maxRetries:      maxRetries,
-		writeBackDelay:  opts.WriteBackTimeout,
-		syncTimers:      make(map[string]*time.Timer),
+		drv:            drv,
+		cp:             cp,
+		cacheMgr:       cacheMgr,
+		staging:        stg,
+		rootFid:        rootFid,
+		uploader:       uploader,
+		uploadChan:     make(chan syncTask, 1000),
+		metadataOpChan: make(chan metadataTask, 100000),
+		prefetchSem:    make(chan struct{}, 30),
+		lruStop:        make(chan struct{}),
+		memCache:       memCache,
+		maxRetries:     maxRetries,
+		writeBackDelay: opts.WriteBackTimeout,
+		syncTimers:     make(map[string]*time.Timer),
 	}
 
 	rootName := ""

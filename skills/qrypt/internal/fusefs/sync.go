@@ -222,7 +222,17 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		}
 	}
 	if snapPath != "" && snapPath != localPath {
-		defer fs.staging.ReleaseSnapshot(snapPath)
+		defer func() {
+			if err != nil {
+				if restoreErr := fs.staging.RestoreSnapshot(localPath, snapPath); restoreErr != nil {
+					logging.L.Warnf("syncFile: restore snapshot failed for %s: %v\n", path, restoreErr)
+				}
+				return
+			}
+			if releaseErr := fs.staging.ReleaseSnapshot(snapPath); releaseErr != nil {
+				logging.L.Warnf("syncFile: release snapshot failed for %s: %v\n", path, releaseErr)
+			}
+		}()
 	}
 	uploadFid := n.fid
 	lastUpload := n.lastUploadTime
@@ -523,6 +533,9 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		encName := fs.cp.EncryptSegment(level.segName)
 		fid, err := fs.findChildDir(context.Background(), currentRemoteParentFid, encName)
 		if err != nil {
+			if !errors.Is(err, drivers.ErrNotFound) {
+				return err
+			}
 			newFid, createErr := fs.ensureRemoteDir(currentRemoteParentFid, encName)
 			if createErr != nil {
 				return createErr
@@ -577,7 +590,7 @@ func (fs *QryptFS) findChildDir(ctx context.Context, parentFid, encName string) 
 			return e.ID, nil
 		}
 	}
-	return "", fmt.Errorf("child dir not found: %s", encName)
+	return "", drivers.ErrNotFound
 }
 
 func (fs *QryptFS) ensureRemoteDir(parentFid, encName string) (string, error) {
@@ -585,14 +598,29 @@ func (fs *QryptFS) ensureRemoteDir(parentFid, encName string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("driver does not support write operations")
 	}
-	entry, err := w.Mkdir(context.Background(), parentFid, encName)
-	if err == nil {
-		return entry.ID, nil
+	key := parentFid + "\x00" + encName
+	result, err, _ := fs.remoteDirSync.Do(key, func() (interface{}, error) {
+		fid, err := fs.findChildDir(context.Background(), parentFid, encName)
+		if err == nil {
+			return fid, nil
+		}
+		if !errors.Is(err, drivers.ErrNotFound) {
+			return "", err
+		}
+
+		entry, err := w.Mkdir(context.Background(), parentFid, encName)
+		if err == nil {
+			return entry.ID, nil
+		}
+		if errors.Is(err, drivers.ErrDirAlreadyExists) {
+			return fs.findChildDir(context.Background(), parentFid, encName)
+		}
+		return "", err
+	})
+	if err != nil {
+		return "", err
 	}
-	if errors.Is(err, drivers.ErrDirAlreadyExists) {
-		return fs.findChildDir(context.Background(), parentFid, encName)
-	}
-	return "", err
+	return result.(string), nil
 }
 
 func (fs *QryptFS) cleanupLocalUploadState(path string, n *Node, recursive bool) {

@@ -17,7 +17,6 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
 )
 
-
 // Daemon manages the daemon lifecycle and delegates mount ops to MountManager.
 type Daemon struct {
 	cfg        *config.Config
@@ -44,7 +43,7 @@ func NewDaemon(cfg *config.Config, version string) *Daemon {
 	sm := qrypt.NewSessionManager(df)
 	mm := mount.NewMountManager(cfg, sm, df, mountBus)
 	rl := qrypt.NewRateLimiter(0)
-	orch := qrypt.NewOrchestrator(3, rl, ph)
+	orch := qrypt.NewOrchestrator(uploadWorkers(cfg), rl, ph)
 	mm.SetOrchestrator(orch)
 	d := &Daemon{
 		cfg:        cfg,
@@ -67,7 +66,7 @@ func NewDaemonWithPath(cfg *config.Config, cfgPath, version string) *Daemon {
 	sm := qrypt.NewSessionManager(df)
 	mm := mount.NewMountManager(cfg, sm, df, mountBus)
 	rl := qrypt.NewRateLimiter(0)
-	orch := qrypt.NewOrchestrator(3, rl, ph)
+	orch := qrypt.NewOrchestrator(uploadWorkers(cfg), rl, ph)
 	mm.SetOrchestrator(orch)
 	d := &Daemon{
 		cfg:        cfg,
@@ -81,6 +80,27 @@ func NewDaemonWithPath(cfg *config.Config, cfgPath, version string) *Daemon {
 	}
 	mount.NewCacheInvalidator(mm, mountBus)
 	return d
+}
+
+func uploadWorkers(cfg *config.Config) int {
+	const defaultWorkers = 3
+	if cfg == nil {
+		return defaultWorkers
+	}
+	workers := cfg.Defaults.Sync.ConcurrentUploads
+	if workers <= 0 {
+		workers = defaultWorkers
+	}
+	for _, m := range cfg.Mounts {
+		if m.Enabled != nil && !*m.Enabled {
+			continue
+		}
+		rc := cfg.MergeInstanceConfig(m)
+		if rc.Sync.ConcurrentUploads > workers {
+			workers = rc.Sync.ConcurrentUploads
+		}
+	}
+	return workers
 }
 
 // deriveState computes the aggregate daemon state from individual mount states.

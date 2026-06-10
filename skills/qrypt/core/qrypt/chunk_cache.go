@@ -24,11 +24,11 @@ type OpsLogEntry struct {
 
 // JournalOp values
 const (
-	JOpDelete    = "delete"
+	JOpDelete     = "delete"
 	JOpDeleteDone = "delete_done"
-	JOpDirty    = "dirty"
-	JOpUpdate   = "update"
-	JOpClean    = "clean"
+	JOpDirty      = "dirty"
+	JOpUpdate     = "update"
+	JOpClean      = "clean"
 )
 
 // JournalEntry is the unified log entry for pending.jsonl.
@@ -55,11 +55,11 @@ type JournalEntry struct {
 const CacheBatchBlocks = 16
 
 type ChunkInfo struct {
-	FilePath  string
-	Offset    int64
-	Size      int64
-	IsDirty   bool
-	AccessAt  time.Time
+	FilePath string
+	Offset   int64
+	Size     int64
+	IsDirty  bool
+	AccessAt time.Time
 }
 
 type PendingNode struct {
@@ -91,15 +91,15 @@ type fileChunkCache struct {
 }
 
 type CacheManager struct {
-	cacheDir string
-	maxSize  int64
-	staging  *Store
+	cacheDir   string
+	maxSize    int64
+	staging    *Store
 	evictCount int64
 
-	mu            sync.RWMutex
-	pendingNodes  map[string]*PendingNode
-	stagingMetas  map[string]*StagingMeta
-	chunkIndex    map[string]*fileChunkCache
+	mu           sync.RWMutex
+	pendingNodes map[string]*PendingNode
+	stagingMetas map[string]*StagingMeta
+	chunkIndex   map[string]*fileChunkCache
 }
 
 func (m *CacheManager) CacheDir() string {
@@ -585,8 +585,8 @@ func (m *CacheManager) loadJournal() (deleteOps []OpsLogEntry, pending map[strin
 	defer f.Close()
 
 	type dirtyState struct {
-		entry  *JournalEntry
-		update *JournalEntry
+		entry   *JournalEntry
+		update  *JournalEntry
 		cleaned bool
 	}
 	dirtyByPath := make(map[string]*dirtyState)
@@ -623,8 +623,8 @@ func (m *CacheManager) loadJournal() (deleteOps []OpsLogEntry, pending map[strin
 				order = append(order, entry.Path)
 			}
 			dirtyByPath[entry.Path] = &dirtyState{
-				entry:  &entry,
-				update: nil,
+				entry:   &entry,
+				update:  nil,
 				cleaned: false,
 			}
 		case JOpUpdate:
@@ -660,7 +660,15 @@ func (m *CacheManager) loadJournal() (deleteOps []OpsLogEntry, pending map[strin
 			continue
 		}
 		if s.entry.Stg != "" {
-			if _, statErr := os.Stat(s.entry.Stg); os.IsNotExist(statErr) {
+			info, statErr := os.Stat(s.entry.Stg)
+			if os.IsNotExist(statErr) {
+				toClean = append(toClean, path)
+				continue
+			}
+			if statErr != nil {
+				continue
+			}
+			if s.entry.Size > 0 && info.Size() == 0 {
 				toClean = append(toClean, path)
 				continue
 			}

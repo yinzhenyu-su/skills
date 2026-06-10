@@ -1,8 +1,13 @@
 package fusefs
 
 import (
+	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,9 +15,63 @@ import (
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	localfs "github.com/yinzhenyu/skills/qrypt/drivers/localfs"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
+
+type duplicateMkdirDriver struct {
+	mu         sync.Mutex
+	nextID     int
+	dirs       map[string][]drivers.Entry
+	mkdirCount int
+}
+
+func newDuplicateMkdirDriver() *duplicateMkdirDriver {
+	return &duplicateMkdirDriver{
+		nextID: 1,
+		dirs:   map[string][]drivers.Entry{"0": {}},
+	}
+}
+
+func (d *duplicateMkdirDriver) Init(ctx context.Context) error { return nil }
+func (d *duplicateMkdirDriver) Drop(ctx context.Context) error { return nil }
+func (d *duplicateMkdirDriver) Read(ctx context.Context, entry drivers.Entry, offset, size int64) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+func (d *duplicateMkdirDriver) List(ctx context.Context, parentID string) ([]drivers.Entry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	entries := d.dirs[parentID]
+	out := make([]drivers.Entry, len(entries))
+	copy(out, entries)
+	return out, nil
+}
+
+func (d *duplicateMkdirDriver) Mkdir(ctx context.Context, parentID, name string) (drivers.Entry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.mkdirCount++
+	id := fmt.Sprintf("dir_%d", d.nextID)
+	d.nextID++
+	entry := drivers.Entry{ID: id, ParentID: parentID, Name: name, IsDir: true}
+	d.dirs[parentID] = append(d.dirs[parentID], entry)
+	d.dirs[id] = []drivers.Entry{}
+	return entry, nil
+}
+
+func (d *duplicateMkdirDriver) Move(ctx context.Context, entry drivers.Entry, dstParentID string) error {
+	return nil
+}
+
+func (d *duplicateMkdirDriver) Rename(ctx context.Context, entry drivers.Entry, newName string) error {
+	return nil
+}
+
+func (d *duplicateMkdirDriver) Remove(ctx context.Context, entry drivers.Entry) error {
+	return nil
+}
 
 func newTestFS(t *testing.T) *QryptFS {
 	t.Helper()
@@ -44,11 +103,11 @@ func newTestFS(t *testing.T) *QryptFS {
 	vfs.memCache = memCache
 
 	vfs.storeNode("/", &Node{
-		fid:        "0",
-		name:       "",
+		fid:         "0",
+		name:        "",
 		currentPath: "/",
-		isFolder:   true,
-		source:     "remote",
+		isFolder:    true,
+		source:      "remote",
 	})
 
 	t.Cleanup(vfs.Shutdown)
@@ -56,7 +115,63 @@ func newTestFS(t *testing.T) *QryptFS {
 	return vfs
 }
 
+func TestEnsureRemoteDirSingleflightsConcurrentCreate(t *testing.T) {
+	logger, _ := logging.New("off", "", nil)
+	logging.L = logger
 
+	cph, _ := cipher.NewRcloneCipher("testpassword", "")
+	drv := newDuplicateMkdirDriver()
+	fs := NewFS(drv, cph, nil, "0", FSOptions{
+		MaxRetries:        3,
+		ConcurrentUploads: 1,
+	})
+	t.Cleanup(fs.Shutdown)
+
+	const workers = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	fids := make(chan string, workers)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fid, err := fs.ensureRemoteDir("0", "same-dir")
+			if err != nil {
+				errs <- err
+				return
+			}
+			fids <- fid
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(fids)
+
+	for err := range errs {
+		t.Fatalf("ensureRemoteDir: %v", err)
+	}
+
+	var first string
+	for fid := range fids {
+		if first == "" {
+			first = fid
+			continue
+		}
+		if fid != first {
+			t.Fatalf("got multiple fids: %s and %s", first, fid)
+		}
+	}
+
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	if drv.mkdirCount != 1 {
+		t.Fatalf("mkdirCount = %d, want 1", drv.mkdirCount)
+	}
+	if got := len(drv.dirs["0"]); got != 1 {
+		t.Fatalf("root dir count = %d, want 1", got)
+	}
+}
 
 func TestStoreNode(t *testing.T) {
 	fs := newTestFS(t)
@@ -85,6 +200,36 @@ func TestStoreNode_WithChildren(t *testing.T) {
 		t.Error("child fid not indexed")
 	} else if v.(*Node).name != "child.txt" {
 		t.Errorf("expected child.txt, got %s", v.(*Node).name)
+	}
+}
+
+func TestMergeRemoteChangesKeepsCachedChildrenMissingFromListing(t *testing.T) {
+	fs := newTestFS(t)
+
+	dir := newNode("dir_fid", "0", "dir", "/dir", true)
+	fs.storeNode("/dir", dir)
+	a := newNode("fid_a", "dir_fid", "a.txt", "/dir/a.txt", false)
+	a.source = "remote"
+	b := newNode("fid_b", "dir_fid", "b.txt", "/dir/b.txt", false)
+	b.source = "remote"
+	fs.storeNode("/dir/a.txt", a)
+	fs.storeNode("/dir/b.txt", b)
+
+	fs.MergeRemoteChanges("/dir", "dir_fid", []drivers.Entry{{
+		ID:      "fid_a",
+		Name:    fs.cp.EncryptSegment("a.txt"),
+		Size:    a.encSize,
+		ModTime: time.Now(),
+	}})
+
+	if _, ok := fs.nodes.Load("/dir/b.txt"); !ok {
+		t.Fatal("cached child missing from a refresh listing should not be deleted")
+	}
+	dir.mu.RLock()
+	_, ok := dir.children["b.txt"]
+	dir.mu.RUnlock()
+	if !ok {
+		t.Fatal("parent children cache should keep b.txt")
 	}
 }
 

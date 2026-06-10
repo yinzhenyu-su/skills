@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
-	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
+	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
 func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t, ofst int64) bool, ofst int64, fh uint64) (errc int) {
@@ -233,7 +233,6 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 
 	seenLocalNames := make(map[string]bool)
 	syncInProgressCount := 0
-	remoteDeletedCount := 0
 
 	for _, entry := range localEntries {
 		n := entry.node
@@ -279,17 +278,6 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 		}
 
 		if !exists {
-			if isDirty {
-				continue
-			}
-			if n.source == "local" || n.source == "merged" {
-				continue
-			}
-			if strings.HasPrefix(fid, "local_") {
-				continue
-			}
-			fs.deleteNodePath(entry.path, n)
-			remoteDeletedCount++
 			continue
 		}
 

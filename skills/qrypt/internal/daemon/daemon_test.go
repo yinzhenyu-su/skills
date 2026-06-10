@@ -14,7 +14,6 @@ import (
 
 var _ rpc.RPCHost = (*Daemon)(nil) // compile-time check
 
-
 func newTestDaemon(t *testing.T) (*Daemon, *rpc.WSClient, string) {
 	t.Helper()
 
@@ -76,6 +75,29 @@ func TestDaemonIPC_Status(t *testing.T) {
 	unmarshalResult(t, resp, &status)
 	if status.Version != "test" {
 		t.Errorf("version = %q, want %q", status.Version, "test")
+	}
+}
+
+func TestUploadWorkersUsesMountOverride(t *testing.T) {
+	enabled := true
+	disabled := false
+	cfg := config.DefaultConfig()
+	cfg.Defaults.Sync.ConcurrentUploads = 4
+	cfg.Mounts = []config.MountInstance{
+		{
+			Name:    "fast",
+			Enabled: &enabled,
+			Sync:    &config.SyncConfig{ConcurrentUploads: 8},
+		},
+		{
+			Name:    "off",
+			Enabled: &disabled,
+			Sync:    &config.SyncConfig{ConcurrentUploads: 16},
+		},
+	}
+
+	if got := uploadWorkers(cfg); got != 8 {
+		t.Fatalf("uploadWorkers = %d, want 8", got)
 	}
 }
 

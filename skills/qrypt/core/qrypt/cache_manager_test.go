@@ -333,6 +333,40 @@ func TestPendingJournal_RecoveryMissingStagingFile(t *testing.T) {
 	}
 }
 
+func TestPendingJournal_RecoveryDropsEmptyStagingForNonEmptyFile(t *testing.T) {
+	m := newTestManager(t)
+	stagingFile := filepath.Join(m.CacheDir(), "staging", "empty-damaged.staging")
+	if err := os.WriteFile(stagingFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.SavePendingNode("/damaged.txt", "fid_damaged", "p", "damaged.txt", stagingFile, 100, false, nil, 0, 0, "", 0)
+
+	recovered, err := loadPendingNodes(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := recovered["/damaged.txt"]; ok {
+		t.Error("expected /damaged.txt to be dropped when non-empty pending node has empty staging")
+	}
+}
+
+func TestPendingJournal_RecoveryKeepsRealEmptyFile(t *testing.T) {
+	m := newTestManager(t)
+	stagingFile := filepath.Join(m.CacheDir(), "staging", "real-empty.staging")
+	if err := os.WriteFile(stagingFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.SavePendingNode("/empty.txt", "fid_empty", "p", "empty.txt", stagingFile, 0, false, nil, 0, 0, "", 0)
+
+	recovered, err := loadPendingNodes(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := recovered["/empty.txt"]; !ok {
+		t.Error("expected real empty file to be recovered")
+	}
+}
+
 func TestPendingJournal_CrossSessionPersistence(t *testing.T) {
 	dir := t.TempDir()
 
