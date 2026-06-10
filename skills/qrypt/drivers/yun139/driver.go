@@ -54,6 +54,9 @@ func (d *Yun139Driver) Init(ctx context.Context) error {
 	if d.rootID == "" {
 		d.rootID = "/"
 	}
+	if err := d.cl.ensurePersonalCloudHost(); err != nil {
+		return fmt.Errorf("139 init: resolve personal cloud host: %w", err)
+	}
 	return nil
 }
 
@@ -79,7 +82,7 @@ func (d *Yun139Driver) List(ctx context.Context, parentID string) ([]drivers.Ent
 			"parentFileId": fileID,
 		}
 		var resp personalListResp
-		err := d.cl.doRequest(http.MethodPost, "/file/list", data, &resp)
+		err := 	d.cl.personalPost("/file/list", data, &resp)
 		if err != nil {
 			return nil, fmt.Errorf("139 list: %w", err)
 		}
@@ -123,7 +126,7 @@ func (d *Yun139Driver) Read(ctx context.Context, entry drivers.Entry, offset, si
 func (d *Yun139Driver) getDownloadURL(fileID string) (string, error) {
 	data := map[string]interface{}{"fileId": fileID}
 	var resp downloadResp
-	err := d.cl.doRequest(http.MethodPost, "/file/getDownloadUrl", data, &resp)
+	err := d.cl.personalPost( "/file/getDownloadUrl", data, &resp)
 	if err != nil {
 		return "", fmt.Errorf("139 download url: %w", err)
 	}
@@ -149,7 +152,7 @@ func (d *Yun139Driver) Mkdir(ctx context.Context, parentID, name string) (driver
 		"fileRenameMode": "force_rename",
 	}
 	var resp createResp
-	err := d.cl.doRequest(http.MethodPost, "/file/create", data, &resp)
+	err := d.cl.personalPost( "/file/create", data, &resp)
 	if err != nil {
 		return drivers.Entry{}, fmt.Errorf("139 mkdir: %w", err)
 	}
@@ -173,7 +176,7 @@ func (d *Yun139Driver) Move(ctx context.Context, entry drivers.Entry, dstParentI
 		"toParentFileId": toParentID,
 	}
 	var resp baseResp
-	err := d.cl.doRequest(http.MethodPost, "/file/batchMove", data, &resp)
+	err := d.cl.personalPost( "/file/batchMove", data, &resp)
 	if err != nil {
 		return fmt.Errorf("139 move: %w", err)
 	}
@@ -194,7 +197,7 @@ func (d *Yun139Driver) Rename(ctx context.Context, entry drivers.Entry, newName 
 		"description": "",
 	}
 	var resp baseResp
-	err := d.cl.doRequest(http.MethodPost, "/file/update", data, &resp)
+	err := d.cl.personalPost( "/file/update", data, &resp)
 	if err != nil {
 		return fmt.Errorf("139 rename: %w", err)
 	}
@@ -209,7 +212,7 @@ func (d *Yun139Driver) Remove(ctx context.Context, entry drivers.Entry) error {
 		"fileIds": []string{entry.ID},
 	}
 	var resp baseResp
-	err := d.cl.doRequest(http.MethodPost, "/recyclebin/batchTrash", data, &resp)
+	err := d.cl.personalPost( "/recyclebin/batchTrash", data, &resp)
 	if err != nil {
 		return fmt.Errorf("139 remove: %w", err)
 	}

@@ -1,24 +1,69 @@
 package yun139
 
 import (
+	"context"
+	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-var baseURL = "https://api.139.com/api"
+var baseURL = "https://yun.139.com"
+
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+func randomString(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letterBytes[rand.Intn(len(letterBytes))]
+	}
+	return string(b)
+}
+
+func encodeURIComponent(s string) string {
+	r := url.QueryEscape(s)
+	r = strings.Replace(r, "+", "%20", -1)
+	r = strings.Replace(r, "%21", "!", -1)
+	r = strings.Replace(r, "%27", "'", -1)
+	r = strings.Replace(r, "%28", "(", -1)
+	r = strings.Replace(r, "%29", ")", -1)
+	r = strings.Replace(r, "%2A", "*", -1)
+	return r
+}
+
+func md5Hex(s string) string {
+	h := md5.Sum([]byte(s))
+	return fmt.Sprintf("%X", h[:])
+}
+
+// calSign computes the mcloud-sign header value.
+// Algorithm from AlistGo/alist: body sorted by chars → base64 → MD5,
+// concatenated with MD5(ts:randStr), then MD5 of the result, upper-case.
+func calSign(bodyJSON, ts, randStr string) string {
+	encoded := encodeURIComponent(bodyJSON)
+	strs := strings.Split(encoded, "")
+	sort.Strings(strs)
+	sorted := strings.Join(strs, "")
+	b64 := base64.StdEncoding.EncodeToString([]byte(sorted))
+	res := md5Hex(b64) + md5Hex(ts+":"+randStr)
+	return strings.ToUpper(md5Hex(res))
+}
 
 type client struct {
-	httpClient    *http.Client
-	authorization string
-	account       string
-	mu            sync.RWMutex
-	tokenExpiry   time.Time
+	httpClient       *http.Client
+	authorization    string
+	account          string
+	personalCloudHost string
+	mu               sync.RWMutex
+	tokenExpiry      time.Time
 }
 
 func newClient(authorization string) *client {
@@ -50,6 +95,7 @@ func (c *client) decodeAuth() (account, token string, err error) {
 	if len(parts) < 3 {
 		return "", "", fmt.Errorf("invalid auth format")
 	}
+	c.account = parts[1]
 	return parts[1], parts[2], nil
 }
 
@@ -94,20 +140,175 @@ func (c *client) refreshToken() error {
 	return nil
 }
 
+// ensurePersonalCloudHost queries the route policy to discover the user's
+// personal cloud API host.  Must be called before any personalPost call.
+func (c *client) ensurePersonalCloudHost() error {
+	c.mu.RLock()
+	if c.personalCloudHost != "" {
+		c.mu.RUnlock()
+		return nil
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	// Double-check after acquiring write lock.
+	if c.personalCloudHost != "" {
+		c.mu.Unlock()
+		return nil
+	}
+	if c.account == "" {
+		if _, _, err := c.decodeAuth(); err != nil {
+			c.mu.Unlock()
+			return err
+		}
+	}
+	c.mu.Unlock()
+
+	routeURL := "https://user-njs.yun.139.com/user/route/qryRoutePolicy"
+	routeData := map[string]interface{}{
+		"userInfo": map[string]interface{}{
+			"userType":    1,
+			"accountType": 1,
+			"accountName": c.account,
+		},
+		"modAddrType": 1,
+	}
+	body, _ := json.Marshal(routeData)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, routeURL, strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Basic "+c.getAuthorization())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	var routeResp struct {
+		Data struct {
+			RoutePolicyList []struct {
+				ModName string `json:"modName"`
+				HttpsUrl string `json:"httpsUrl"`
+			} `json:"routePolicyList"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &routeResp); err != nil {
+		return fmt.Errorf("route policy parse: %w", err)
+	}
+	for _, item := range routeResp.Data.RoutePolicyList {
+		if item.ModName == "personal" && item.HttpsUrl != "" {
+			c.mu.Lock()
+			c.personalCloudHost = strings.TrimRight(item.HttpsUrl, "/")
+			c.mu.Unlock()
+			return nil
+		}
+	}
+	return fmt.Errorf("no personal cloud host in route policy")
+}
+
+// personalRequest sends a signed request to the personal cloud API host.
+// The host is discovered via ensurePersonalCloudHost.
+func (c *client) personalRequest(method, path string, bodyData interface{}, result interface{}) error {
+	if err := c.ensurePersonalCloudHost(); err != nil {
+		return err
+	}
+
+	bodyStr := ""
+	if bodyData != nil {
+		data, _ := json.Marshal(bodyData)
+		bodyStr = string(data)
+	}
+
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	randStr := randomString(16)
+	sign := calSign(bodyStr, ts, randStr)
+
+	var bodyReader io.Reader
+	if bodyStr != "" {
+		bodyReader = strings.NewReader(bodyStr)
+	}
+	req, err := http.NewRequest(method, c.personalCloudHost+path, bodyReader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Authorization", "Basic "+c.getAuthorization())
+	req.Header.Set("Caller", "web")
+	req.Header.Set("Cms-Device", "default")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcloud-Channel", "1000101")
+	req.Header.Set("Mcloud-Client", "10701")
+	req.Header.Set("Mcloud-Route", "001")
+	req.Header.Set("Mcloud-Sign", fmt.Sprintf("%s,%s,%s", ts, randStr, sign))
+	req.Header.Set("Mcloud-Version", "7.14.0")
+	req.Header.Set("X-Yun-Api-Version", "v1")
+	req.Header.Set("X-Yun-App-Channel", "10000034")
+	req.Header.Set("X-Yun-Channel-Source", "10000034")
+	req.Header.Set("X-Yun-Client-Info", "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||dW5kZWZpbmVk||")
+	req.Header.Set("X-Yun-Module-Type", "100")
+	req.Header.Set("X-Yun-Svc-Type", "1")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if len(respBody) > 0 && respBody[0] == '<' {
+		return fmt.Errorf("personal API returned non-JSON: %s", string(respBody[:min(len(respBody), 200)]))
+	}
+	if result != nil {
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return fmt.Errorf("parse response: %w", err)
+		}
+	}
+	return nil
+}
+
+// personalPost is a convenience wrapper for POST requests via personal API.
+func (c *client) personalPost(path string, data interface{}, result interface{}) error {
+	return c.personalRequest(http.MethodPost, path, data, result)
+}
+
+// doRequest sends a signed request to the fixed yun.139.com host.
 func (c *client) doRequest(method, path string, body interface{}, result interface{}) error {
 	u := baseURL + path
+	var bodyStr string
 	var bodyReader io.Reader
 	if body != nil {
 		data, _ := json.Marshal(body)
-		bodyReader = strings.NewReader(string(data))
+		bodyStr = string(data)
+		bodyReader = strings.NewReader(bodyStr)
 	}
 
 	req, err := http.NewRequest(method, u, bodyReader)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", c.getAuthorization())
+
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	randStr := randomString(16)
+	sign := calSign(bodyStr, ts, randStr)
+
+	req.Header.Set("Authorization", "Basic "+c.getAuthorization())
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("mcloud-channel", "1000101")
+	req.Header.Set("mcloud-client", "10701")
+	req.Header.Set("mcloud-sign", fmt.Sprintf("%s,%s,%s", ts, randStr, sign))
+	req.Header.Set("mcloud-version", "7.14.0")
+	req.Header.Set("Origin", "https://yun.139.com")
+	req.Header.Set("Referer", "https://yun.139.com/w/")
+	req.Header.Set("x-DeviceInfo", "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||")
+	req.Header.Set("x-huawei-channelSrc", "10000034")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
