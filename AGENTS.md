@@ -27,6 +27,7 @@ Skills monorepo — collection of AI agent skills for OpenCode. Contains CLI too
 |------|----------|-------|
 | 基金管理 CLI | `skills/fund-manager/` | ~9k SLOC, Rust + SQLite |
 | 网盘加密挂载 | `skills/qrypt/` | ~11.7k SLOC, Go + FUSE |
+| qrypt 上手指南 | `skills/qrypt/qrypt-hands-on.md` | 架构模式、重构状态、常见问题 |
 | tampermonkey 脚本 | `skills/bili/` | Single JS userscript |
 | 热搜榜 | `skills/trending/` | Skill definition only |
 | TTS | `skills/xiaomi-tts/` | Shell script skill |
