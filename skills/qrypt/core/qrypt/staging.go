@@ -1,6 +1,7 @@
 package qrypt
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -132,7 +133,10 @@ func (s *Store) writePage(fid string, buf []byte) error {
 		return err
 	}
 	defer f.Close()
-	_, err = f.WriteAt(buf, 0)
+	n, err := f.WriteAt(buf, 0)
+	if err == nil && n != len(buf) {
+		err = io.ErrShortWrite
+	}
 	return err
 }
 
@@ -197,10 +201,28 @@ func (p *Page) WriteAt(data []byte, off int64) (int, error) {
 	return len(data), nil
 }
 
-// flushNow writes buffered data to disk.  After flushing, the buffer is kept
-// in memory (dirty cleared) so subsequent writes can extend it without losing
-// data at earlier offsets.  Caller must NOT hold p.mu (flush releases it while
-// writing to disk).
+// flushBuf writes buffered data to disk unconditionally. After flushing,
+// the buffer is kept in memory (dirty cleared) so subsequent writes can
+// extend it without losing data. Caller must NOT hold p.mu.
+func (p *Page) flushBuf() error {
+	p.mu.Lock()
+	if len(p.buf) == 0 {
+		p.mu.Unlock()
+		return nil
+	}
+	buf := make([]byte, len(p.buf))
+	copy(buf, p.buf)
+	p.dirty = false
+	p.stopTimer()
+	p.mu.Unlock()
+
+	return p.flush(p.fid, buf)
+}
+
+// flushNow writes buffered data to disk only if dirty.  After flushing,
+// the buffer is kept in memory (dirty cleared) so subsequent writes can
+// extend it without losing data at earlier offsets.
+// Caller must NOT hold p.mu.
 func (p *Page) flushNow() error {
 	p.mu.Lock()
 	if !p.dirty {
@@ -240,8 +262,10 @@ func (s *Store) ReadAt(path string, buf []byte, off int64) (int, error) {
 	if v, ok := s.pages.Load(fid); ok {
 		p := v.(*Page)
 		p.mu.Lock()
-		if p.dirty && int(off)+len(buf) <= len(p.buf) {
-			// Data is entirely in the page buffer — read from there.
+		if int(off)+len(buf) <= len(p.buf) {
+			// Read directly from page buffer — it holds the latest data
+			// regardless of dirty state. Avoids disk reads that may hit
+			// a stale empty file (replaced by concurrent Snapshot).
 			n := copy(buf, p.buf[off:])
 			p.mu.Unlock()
 			return n, nil
@@ -256,7 +280,18 @@ func (s *Store) ReadAt(path string, buf []byte, off int64) (int, error) {
 		return 0, err
 	}
 	defer f.Close()
-	return f.ReadAt(buf, off)
+	n, err := f.ReadAt(buf, off)
+	if n == 0 && errors.Is(err, io.EOF) {
+		// The file exists but is empty — it may have been snapshotted
+		// by a concurrent syncFile (os.Rename replaces the original
+		// with a new empty file).  Try the snapshot copy instead.
+		snapPath := path + ".snap"
+		if sf, sErr := os.Open(snapPath); sErr == nil {
+			defer sf.Close()
+			return sf.ReadAt(buf, off)
+		}
+	}
+	return n, err
 }
 
 // flushBuf flushes any pending page buffer for the given path to disk.
@@ -265,6 +300,15 @@ func (s *Store) flushBuf(path string) error {
 	fid := FidFromPath(path)
 	if v, ok := s.pages.Load(fid); ok {
 		return v.(*Page).flushNow()
+	}
+	return nil
+}
+
+// flushBufForce writes the page buffer to disk regardless of dirty state.
+func (s *Store) flushBufForce(path string) error {
+	fid := FidFromPath(path)
+	if v, ok := s.pages.Load(fid); ok {
+		return v.(*Page).flushBuf()
 	}
 	return nil
 }
@@ -313,8 +357,13 @@ func (s *Store) Snapshot(path string) (string, error) {
 	if err := s.flushBuf(path); err != nil {
 		return "", err
 	}
-	fid := FidFromPath(path)
-	s.pages.Delete(fid)
+
+	// Write page buffer to disk even if not dirty — the buffer holds the
+	// latest data and the disk file may be stale (e.g., from a previous
+	// Snapshot that created an empty file).
+	if err := s.flushBufForce(path); err != nil {
+		return "", err
+	}
 
 	snapPath := path + ".snap"
 	if err := os.Rename(path, snapPath); err != nil {

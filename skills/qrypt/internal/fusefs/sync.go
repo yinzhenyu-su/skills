@@ -70,20 +70,21 @@ func (fs *QryptFS) enqueueSync(n *Node) {
 }
 
 func (fs *QryptFS) enqueueSyncDelay(n *Node, delay time.Duration) {
-	n.mu.RLock()
+	n.mu.Lock()
 	isNewLocal := strings.HasPrefix(n.fid, "local_")
 	if !n.isDirty && !isNewLocal {
-		n.mu.RUnlock()
+		n.mu.Unlock()
 		return
 	}
-	n.mu.RUnlock()
+	if n.syncQueued {
+		n.mu.Unlock()
+		return
+	}
+	n.syncQueued = true
+	path := n.currentPath
+	n.mu.Unlock()
 
 	if delay > 0 {
-		n.mu.Lock()
-		n.syncQueued = true
-		n.mu.Unlock()
-
-		path := n.currentPath
 		fs.syncDelayMu.Lock()
 		if t, ok := fs.syncTimers[path]; ok {
 			t.Stop()
@@ -103,9 +104,6 @@ func (fs *QryptFS) enqueueSyncDelay(n *Node, delay time.Duration) {
 		})
 		fs.syncDelayMu.Unlock()
 	} else {
-		n.mu.Lock()
-		n.syncQueued = true
-		n.mu.Unlock()
 		fs.enqueueNode(n)
 	}
 }
@@ -263,6 +261,19 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 				logging.L.Warnf("syncFile: remove old file %s: %v", oldUploadedFid, err)
 			}
 		}
+	}
+
+	// ── Re-check current path ─────────────────────────────────────
+	// The file may have been renamed between the snapshot and now.
+	// Re-read name + parentFid so the upload targets the correct
+	// location, avoiding a post-upload Move attempt.
+	n.mu.RLock()
+	currentParentFid := n.parentFid
+	currentName := n.name
+	n.mu.RUnlock()
+	if currentParentFid != parentFid || currentName != snapshotName {
+		parentFid = currentParentFid
+		snapshotName = currentName
 	}
 
 	uploadCtx, uploadCancel := context.WithTimeout(drivers.WithMtime(context.Background(), n.mtime), 30*time.Minute)

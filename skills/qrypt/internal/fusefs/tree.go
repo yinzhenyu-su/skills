@@ -81,6 +81,9 @@ func (fs *QryptFS) replaceNodePath(oldPath, newPath string, n *Node) {
 	n.mu.Lock()
 	n.currentPath = newPath
 	isDirty := n.isDirty
+	if isDirty && oldPath != newPath {
+		n.syncQueued = false
+	}
 	if n.isFolder && n.children == nil {
 		n.children = make(map[string]*Node)
 	}

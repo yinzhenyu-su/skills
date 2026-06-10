@@ -290,9 +290,16 @@ func (fs *QryptFS) IsShuttingDown() bool {
 	return atomic.LoadInt32(&fs.shuttingDown) == 1
 }
 
+var shutdownMu sync.Mutex
+
 func (fs *QryptFS) Shutdown() {
-	logging.L.Infof("Shutdown: starting graceful shutdown...\n")
+	shutdownMu.Lock()
+	defer shutdownMu.Unlock()
+	if atomic.LoadInt32(&fs.shuttingDown) != 0 {
+		return
+	}
 	atomic.StoreInt32(&fs.shuttingDown, 1)
+	logging.L.Infof("Shutdown: starting graceful shutdown...\n")
 
 	// Flush all pending staging page buffers to disk so no data is lost
 	// on restart. Do this before closing channels — workers may still be
