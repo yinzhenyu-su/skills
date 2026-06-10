@@ -87,6 +87,24 @@ Quick-reference skill for working on the qrypt project. Assumes familiarity with
 - **FUSE + concurrent writes**: Staging layer handles concurrent write races; check `staging/store.go` for locking guarantees.
 - **WebSocket state reporting**: Reconnection triggers state snapshot via dashboard RPC.
 
+### Reference Implementation Pattern
+
+当实现第三方云盘驱动时，**Alist (https://github.com/AlistGo/alist)** 是最佳的参考实现来源：
+
+- **定位驱动代码**: `drivers/<name>/` 目录下，每个驱动一个包
+- **重点关注**:
+  - `driver.go` — 主逻辑（List、Link、Upload 等）
+  - `meta.go` — Addition 结构体（配置参数定义）
+  - `util.go` — 工具函数（签名、token 刷新、请求封装）
+  - `types.go` — 请求/响应类型定义
+- **逆向步骤**:
+  1. 看懂 Alist 的 Addition → 对应 qrypt 的 `mounts.params`
+  2. 提取 API 端点路径（`/file/list`, `/file/upload/init` 等）
+  3. 复制签名算法（如 139 的 `calSign` + `mcloud-sign` 头）
+  4. 注意区分"主站 API"和"个人云 API"（如 139 需要 `ensurePersonalCloudHost` 动态发现 API 地址）
+  5. 处理 token 刷新机制（Alist 通常用 12h cron）
+- **139yun 案例**: 从 Alist 的 `drivers/139/` 逆向出了 `calSign`、`personalRequest`、`ensurePersonalCloudHost` 等核心逻辑，是 qrypt 目前最完整的参考驱动
+
 ### Testing Patterns
 - **Unit tests**: `_test.go` alongside source file
 - **Integration test framework**: See `### Integration Test Framework` (Static Knowledge) — driver-agnostic suite in `internal/fusefs/integration/`
