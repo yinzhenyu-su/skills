@@ -31,6 +31,20 @@ Quick-reference skill for working on the qrypt project. Assumes familiarity with
     - `quark` → remote API with cipher, dir cache, streaming upload
     - `yun139` → remote API without cipher, paginated list, streaming upload
 
+### Driver Integration Experience (Lessons from Quark & Yun139)
+
+对接第三方云盘驱动的实战经验总结：
+
+- **参考 Alist (github.com/AlistGo/alist) 而不是 API 文档**：云盘厂商的官方 API 文档通常过时或不完整。Alist 的 `drivers/<name>/` 代码是活文档，包含完整的签名算法、请求头、API 端点、错误处理。139 的 `calSign`、`mcloud-sign`、`personalCloudHost` 全部从 Alist 逆向而来。
+- **逆向步骤**：Addition（配置参数）→ API 端点路径 → 签名算法 → 请求头 → token 刷新机制 → 分片上传流程。对照 Alist 逐个文件看：`meta.go` → `util.go` → `driver.go` → `types.go`。
+- **编译期接口断言**：`var _ drivers.Driver = (*MyDriver)(nil)` 确保签名匹配，新增接口就在这加一行。
+- **认证头格式**：139 的 `Authorization` 需要 `"Basic "` 前缀，Quark 用 cookie，不要假设格式。
+- **API 域名可能动态分配**：139 的文件操作走 `personalCloudHost`（启动时从路由策略 API 获取），上传初始化走主站 `yun.139.com`。不要硬编码 API 地址。
+- **上传三阶段**：`/file/create`（创建任务）→ HTTP PUT 到预签名 URL（上传分片）→ `/file/complete`（提交完成）。少任何一步文件都不会出现。
+- **分片上传头**：即使上传到预签名 URL，139 的 OSS 仍需要 `Origin` 和 `Referer` 头，否则返回 400。
+- **token 刷新**：139 的 token 有效期有时间戳，需要定时刷新（Alist 用 12h cron）。qrypt 目前只在 Init 时刷新，长时间运行的 daemon 可能过期。
+- **三阶段验证**：写文件后依次验证 (1) `syncFilePostUpload` 打印 fid 替换 → (2) 重启 mount 后文件在 `ls` 中可见 → (3) `cat` 能读回正确内容。
+
 ### Integration Test Framework
 - **Location**: `internal/fusefs/integration/` — driver-agnostic test suites.
 - **Registration**: Add a factory function in `setup.go`'s `driverFactories` map. The factory extracts params from `map[string]string` and calls the driver's constructor.
