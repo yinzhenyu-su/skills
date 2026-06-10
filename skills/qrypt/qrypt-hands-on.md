@@ -15,6 +15,32 @@ Quick-reference skill for working on the qrypt project. Assumes familiarity with
 - **Driver self-registration** (`database/sql` style): drivers call `drivers.Register("name", factory)` in `init()`, callers use `drivers.New(type, params)`. Never add switch-cases for driver creation.
 - **MountParams**: `map[string]string`, not struct. Param access via `m.Params["key"]`, not `m.Params.Cookie`. TOML format unchanged (map → TOML table is seamless).
 - **Core kernel separation**: `core/qrypt/` is platform-agnostic (no gomobile-incompatible deps). Backend drivers in `drivers/`. CLI/daemon layer in `cmd/` and `internal/`.
+
+### Adding a New Driver
+1. **Create package** under `drivers/<name>/` with your struct implementing `drivers.Driver` (`Init`, `Drop`, `List`, `Read`). Optionally implement `drivers.Writer` (`Mkdir`, `Move`, `Rename`, `Remove`), `drivers.Uploader` (`Put`), and/or `drivers.CipherSetter` (`SetCipher`).
+2. **Self-register in `init()`**: Call `drivers.Register("name", DriverMeta{...})` with constructor, `ParamSpec` slice, `RootKey` (param for root path/ID), and `CredentialKey` (param for credential — used for session dedup).
+3. **Interface assertions**: Add compile-time checks like `_ drivers.Driver = (*MyDriver)(nil)` and similarly for any implemented optional interfaces.
+4. **Declare parameters** via `ParamSpec`: `{Key: "xxx", Required: true, Help: "description", Default: "val"}`. Supports types `"string"` (default), `"select"` (use `Options: "a,b,c"`), `"bool"`.
+5. **ParamSpec options**: `ParamSpec.Type` supports `"string"`, `"select"`, `"bool"`. Use `ParamSpec.Options` as comma-separated values for select type.
+6. **Query param metadata**: Use `drivers.GetMeta(name)` to look up a driver's `ParamSpec`, `RootKey`, `CredentialKey` dynamically — prevents hardcoding driver-specific keys in config layer.
+7. **Register in factory**: Add `_ "github.com/yinzhenyu/skills/qrypt/drivers/<name>"` to `drivers/factory/factory.go`.
+8. **Cipher support**: If the driver supports client-side encryption, implement `drivers.CipherSetter` (`SetCipher(c cipher.Cipher)`). The FUSE layer calls this after construction via interface assertion.
+9. **Constructor pattern**: The `Ctor` function in `DriverMeta` receives `drivers.Params` (i.e. `map[string]string`). Extract and validate required params, return descriptive errors.
+10. **Reference drivers** for each pattern:
+    - `localfs` → simplest driver, no remote API, full CRUD
+    - `quark` → remote API with cipher, dir cache, streaming upload
+    - `yun139` → remote API without cipher, paginated list, streaming upload
+
+### Integration Test Framework
+- **Location**: `internal/fusefs/integration/` — driver-agnostic test suites.
+- **Registration**: Add a factory function in `setup.go`'s `driverFactories` map. The factory extracts params from `map[string]string` and calls the driver's constructor.
+- **Env override**: Add env-based config in `envBasedConfig()` (e.g. `QRYPT_COOKIE` for quark, `YUN139_AUTH` for yun139) so CI runs without a config file.
+- **Test discovery**: Config mount with `test_enabled = true` is auto-discovered by `DiscoverTestMounts()`. Without it, `TestConfiguredMounts` skips.
+- **Run command**: `go test -tags=integration -race ./internal/fusefs/integration/`
+- **Suite structure**: `runSuite(t, drv)` runs grouped scenarios (FileCreateWriteRead, MkdirAndList, RenameFile, RenameCrossDir, DeleteFile, DeleteDir, OverwriteFile). Each scenario auto-skips if the driver lacks required optional interfaces via helpers like `skipIfNotUploader(t, drv)`.
+- **Concurrency safety**: Tests use `uid()` (pid + atomic counter) for unique file/dir names. `TestRoot()` creates isolated subdirectories per test.
+- **FUSE-level test**: `hack/test-fs-ops.sh <mount_point>` — bash script testing POSIX ops (create, read, write, move, delete, permissions, symlinks) on a live FUSE mount. Not driver-specific; validates FUSE integration layer.
+- **Mock drivers**: Each driver can have a mock package under its directory (`drivers/<name>/mock/`) for unit testing dependents without real API credentials.
 - **Staging pattern**: release-before-write — staging dir captures file content before FUSE write returns, then async upload picks it up.
 - **Upload sync**: debounce + retry loop. Uploader watches staging, uploads with backoff, reports progress.
 - **FileAPI per-mount**: Each mount has its own `FileAPI` instance (driver + cipher + root_path). Avoid global state.
@@ -49,7 +75,8 @@ Quick-reference skill for working on the qrypt project. Assumes familiarity with
 - ✅ Cipher package extraction: cipher interface + constants to `drivers/cipher/`
 - ✅ Stream upload — no longer reads entire file into memory before upload
 - ✅ Race fix — staging snapshot race + upload path detection resolved
-- ✅ Integration test framework — `work_dir` + `test_enabled` config options
+- ✅ Integration test framework — `work_dir` + `test_enabled` config options, env-based test config
+- ✅ yun139 personal cloud API — dynamic host resolution for personal cloud accounts
 - ✅ CI — GitHub Actions release workflow for binary builds
 
 ### Common Gotchas
@@ -62,10 +89,10 @@ Quick-reference skill for working on the qrypt project. Assumes familiarity with
 
 ### Testing Patterns
 - **Unit tests**: `_test.go` alongside source file
-- **Integration tests**: `internal/fs/e2e_test.go` — requires FUSE
+- **Integration test framework**: See `### Integration Test Framework` (Static Knowledge) — driver-agnostic suite in `internal/fusefs/integration/`
 - **Mock drivers**: `drivers/quark/mock/` and `drivers/yun139/mock/` — use for testing without real API credentials
-- **Config tests**: `internal/config/config_test.go` — test multi-path config loading, validation
-- **FS ops test script**: `hack/test-fs-ops.sh` — bash-based FUSE mount point integrity validation
+- **Config tests**: `internal/config/config_test.go` — test multi-path config loading, validation. Note: imports all drivers as side-effects to make `drivers.GetMeta` work.
+- **FUSE-level test**: `hack/test-fs-ops.sh <mount_point>` — bash-based FUSE mount point POSIX op integrity validation
 - **Race detection**: Mandatory `-race` flag on all test runs
 
 ### Architecture Docs
