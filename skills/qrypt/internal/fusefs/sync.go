@@ -120,7 +120,7 @@ func (fs *QryptFS) cancelSyncTimer(path string) {
 func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 	logging.L.Infof("syncFile: starting sync for %s\n", path)
 
-	if fs.isUnderDeletingDir(path) {
+	if fs.isUnderDeletingDir(path) || fs.coalescer.isUnderTombstone(path) {
 		logging.L.Infof("syncFile: aborting sync for %s (being deleted)\n", path)
 		n.mu.Lock()
 		n.syncQueued = false
@@ -303,6 +303,12 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 		}
 		return fs.staging.OpenReader(snapPath)
 	}
+	// Notify coalescer that upload is starting — once started, the coalescer
+	// cannot cancel this upload and must compensate if a rename/delete arrives.
+	if fs.coalescer != nil {
+		fs.coalescer.MarkUploadStarted(uploadFid)
+	}
+
 	result, err := fs.uploader.Upload(uploadCtx, upload.Request{
 		Path:       path,
 		Name:       snapshotName,
@@ -334,6 +340,15 @@ func (fs *QryptFS) syncFile(path string, n *Node) (err error) {
 
 	if err != nil {
 		return err
+	}
+
+	// Notify coalescer that upload committed — pending compensate ops
+	// (rename/delete that arrived during upload) can now be executed.
+	// Use the original uploadFid (pre-upload fid, possibly "local_xxx") to
+	// match the key used by MarkUploadStarted, so the coalescer can find
+	// the PendingIntent in its oc.intents map.
+	if fs.coalescer != nil {
+		fs.coalescer.MarkUploadCommitted(uploadFid)
 	}
 
 	n.mu.Lock()

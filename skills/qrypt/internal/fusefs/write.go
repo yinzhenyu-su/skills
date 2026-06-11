@@ -79,6 +79,19 @@ func (fs *QryptFS) Create(path string, flags int, mode uint32) (errc int, fh uin
 	n.localPath = localPath
 
 	fs.storeNode(path, n)
+
+	// Submit create to coalescer
+	fs.coalescer.Submit(FileOp{
+		Kind:      OpCreate,
+		Path:      path,
+		Fid:       n.fid,
+		ParentFid: n.parentFid,
+		IsDir:     false,
+		Staging:   n.localPath,
+		Time:      time.Now(),
+		Node:      n,
+	})
+
 	n.mu.Lock()
 	fs.maybeSavePendingNodeLocked(path, n, true)
 	n.mu.Unlock()
@@ -279,7 +292,19 @@ func (fs *QryptFS) Release(path string, fh uint64) (errc int) {
 		if localPath != "" && fs.staging != nil {
 			fs.staging.Sync(localPath)
 		}
-		fs.enqueueSyncDelay(node, fs.writeBackDelay)
+		node.mu.RLock()
+		fid := node.fid
+		parentFid := node.parentFid
+		node.mu.RUnlock()
+		fs.coalescer.Submit(FileOp{
+			Kind:      OpUpload,
+			Path:      path,
+			Fid:       fid,
+			ParentFid: parentFid,
+			Staging:   node.localPath,
+			Time:      time.Now(),
+			Node:      node,
+		})
 	}
 	return 0
 }

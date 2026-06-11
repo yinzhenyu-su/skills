@@ -74,5 +74,19 @@ func (fs *QryptFS) Mkdir(path string, mode uint32) (errc int) {
 		source:            "local",
 	})
 
+	// Submit mkdir to coalescer for deferred remote creation
+	v, _ := fs.nodes.Load(path)
+	if n, ok := v.(*Node); ok {
+		fs.coalescer.Submit(FileOp{
+			Kind:      OpMkdir,
+			Path:      path,
+			Fid:       fid,
+			ParentFid: parentNode.fid,
+			IsDir:     true,
+			Time:      time.Now(),
+			Node:      n,
+		})
+	}
+
 	return 0
 }

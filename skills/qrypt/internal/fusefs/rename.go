@@ -3,15 +3,11 @@
 package fusefs
 
 import (
-	"context"
-	"errors"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
-	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
@@ -55,60 +51,25 @@ func (fs *QryptFS) Rename3(oldPath string, newPath string, flags uint32) (errc i
 	oldParent := filepath.Dir(oldPath)
 	newParent := filepath.Dir(newPath)
 	newName := filepath.Base(newPath)
-	isLocal := strings.HasPrefix(oldNode.fid, "local_")
 
-	w, wOk := fs.drv.(drivers.Writer)
-
-	if !isLocal && wOk {
-		encName := fs.cp.EncryptSegment(newName)
-		oldEncName := fs.cp.EncryptSegment(oldNode.name)
-		if encName != oldEncName {
-			renameEntry := drivers.Entry{ID: oldNode.fid, ParentID: oldNode.parentFid}
-			var renameErr error
-			for attempt := 0; attempt < 5; attempt++ {
-				renameErr = w.Rename(context.Background(), renameEntry, encName)
-				if renameErr == nil {
-					break
-				}
-				if errors.Is(renameErr, drivers.ErrDirAlreadyExists) || strings.Contains(renameErr.Error(), "conflict") {
-					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-					continue
-				}
-				break
-			}
-			if renameErr != nil {
-				logging.L.Errorf("Rename: API call failed for %s -> %s: %v\n", oldPath, newPath, renameErr)
-				return -fuse.EIO
-			}
-		}
-	}
+	// Submit rename to coalescer (replaces synchronous driver.Rename/Move calls).
+	// The coalescer will execute the rename asynchronously after the batching window.
+	fs.coalescer.Submit(FileOp{
+		Kind:      OpRename,
+		Path:      oldPath,
+		NewPath:   newPath,
+		Fid:       oldNode.fid,
+		ParentFid: oldNode.parentFid,
+		IsDir:     oldNode.isFolder,
+		Time:      time.Now(),
+		Node:      oldNode,
+	})
 
 	if oldParent != newParent {
 		newParentNode, errc := fs.lookup(newParent)
 		if errc != 0 {
 			return errc
 		}
-
-		if !isLocal && wOk {
-			moveEntry := drivers.Entry{ID: oldNode.fid, ParentID: oldNode.parentFid}
-			var moveErr error
-			for attempt := 0; attempt < 5; attempt++ {
-				moveErr = w.Move(context.Background(), moveEntry, newParentNode.fid)
-				if moveErr == nil {
-					break
-				}
-				if errors.Is(moveErr, drivers.ErrDirAlreadyExists) || strings.Contains(moveErr.Error(), "conflict") {
-					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-					continue
-				}
-				break
-			}
-			if moveErr != nil {
-				logging.L.Errorf("Rename: move API call failed for %s -> %s: %v\n", oldPath, newPath, moveErr)
-				return -fuse.EIO
-			}
-		}
-
 		oldNode.mu.Lock()
 		oldNode.parentFid = newParentNode.fid
 		oldNode.mu.Unlock()

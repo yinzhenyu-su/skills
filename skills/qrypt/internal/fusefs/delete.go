@@ -59,20 +59,18 @@ func (fs *QryptFS) Unlink(path string) (errc int) {
 		})
 		actualMap, _ := fs.deletionsByParent.LoadOrStore(parentFid, &sync.Map{})
 		actualMap.(*sync.Map).Store(fid, true)
-
-		fs.metadataOpChan <- metadataTask{
-			opType: "DELETE",
-			path:   path,
-			node:   n,
-			fids:   []string{fid},
-		}
-	} else {
-		fs.metadataOpChan <- metadataTask{
-			opType: "LOCAL_CLEANUP",
-			path:   path,
-			node:   n,
-		}
 	}
+
+	// Submit to coalescer (replaces direct metadataOpChan enqueue)
+	fs.coalescer.Submit(FileOp{
+		Kind:      OpDelete,
+		Path:      path,
+		Fid:       fid,
+		ParentFid: parentFid,
+		IsDir:     false,
+		Time:      time.Now(),
+		Node:      n,
+	})
 
 	fs.deleteNodePath(path, n)
 	return 0
@@ -92,12 +90,15 @@ func (fs *QryptFS) rmdirEmpty(path string, n *Node, parentFid string) int {
 	actualMap, _ := fs.deletionsByParent.LoadOrStore(parentFid, &sync.Map{})
 	actualMap.(*sync.Map).Store(n.fid, true)
 
-	fs.metadataOpChan <- metadataTask{
-		opType: "DELETE",
-		path:   path,
-		node:   n,
-		fids:   []string{n.fid},
-	}
+	fs.coalescer.Submit(FileOp{
+		Kind:      OpDelete,
+		Path:      path,
+		Fid:       n.fid,
+		ParentFid: parentFid,
+		IsDir:     true,
+		Time:      time.Now(),
+		Node:      n,
+	})
 
 	fs.deleteNodePath(path, n)
 	return 0
@@ -133,12 +134,18 @@ func (fs *QryptFS) rmdirNonEmpty(path string, n *Node, parentFid string) int {
 	}
 
 	if len(realFids) > 0 {
-		fs.metadataOpChan <- metadataTask{
-			opType: "DELETE",
-			path:   path,
-			node:   n,
-			fids:   realFids,
-		}
+		// Submit directory delete to coalescer (replaces direct metadataOpChan enqueue).
+		// The coalescer handles recursive tombstone absorption for child paths.
+		fs.coalescer.Submit(FileOp{
+			Kind:      OpDelete,
+			Path:      path,
+			Fid:       n.fid,
+			ParentFid: parentFid,
+			IsDir:     true,
+			Time:      time.Now(),
+			Node:      n,
+			Fids:      realFids,
+		})
 	}
 
 	fs.cleanupLocalUploadState(path, n, true)
@@ -149,11 +156,15 @@ func (fs *QryptFS) rmdirNonEmpty(path string, n *Node, parentFid string) int {
 }
 
 func (fs *QryptFS) rmdirLocalNonEmpty(path string, n *Node) int {
-	fs.metadataOpChan <- metadataTask{
-		opType: "LOCAL_CLEANUP_DIR",
-		path:   path,
-		node:   n,
-	}
+	fs.coalescer.Submit(FileOp{
+		Kind:      OpDelete,
+		Path:      path,
+		Fid:       n.fid,
+		ParentFid: n.parentFid,
+		IsDir:     true,
+		Time:      time.Now(),
+		Node:      n,
+	})
 
 	fs.cleanupLocalUploadState(path, n, true)
 	fs.deleteSubtreePaths(path, n)

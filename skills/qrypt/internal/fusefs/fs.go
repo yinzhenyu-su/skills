@@ -109,6 +109,8 @@ type QryptFS struct {
 	syncDelayMu   sync.Mutex
 	syncTimers    map[string]*time.Timer // path → resettable upload timer
 	remoteDirSync singleflight.Group
+
+	coalescer *OperationCoalescer
 }
 
 type FSOptions struct {
@@ -178,6 +180,18 @@ func NewFS(
 	}
 	fs.workerWg.Add(1)
 	go fs.metadataWorker()
+
+	// Determine driver capabilities for coalescer
+	caps := Capabilities{
+		BatchDelete:  false,
+		Rename:       true,
+		Move:         true,
+		CancelUpload: false,
+	}
+	if _, ok := drv.(drivers.BatchRemover); ok {
+		caps.BatchDelete = true
+	}
+	fs.coalescer = NewOperationCoalescer(caps, fs.handleCoalescedIntents)
 
 	fs.recoverDirtyFiles()
 	fs.replayOpsLog()
@@ -331,6 +345,11 @@ func (fs *QryptFS) Shutdown() {
 		if err := fs.cacheMgr.Close(); err != nil {
 			logging.L.Warnf("Shutdown: cacheMgr.Close: %v\n", err)
 		}
+	}
+
+	// Shutdown coalescer first — drains pending events and flushes remaining batch.
+	if fs.coalescer != nil {
+		fs.coalescer.Shutdown()
 	}
 
 	// Signal workers to drain remaining tasks.

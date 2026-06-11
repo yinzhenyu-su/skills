@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,6 +30,8 @@ const (
 	JOpDirty      = "dirty"
 	JOpUpdate     = "update"
 	JOpClean      = "clean"
+	JOpRename     = "coalesced_rename"
+	JOpMkdir      = "coalesced_mkdir"
 )
 
 // JournalEntry is the unified log entry for pending.jsonl.
@@ -612,11 +615,39 @@ func (m *CacheManager) loadJournal() (deleteOps []OpsLogEntry, pending map[strin
 				Timestamp: entry.Timestamp,
 				Done:      false,
 			})
+		case JOpRename:
+			deleteOps = append(deleteOps, OpsLogEntry{
+				OpType:    "COALESCED_RENAME",
+				Path:      entry.Path,
+				Fid:       entry.Fid,
+				Timestamp: entry.Timestamp,
+				Done:      false,
+			})
+		case JOpMkdir:
+			deleteOps = append(deleteOps, OpsLogEntry{
+				OpType:    "COALESCED_MKDIR",
+				Path:      entry.Path,
+				Fid:       entry.Fid,
+				Timestamp: entry.Timestamp,
+				Done:      false,
+			})
 		case JOpDeleteDone:
+			// Done marker Fid encodes "opType\x00fid" or just "opType".
+			// Match by Path + OpType (+ Fid when present) for same-path replace safety.
+			doneOpType := entry.Fid
+			doneFid := ""
+			if idx := strings.IndexByte(entry.Fid, 0); idx >= 0 {
+				doneOpType = entry.Fid[:idx]
+				doneFid = entry.Fid[idx+1:]
+			}
 			for i := range deleteOps {
-				if deleteOps[i].Path == entry.Path {
-					deleteOps[i].Done = true
+				if deleteOps[i].Path != entry.Path || deleteOps[i].OpType != doneOpType {
+					continue
 				}
+				if doneFid != "" && deleteOps[i].Fid != doneFid {
+					continue
+				}
+				deleteOps[i].Done = true
 			}
 		case JOpDirty:
 			if _, ok := dirtyByPath[entry.Path]; !ok {
@@ -736,13 +767,20 @@ func (m *CacheManager) compactJournal() error {
 	}
 	defer f.Close()
 
-	// Write active (not done) delete entries.
+	// Write active (not done) delete entries, preserving the original op type.
 	for _, e := range deleteOps {
 		if e.Done {
 			continue
 		}
+		op := JOpDelete
+		switch e.OpType {
+		case "COALESCED_RENAME":
+			op = JOpRename
+		case "COALESCED_MKDIR":
+			op = JOpMkdir
+		}
 		entry := &JournalEntry{
-			Op:   JOpDelete,
+			Op:   op,
 			Path: e.Path,
 			Fid:  e.Fid,
 		}
@@ -778,8 +816,15 @@ func (m *CacheManager) compactJournal() error {
 // --- Compatibility wrappers (callers in fs/ use these types) ---
 
 func (m *CacheManager) AppendOpsLog(entry *OpsLogEntry) error {
+	op := JOpDelete
+	switch entry.OpType {
+	case "COALESCED_RENAME":
+		op = JOpRename
+	case "COALESCED_MKDIR":
+		op = JOpMkdir
+	}
 	return m.appendJournal(&JournalEntry{
-		Op:   JOpDelete,
+		Op:   op,
 		Path: entry.Path,
 		Fid:  entry.Fid,
 	})
@@ -790,12 +835,19 @@ func (m *CacheManager) LoadOpsLog() ([]OpsLogEntry, error) {
 	return deleteOps, err
 }
 
-// MarkOpsLogDone appends a delete_done marker instead of rewriting the file.
-// Compaction will remove the original delete + this marker as a pair.
-func (m *CacheManager) MarkOpsLogDone(path string) error {
+// MarkOpsLogDone appends a delete_done marker for a specific pending operation.
+// opType+Fid identify the exact pending op (two DELETEs on same path with different
+// fids must be completed independently). opType and Fid are encoded together in the
+// done marker's Fid field, separated by \x00.
+func (m *CacheManager) MarkOpsLogDone(path, opType, fid string) error {
+	doneKey := opType
+	if fid != "" {
+		doneKey = opType + "\x00" + fid
+	}
 	return m.appendJournal(&JournalEntry{
 		Op:   JOpDeleteDone,
 		Path: path,
+		Fid:  doneKey,
 	})
 }
 

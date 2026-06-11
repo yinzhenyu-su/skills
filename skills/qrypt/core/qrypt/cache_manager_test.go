@@ -192,8 +192,8 @@ func TestOpsLog(t *testing.T) {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
 
-	m.MarkOpsLogDone("/a.txt")
-	m.MarkOpsLogDone("/b.txt")
+	m.MarkOpsLogDone("/a.txt", "DELETE", "f1")
+	m.MarkOpsLogDone("/b.txt", "DELETE", "f2")
 	entries, _ = m.LoadOpsLog()
 	for _, e := range entries {
 		if !e.Done {
@@ -205,6 +205,72 @@ func TestOpsLog(t *testing.T) {
 	entries, _ = m.LoadOpsLog()
 	if len(entries) != 0 {
 		t.Errorf("expected 0 after purge, got %d", len(entries))
+	}
+}
+
+func TestOpsLogDoneMatchesFid(t *testing.T) {
+	m := newTestManager(t)
+
+	m.AppendOpsLog(&OpsLogEntry{OpType: "DELETE", Path: "/same.txt", Fid: "old_fid"})
+	m.AppendOpsLog(&OpsLogEntry{OpType: "DELETE", Path: "/same.txt", Fid: "new_fid"})
+	m.MarkOpsLogDone("/same.txt", "DELETE", "old_fid")
+
+	entries, err := m.LoadOpsLog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	var oldDone, newDone bool
+	for _, e := range entries {
+		switch e.Fid {
+		case "old_fid":
+			oldDone = e.Done
+		case "new_fid":
+			newDone = e.Done
+		default:
+			t.Fatalf("unexpected fid %q", e.Fid)
+		}
+	}
+	if !oldDone {
+		t.Error("expected old_fid delete to be done")
+	}
+	if newDone {
+		t.Error("expected new_fid delete to remain pending")
+	}
+}
+
+func TestOpsLogCompactPreservesCoalescedTypes(t *testing.T) {
+	m := newTestManager(t)
+
+	m.AppendOpsLog(&OpsLogEntry{OpType: "COALESCED_RENAME", Path: "/old.txt", Fid: "fid1,/new.txt"})
+	m.AppendOpsLog(&OpsLogEntry{OpType: "COALESCED_MKDIR", Path: "/dir", Fid: "local_dir"})
+	if err := compactJournal(m); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := m.LoadOpsLog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	seen := map[string]bool{}
+	for _, e := range entries {
+		seen[e.OpType] = true
+		if e.OpType == "DELETE" {
+			t.Fatalf("coalesced op was compacted as DELETE: %+v", e)
+		}
+	}
+	if !seen["COALESCED_RENAME"] {
+		t.Error("expected COALESCED_RENAME after compact")
+	}
+	if !seen["COALESCED_MKDIR"] {
+		t.Error("expected COALESCED_MKDIR after compact")
 	}
 }
 

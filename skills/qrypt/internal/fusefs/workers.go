@@ -5,6 +5,8 @@ package fusefs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -224,6 +226,13 @@ func (fs *QryptFS) logOpsBatch(tasks []metadataTask) {
 		return
 	}
 	for _, t := range tasks {
+		// LOCAL_CLEANUP / LOCAL_CLEANUP_DIR are local-only and do not need
+		// crash recovery. Journaling them would produce done-marker mismatches
+		// because AppendOpsLog always writes JOpDelete (OpType becomes "DELETE"
+		// on recovery), while markOpsDone uses the original op type.
+		if t.opType == "LOCAL_CLEANUP" || t.opType == "LOCAL_CLEANUP_DIR" {
+			continue
+		}
 		fs.cacheMgr.AppendOpsLog(&qrypt.OpsLogEntry{
 			OpType: t.opType,
 			Path:   t.path,
@@ -237,7 +246,7 @@ func (fs *QryptFS) markOpsDone(tasks []metadataTask) {
 		return
 	}
 	for _, t := range tasks {
-		fs.cacheMgr.MarkOpsLogDone(t.path)
+		fs.cacheMgr.MarkOpsLogDone(t.path, t.opType, strings.Join(t.fids, ","))
 	}
 }
 
@@ -252,7 +261,43 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 	}
 	start := time.Now()
 	logging.L.Debugf("processBatchMetadataTasks: start op=%s count=%d\n", tasks[0].opType, len(tasks))
+
+	// Log ALL tasks first (including coalesced ones) before executing any,
+	// so crash recovery has a complete record of pending operations.
 	fs.logOpsBatch(tasks)
+
+	// Handle coalesced task types (COALESCED_RENAME, COALESCED_MKDIR) after
+	// logging, so they survive a crash mid-execution. Collect successful ones
+	// to mark done; failed ones stay pending for replay.
+	remainingTasks := make([]metadataTask, 0, len(tasks))
+	var coalescedDone []metadataTask
+	for _, t := range tasks {
+		switch t.opType {
+		case "COALESCED_RENAME":
+			if err := fs.executeCoalescedRename(t); err != nil {
+				logging.L.Warnf("processBatchMetadataTasks: coalesced rename %s failed (will retry): %v\n", t.path, err)
+			} else {
+				coalescedDone = append(coalescedDone, t)
+			}
+		case "COALESCED_MKDIR":
+			if err := fs.executeCoalescedMkdir(t); err != nil {
+				logging.L.Warnf("processBatchMetadataTasks: coalesced mkdir %s failed (will retry): %v\n", t.path, err)
+			} else {
+				coalescedDone = append(coalescedDone, t)
+			}
+		default:
+			remainingTasks = append(remainingTasks, t)
+		}
+	}
+	if len(coalescedDone) > 0 {
+		fs.markOpsDone(coalescedDone)
+	}
+	if len(remainingTasks) == 0 {
+		logging.L.Debugf("processBatchMetadataTasks: all tasks were coalesced operations (took %v)\n", time.Since(start))
+		return
+	}
+	tasks = remainingTasks
+
 	tasks = coalesceDeleteFamily(tasks)
 
 	validTasks := make([]metadataTask, 0, len(tasks))
@@ -332,7 +377,6 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 
 	logging.L.Infof("processBatchMetadataTasks: queue %d FIDs for async delete (%d valid tasks, took %v)\n",
 		len(deleteFids), len(validTasks), time.Since(start))
-	fs.markOpsDone(tasks)
 	go fs.asyncDelete(deleteFids, finalFids, finalPaths, validTasks)
 }
 
@@ -380,8 +424,100 @@ func (fs *QryptFS) processMetadataTask(task metadataTask) {
 	switch task.opType {
 	case "DELETE":
 		fs.asyncDelete(task.fids, nil, nil, []metadataTask{task})
+	case "COALESCED_RENAME":
+		if err := fs.executeCoalescedRename(task); err != nil {
+			logging.L.Warnf("processMetadataTask: coalesced rename %s failed (will retry): %v\n", task.path, err)
+		} else {
+			fs.markOpsDone([]metadataTask{task})
+		}
+	case "COALESCED_MKDIR":
+		if err := fs.executeCoalescedMkdir(task); err != nil {
+			logging.L.Warnf("processMetadataTask: coalesced mkdir %s failed (will retry): %v\n", task.path, err)
+		} else {
+			fs.markOpsDone([]metadataTask{task})
+		}
 	default:
 		logging.L.Warnf("metadataWorker: unknown opType=%s\n", task.opType)
+	}
+}
+
+// handleCoalescedIntents is the flush callback for OperationCoalescer. It receives
+// coalesced RemoteIntent values and dispatches them to the appropriate processing
+// paths (metadataOpChan, upload, or local cleanup).
+func (fs *QryptFS) handleCoalescedIntents(intents []RemoteIntent) {
+	for _, intent := range intents {
+		if intent.SkipRemote {
+			// Local cleanup only - remove staging
+			if intent.Staging != "" && fs.staging != nil {
+				fs.staging.Remove(intent.Staging)
+			}
+			if intent.Node != nil && intent.Node.localPath != "" && fs.staging != nil {
+				fs.staging.Remove(intent.Node.localPath)
+			}
+			if fs.cacheMgr != nil && intent.Fid != "" {
+				fs.cacheMgr.RemovePendingNode(intent.Path)
+			}
+			continue
+		}
+		switch intent.Kind {
+		case "UPLOAD":
+			if intent.Node != nil {
+				intent.Node.mu.Lock()
+				intent.Node.syncQueued = true
+				intent.Node.mu.Unlock()
+				fs.enqueueNode(intent.Node)
+			}
+		case "DELETE":
+			// Route to existing metadata worker
+			fids := intent.Fids
+			if len(fids) == 0 && intent.Fid != "" {
+				fids = []string{intent.Fid}
+			}
+			// Only submit to metadataOpChan if there are remote fids
+			hasRemoteFid := false
+			for _, fid := range fids {
+				if fid != "" && !strings.HasPrefix(fid, "local_") {
+					hasRemoteFid = true
+					break
+				}
+			}
+			if hasRemoteFid {
+				fs.metadataOpChan <- metadataTask{
+					opType: "DELETE",
+					path:   intent.Path,
+					node:   intent.Node,
+					fids:   fids,
+				}
+			} else if intent.Node != nil {
+				// Local-only delete
+				fs.metadataOpChan <- metadataTask{
+					opType: "LOCAL_CLEANUP",
+					path:   intent.Path,
+					node:   intent.Node,
+				}
+			}
+		case "RENAME":
+			// Deferred rename - store newPath on both the node and the task's fids.
+			// fids[0]=fid, fids[1]=newPath (for crash recovery replay without Node).
+			if intent.Node != nil {
+				intent.Node.mu.Lock()
+				intent.Node.expectedFid = intent.NewPath
+				intent.Node.mu.Unlock()
+			}
+			fs.metadataOpChan <- metadataTask{
+				opType: "COALESCED_RENAME",
+				path:   intent.Path,
+				node:   intent.Node,
+				fids:   []string{intent.Fid, intent.NewPath},
+			}
+		case "MKDIR":
+			// Deferred mkdir
+			fs.metadataOpChan <- metadataTask{
+				opType: "COALESCED_MKDIR",
+				path:   intent.Path,
+				node:   intent.Node,
+			}
+		}
 	}
 }
 
@@ -522,6 +658,18 @@ func (fs *QryptFS) asyncDelete(deleteFids, finalFids, finalPaths []string, valid
 			fs.cacheMgr.BatchDeleteNodeState(finalFids, finalPaths)
 			logging.L.Debugf("asyncDelete: state cleaned up for %d FIDs\n", len(finalFids))
 		}
+		// Mark journal entries as done so successful deletes are not replayed
+		// on restart (replayOpsLog path). Filter to only DELETE-type tasks
+		// (LOCAL_CLEANUP is not journaled, coalesced ops are marked in processBatchMetadataTasks).
+		var deleteTasks []metadataTask
+		for _, t := range validTasks {
+			if t.opType == "DELETE" {
+				deleteTasks = append(deleteTasks, t)
+			}
+		}
+		if len(deleteTasks) > 0 {
+			fs.markOpsDone(deleteTasks)
+		}
 	}
 	if err != nil {
 		logging.L.Errorf("asyncDelete: FAILED after 3 attempts for %d FIDs (took %v): %v\n", len(deleteFids), time.Since(start), err)
@@ -551,4 +699,128 @@ func completedDeleteFids(deleteFids []string, tasks []metadataTask) []string {
 		}
 	}
 	return fids
+}
+
+// executeCoalescedRename performs a deferred remote rename for a COALESCED_RENAME
+// metadataTask. The new path is read from node.expectedFid (live path) or from
+// t.fids[1] (crash recovery path encoded by handleCoalescedIntents).
+func (fs *QryptFS) executeCoalescedRename(t metadataTask) error {
+	w, wOk := fs.drv.(drivers.Writer)
+	if !wOk {
+		return fmt.Errorf("driver does not support rename")
+	}
+
+	var fid, parentFid, newPath string
+	if t.node != nil {
+		t.node.mu.RLock()
+		fid = t.node.fid
+		parentFid = t.node.parentFid
+		newPath = t.node.expectedFid
+		t.node.mu.RUnlock()
+	}
+
+	// Crash recovery fallback: fid and newPath encoded in t.fids
+	if fid == "" && len(t.fids) > 0 {
+		fid = t.fids[0]
+	}
+	if newPath == "" && len(t.fids) > 1 {
+		newPath = t.fids[1]
+	}
+
+	if fid == "" || strings.HasPrefix(fid, "local_") {
+		return nil // nothing to do — local-only file
+	}
+	if newPath == "" {
+		return fmt.Errorf("no newPath for %s", t.path)
+	}
+
+	oldPath := t.path
+	oldName := filepath.Base(oldPath)
+	newName := filepath.Base(newPath)
+
+	encName := fs.cp.EncryptSegment(newName)
+	oldEncName := fs.cp.EncryptSegment(oldName)
+	var lastErr error
+	if encName != oldEncName {
+		renameEntry := drivers.Entry{ID: fid, ParentID: parentFid}
+		for attempt := 0; attempt < 5; attempt++ {
+			if err := w.Rename(context.Background(), renameEntry, encName); err != nil {
+				if errors.Is(err, drivers.ErrDirAlreadyExists) || strings.Contains(err.Error(), "conflict") {
+					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+					continue
+				}
+				lastErr = fmt.Errorf("rename failed for %s: %w", oldPath, err)
+				logging.L.Errorf("executeCoalescedRename: %v\n", lastErr)
+				return lastErr
+			}
+			break
+		}
+	}
+
+	oldParent := filepath.Dir(oldPath)
+	newParent := filepath.Dir(newPath)
+	if oldParent != newParent {
+		newParentNode, errc := fs.lookup(newParent)
+		if errc == 0 {
+			moveEntry := drivers.Entry{ID: fid, ParentID: parentFid}
+			for attempt := 0; attempt < 5; attempt++ {
+				if err := w.Move(context.Background(), moveEntry, newParentNode.fid); err != nil {
+					if errors.Is(err, drivers.ErrDirAlreadyExists) || strings.Contains(err.Error(), "conflict") {
+						time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+						continue
+					}
+					lastErr = fmt.Errorf("move failed for %s: %w", oldPath, err)
+					logging.L.Errorf("executeCoalescedRename: %v\n", lastErr)
+					return lastErr
+				}
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// executeCoalescedMkdir performs a deferred remote Mkdir for a COALESCED_MKDIR
+// metadataTask. On success, it updates the local Node's fid to the remote fid
+// so subsequent coalesced deletes/renames see RemoteExists=true.
+func (fs *QryptFS) executeCoalescedMkdir(t metadataTask) error {
+	w, wOk := fs.drv.(drivers.Writer)
+	if !wOk {
+		return fmt.Errorf("driver does not support mkdir")
+	}
+	path := t.path
+	parentPath := filepath.Dir(path)
+	name := filepath.Base(path)
+
+	parentNode, errc := fs.lookup(parentPath)
+	if errc != 0 {
+		return fmt.Errorf("parent lookup failed: errc=%d", errc)
+	}
+
+	encName := fs.cp.EncryptSegment(name)
+	entry, err := w.Mkdir(context.Background(), parentNode.fid, encName)
+	if err != nil {
+		// Crash recovery: the directory may already exist from a previous
+		// attempt. Treat this as success and look up the existing entry.
+		if errors.Is(err, drivers.ErrDirAlreadyExists) {
+			existingFid, lookupErr := fs.findChildDir(context.Background(), parentNode.fid, encName)
+			if lookupErr != nil {
+				return fmt.Errorf("mkdir %s already exists but lookup failed: %w", path, lookupErr)
+			}
+			entry = drivers.Entry{ID: existingFid, Name: name, IsDir: true}
+		} else {
+			logging.L.Warnf("executeCoalescedMkdir: mkdir failed for %s: %v\n", path, err)
+			return err
+		}
+	}
+
+	if t.node != nil && entry.ID != "" {
+		t.node.mu.Lock()
+		t.node.fid = entry.ID
+		t.node.source = "remote"
+		t.node.mu.Unlock()
+		fs.fidNodes.Store(entry.ID, t.node)
+		logging.L.Debugf("executeCoalescedMkdir: updated %s fid local→%s\n", path, entry.ID)
+	}
+	return nil
 }

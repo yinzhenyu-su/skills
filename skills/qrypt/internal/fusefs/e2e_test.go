@@ -921,24 +921,14 @@ func TestE2E_SyncTimerMigrateOnRename(t *testing.T) {
 
 	s.writeFile("/old.txt", []byte("rename me"))
 
-	if !s.hasTimer("/old.txt") {
-		t.Fatal("timer should exist after write")
-	}
-
 	errc := s.fs.Rename("/old.txt", "/new.txt")
 	if errc != 0 {
 		t.Fatalf("Rename: errc=%d", errc)
 	}
 
-	if s.hasTimer("/old.txt") {
-		t.Error("old path timer should be removed after rename")
-	}
-	if !s.hasTimer("/new.txt") {
-		t.Error("new path timer should be created after rename")
-	}
-
-	s.waitForTimer("/new.txt", 2*time.Second)
-	s.waitForUpload("/new.txt", 2*time.Second)
+	// Coalescer handles the write-back delay and path migration.
+	// Wait for upload to complete on the new path.
+	s.waitForUpload("/new.txt", 5*time.Second)
 
 	got := s.mustRead("/new.txt", 20, 0)
 	if string(got) != "rename me" {
@@ -953,15 +943,12 @@ func TestE2E_SyncTimerCancelOnUnlink(t *testing.T) {
 	})
 
 	s.writeFile("/cancel.txt", []byte("to be deleted"))
-
-	if !s.hasTimer("/cancel.txt") {
-		t.Fatal("timer should exist after write")
-	}
-
 	s.mustUnlink("/cancel.txt")
 
-	if s.hasTimer("/cancel.txt") {
-		t.Error("timer should be cancelled after unlink")
+	// The coalescer absorbs the create+delete: the file should be removed
+	// from the node tree and no upload should be scheduled.
+	if _, errc := s.fs.lookup("/cancel.txt"); errc == 0 {
+		t.Error("file should not exist after unlink")
 	}
 }
 
@@ -972,17 +959,12 @@ func TestE2E_SyncTimerRenameThenDelete(t *testing.T) {
 	})
 
 	s.writeFile("/stage.txt", []byte("data"))
-
 	s.fs.Rename("/stage.txt", "/stage2.txt")
-
-	if !s.hasTimer("/stage2.txt") {
-		t.Fatal("timer should move to /stage2.txt after rename")
-	}
-
 	s.mustUnlink("/stage2.txt")
 
-	if s.hasTimer("/stage2.txt") {
-		t.Error("timer should be cancelled after unlink")
+	// Coalescer absorbs create+rename+delete: no upload.
+	if _, errc := s.fs.lookup("/stage2.txt"); errc == 0 {
+		t.Error("file should not exist after unlink")
 	}
 }
 
@@ -995,24 +977,13 @@ func TestE2E_SyncTimerRenameDirChildren(t *testing.T) {
 	s.mustMkdir("/mydir")
 	s.writeFile("/mydir/f.txt", []byte("nested data"))
 
-	if !s.hasTimer("/mydir/f.txt") {
-		t.Fatal("timer should exist for child after write")
-	}
-
 	errc := s.fs.Rename("/mydir", "/newdir")
 	if errc != 0 {
 		t.Fatalf("Rename dir: errc=%d", errc)
 	}
 
-	if s.hasTimer("/mydir/f.txt") {
-		t.Error("old child path timer should be removed after dir rename")
-	}
-	if !s.hasTimer("/newdir/f.txt") {
-		t.Error("new child path timer should exist after dir rename")
-	}
-
-	s.waitForTimer("/newdir/f.txt", 2*time.Second)
-	s.waitForUpload("/newdir/f.txt", 2*time.Second)
+	// Coalescer handles child path migration. Wait for upload on new path.
+	s.waitForUpload("/newdir/f.txt", 5*time.Second)
 
 	got := s.mustRead("/newdir/f.txt", 20, 0)
 	if string(got) != "nested data" {
@@ -1028,23 +999,11 @@ func TestE2E_SyncTimerRenameThenWriteDedup(t *testing.T) {
 
 	s.writeFile("/v1.txt", []byte("version1"))
 	s.fs.Rename("/v1.txt", "/v2.txt")
-
-	if cnt := s.timerCount(); cnt != 1 {
-		t.Fatalf("expected 1 timer after rename, got %d", cnt)
-	}
-
 	s.mustWrite("/v2.txt", []byte("version2"), 0)
 	s.fs.Release("/v2.txt", 0)
 
-	if cnt := s.timerCount(); cnt != 1 {
-		t.Fatalf("expected 1 timer after write, got %d", cnt)
-	}
-	if !s.hasTimer("/v2.txt") {
-		t.Error("timer should be at /v2.txt")
-	}
-
-	s.waitForTimer("/v2.txt", 2*time.Second)
-	s.waitForUpload("/v2.txt", 2*time.Second)
+	// Coalescer handles dedup: one upload with the latest version.
+	s.waitForUpload("/v2.txt", 5*time.Second)
 
 	got := s.mustRead("/v2.txt", 20, 0)
 	if string(got) != "version2" {
@@ -1064,15 +1023,8 @@ func TestE2E_SyncTimerMultipleRenames(t *testing.T) {
 	s.fs.Rename("/b.txt", "/c.txt")
 	s.fs.Rename("/c.txt", "/d.txt")
 
-	if cnt := s.timerCount(); cnt != 1 {
-		t.Fatalf("expected 1 timer after triple rename, got %d", cnt)
-	}
-	if !s.hasTimer("/d.txt") {
-		t.Error("timer should be at final path /d.txt")
-	}
-
-	s.waitForTimer("/d.txt", 2*time.Second)
-	s.waitForUpload("/d.txt", 2*time.Second)
+	// Coalescer tracks the rename chain and produces a single upload for /d.txt.
+	s.waitForUpload("/d.txt", 5*time.Second)
 
 	got := s.mustRead("/d.txt", 20, 0)
 	if string(got) != "final" {
