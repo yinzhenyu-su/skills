@@ -425,15 +425,78 @@ func (fs *QryptFS) lookupExtended(path string, refresh bool) (*Node, int) {
 	return nil, -fuse.ENOENT
 }
 
+const deletingPathTombstoneTTL = 10 * time.Minute
+
+func (fs *QryptFS) markDeletingPath(path string) {
+	if path == "" || path == "/" {
+		return
+	}
+	fs.deletingPaths.Store(filepath.Clean(path), &deletingPathState{})
+}
+
+func (fs *QryptFS) markDeletingPathDone(path string) {
+	if path == "" || path == "/" {
+		return
+	}
+	fs.deletingPaths.Store(filepath.Clean(path), &deletingPathState{
+		expiresAt: time.Now().Add(deletingPathTombstoneTTL),
+	})
+}
+
+func (fs *QryptFS) clearDeletingPath(path string) {
+	if path == "" {
+		return
+	}
+	fs.deletingPaths.Delete(filepath.Clean(path))
+}
+
+func (fs *QryptFS) deletingPathActive(path string) bool {
+	v, ok := fs.deletingPaths.Load(path)
+	if !ok {
+		return false
+	}
+	state, ok := v.(*deletingPathState)
+	if !ok || state == nil || state.expiresAt.IsZero() {
+		return true
+	}
+	if time.Now().Before(state.expiresAt) {
+		return true
+	}
+	fs.deletingPaths.Delete(path)
+	return false
+}
+
 func (fs *QryptFS) isUnderDeletingDir(path string) bool {
 	p := path
 	for p != "" && p != "/" {
-		if _, ok := fs.deletingPaths.Load(p); ok {
+		if fs.deletingPathActive(p) {
 			return true
 		}
 		p = filepath.Dir(p)
 	}
 	return false
+}
+
+func (fs *QryptFS) absorbDeleteUnderDeletingDir(path string, recursive bool) bool {
+	if !fs.isUnderDeletingDir(path) {
+		return false
+	}
+	if v, ok := fs.nodes.Load(filepath.Clean(path)); ok {
+		n := v.(*Node)
+		fs.cleanupLocalUploadState(path, n, recursive)
+		if recursive {
+			fs.deleteSubtreePaths(path, n)
+		}
+		fs.deleteNodePath(path, n)
+	} else if fs.cacheMgr != nil {
+		if recursive {
+			fs.cacheMgr.RemovePendingNodesByPrefix(path)
+		} else {
+			fs.cacheMgr.RemovePendingNode(path)
+		}
+	}
+	logging.L.Debugf("delete absorbed under directory tombstone: path=%s recursive=%v\n", path, recursive)
+	return true
 }
 
 func (fs *QryptFS) currentPathForNode(n *Node) string {

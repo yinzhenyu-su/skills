@@ -49,16 +49,21 @@ type syncTask struct {
 }
 
 type metadataTask struct {
-	opType string
-	path   string
-	node   *Node
-	fids   []string
+	opType     string
+	path       string
+	node       *Node
+	fids       []string
+	skipRemote bool
 }
 
 type deletionState struct {
 	parentFid string
 	path      string
 	apiDone   bool
+}
+
+type deletingPathState struct {
+	expiresAt time.Time
 }
 
 // SetUploadQueue replaces the internal uploadChan with an external queue.

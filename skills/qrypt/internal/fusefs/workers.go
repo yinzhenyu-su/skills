@@ -125,20 +125,23 @@ func (fs *QryptFS) metadataWorker() {
 		}
 	}()
 
-	const batchSize = 100
-	const idleTimeout = 200 * time.Millisecond
+	const batchSize = 4096
+	const idleTimeout = 600 * time.Millisecond
 
 	for task := range fs.metadataOpChan {
 		tasks := []metadataTask{task}
-		if task.opType == "DELETE" {
+		if isDeleteFamilyOp(task.opType) {
 		collect:
 			for len(tasks) < batchSize {
 				select {
-				case next := <-fs.metadataOpChan:
-					if next.opType == "DELETE" {
+				case next, ok := <-fs.metadataOpChan:
+					if !ok {
+						break collect
+					}
+					if isDeleteFamilyOp(next.opType) {
 						tasks = append(tasks, next)
 					} else {
-						logging.L.Debugf("metadataWorker: processing %d tasks (%d DELETE, then %s)\n", len(tasks)+1, len(tasks), next.opType)
+						logging.L.Debugf("metadataWorker: processing %d delete-family tasks before %s\n", len(tasks), next.opType)
 						fs.processBatchMetadataTasks(tasks)
 						tasks = []metadataTask{next}
 						break collect
@@ -151,6 +154,69 @@ func (fs *QryptFS) metadataWorker() {
 		logging.L.Debugf("metadataWorker: processing batch of %d %s tasks\n", len(tasks), tasks[0].opType)
 		fs.processBatchMetadataTasks(tasks)
 	}
+}
+
+func isDeleteFamilyOp(opType string) bool {
+	return opType == "DELETE" || opType == "LOCAL_CLEANUP" || opType == "LOCAL_CLEANUP_DIR"
+}
+
+func taskDeletesDir(t metadataTask) bool {
+	if t.opType != "DELETE" {
+		return false
+	}
+	if t.node == nil {
+		return false
+	}
+	t.node.mu.RLock()
+	isFolder := t.node.isFolder
+	t.node.mu.RUnlock()
+	return isFolder
+}
+
+func pathUnder(parent, child string) bool {
+	if parent == "" || parent == "/" || child == "" || parent == child {
+		return false
+	}
+	if !strings.HasSuffix(parent, "/") {
+		parent += "/"
+	}
+	return strings.HasPrefix(child, parent)
+}
+
+func coalesceDeleteFamily(tasks []metadataTask) []metadataTask {
+	if len(tasks) == 0 {
+		return tasks
+	}
+
+	dirDeletes := make([]metadataTask, 0)
+	for _, t := range tasks {
+		if taskDeletesDir(t) {
+			dirDeletes = append(dirDeletes, t)
+		}
+	}
+	if len(dirDeletes) == 0 {
+		return tasks
+	}
+
+	out := make([]metadataTask, len(tasks))
+	copy(out, tasks)
+	var skipped int
+	for i := range out {
+		if out[i].opType != "DELETE" || out[i].skipRemote {
+			continue
+		}
+		for _, dirTask := range dirDeletes {
+			if pathUnder(dirTask.path, out[i].path) {
+				out[i].skipRemote = true
+				skipped++
+				break
+			}
+		}
+	}
+	if skipped > 0 {
+		logging.L.Infof("metadataWorker: coalesced %d child delete tasks under directory deletes\n", skipped)
+	}
+	return out
 }
 
 func (fs *QryptFS) logOpsBatch(tasks []metadataTask) {
@@ -187,6 +253,7 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 	start := time.Now()
 	logging.L.Debugf("processBatchMetadataTasks: start op=%s count=%d\n", tasks[0].opType, len(tasks))
 	fs.logOpsBatch(tasks)
+	tasks = coalesceDeleteFamily(tasks)
 
 	validTasks := make([]metadataTask, 0, len(tasks))
 	var finalFids []string
@@ -219,18 +286,19 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 	}
 
 	var deleteFids []string
-	if validTasks[0].opType == "DELETE" {
-		for _, t := range validTasks {
-			for _, fid := range t.fids {
-				if fid == "" || strings.HasPrefix(fid, "local_") {
-					continue
-				}
-				deleteFids = append(deleteFids, fid)
+	for _, t := range validTasks {
+		if t.opType != "DELETE" || t.skipRemote {
+			continue
+		}
+		for _, fid := range t.fids {
+			if fid == "" || strings.HasPrefix(fid, "local_") {
+				continue
 			}
+			deleteFids = append(deleteFids, fid)
 		}
 	}
 
-	if validTasks[0].opType == "LOCAL_CLEANUP" || validTasks[0].opType == "LOCAL_CLEANUP_DIR" {
+	if len(deleteFids) == 0 && containsOnlyLocalCleanup(validTasks) {
 		logging.L.Debugf("processBatchMetadataTasks: local cleanup for %d tasks\n", len(validTasks))
 		// Remove staging files FIRST, then clean up pending-node memory.
 		// This ordering is critical for crash recovery with pending.journal:
@@ -266,6 +334,15 @@ func (fs *QryptFS) processBatchMetadataTasks(tasks []metadataTask) {
 		len(deleteFids), len(validTasks), time.Since(start))
 	fs.markOpsDone(tasks)
 	go fs.asyncDelete(deleteFids, finalFids, finalPaths, validTasks)
+}
+
+func containsOnlyLocalCleanup(tasks []metadataTask) bool {
+	for _, t := range tasks {
+		if t.opType != "LOCAL_CLEANUP" && t.opType != "LOCAL_CLEANUP_DIR" {
+			return false
+		}
+	}
+	return true
 }
 
 func (fs *QryptFS) replayOpsLog() {
@@ -418,10 +495,13 @@ func (fs *QryptFS) asyncDelete(deleteFids, finalFids, finalPaths []string, valid
 
 	if err == nil {
 		logging.L.Infof("asyncDelete: API success for %d FIDs (took %v)\n", len(deleteFids), time.Since(start))
-		for _, fid := range deleteFids {
+		for _, fid := range completedDeleteFids(deleteFids, validTasks) {
 			if val, ok := fs.activeDeletions.Load(fid); ok {
 				state := val.(*deletionState)
 				state.apiDone = true
+				if state.path != "" {
+					fs.markDeletingPathDone(state.path)
+				}
 				logging.L.Debugf("asyncDelete: tombstone apiDone=true for fid=%s\n", fid)
 			}
 			if fs.cacheMgr != nil {
@@ -446,4 +526,29 @@ func (fs *QryptFS) asyncDelete(deleteFids, finalFids, finalPaths []string, valid
 	if err != nil {
 		logging.L.Errorf("asyncDelete: FAILED after 3 attempts for %d FIDs (took %v): %v\n", len(deleteFids), time.Since(start), err)
 	}
+}
+
+func completedDeleteFids(deleteFids []string, tasks []metadataTask) []string {
+	seen := make(map[string]bool)
+	var fids []string
+	for _, fid := range deleteFids {
+		if fid == "" || seen[fid] {
+			continue
+		}
+		seen[fid] = true
+		fids = append(fids, fid)
+	}
+	for _, t := range tasks {
+		if t.opType != "DELETE" {
+			continue
+		}
+		for _, fid := range t.fids {
+			if fid == "" || strings.HasPrefix(fid, "local_") || seen[fid] {
+				continue
+			}
+			seen[fid] = true
+			fids = append(fids, fid)
+		}
+	}
+	return fids
 }

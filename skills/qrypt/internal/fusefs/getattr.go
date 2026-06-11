@@ -3,10 +3,15 @@
 package fusefs
 
 import (
+	"time"
+
 	"github.com/winfsp/cgofuse/fuse"
 )
 
 func (fs *QryptFS) Getattr(path string, stat *fuse.Stat_t, fh uint64) (errc int) {
+	start := time.Now()
+	defer logFuseResult("Getattr", path, start, &errc)
+
 	n, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
 		return errc

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
@@ -14,6 +15,8 @@ import (
 )
 
 func (fs *QryptFS) Unlink(path string) (errc int) {
+	start := time.Now()
+	defer logFuseResult("Unlink", path, start, &errc)
 	defer func() {
 		if r := recover(); r != nil {
 			logging.L.Errorf("PANIC in Unlink(%s): %v\n", path, r)
@@ -25,6 +28,10 @@ func (fs *QryptFS) Unlink(path string) (errc int) {
 		return -fuse.EIO
 	}
 	logging.L.Infof("[FUSE] Unlink: path=%s\n", path)
+
+	if fs.absorbDeleteUnderDeletingDir(path, false) {
+		return 0
+	}
 
 	n, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
@@ -105,8 +112,15 @@ func (fs *QryptFS) rmdirNonEmpty(path string, n *Node, parentFid string) int {
 		if _, exists := fs.activeDeletions.Load(fid); exists {
 			continue
 		}
+		statePath := ""
+		n.mu.RLock()
+		if fid == n.fid {
+			statePath = path
+		}
+		n.mu.RUnlock()
 		fs.activeDeletions.Store(fid, &deletionState{
 			parentFid: parentFid,
+			path:      statePath,
 			apiDone:   false,
 		})
 	}
@@ -148,6 +162,8 @@ func (fs *QryptFS) rmdirLocalNonEmpty(path string, n *Node) int {
 }
 
 func (fs *QryptFS) Rmdir(path string) (errc int) {
+	start := time.Now()
+	defer logFuseResult("Rmdir", path, start, &errc)
 	defer func() {
 		if r := recover(); r != nil {
 			logging.L.Errorf("PANIC in Rmdir(%s): %v\n", path, r)
@@ -159,6 +175,10 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 		return -fuse.EIO
 	}
 	logging.L.Infof("[FUSE] Rmdir: path=%s\n", path)
+
+	if fs.absorbDeleteUnderDeletingDir(path, true) {
+		return 0
+	}
 
 	n, errc := fs.lookupExtended(path, false)
 	if errc != 0 {
@@ -177,10 +197,10 @@ func (fs *QryptFS) Rmdir(path string) (errc int) {
 	hasChildren := len(n.children) > 0
 	n.mu.Unlock()
 
-	fs.deletingPaths.Store(path, struct{}{})
+	fs.markDeletingPath(path)
 
 	if hasChildren && strings.HasPrefix(n.fid, "local_") {
-		fs.deletingPaths.Delete(path)
+		fs.clearDeletingPath(path)
 		return fs.rmdirLocalNonEmpty(path, n)
 	}
 

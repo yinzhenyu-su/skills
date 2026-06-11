@@ -252,6 +252,103 @@ func TestRmdirNonEmptyBatchBackendDeletesOnlyDirectoryFid(t *testing.T) {
 	t.Fatal("BatchRemove was not called")
 }
 
+func TestDeleteFamilyCoalescesChildDeletesUnderDirectoryDelete(t *testing.T) {
+	logger, _ := logging.New("off", "", nil)
+	logging.L = logger
+
+	cph, _ := cipher.NewRcloneCipher("testpassword", "")
+	drv := &countingBatchRemoveDriver{}
+	fs := NewFS(drv, cph, nil, "0", FSOptions{
+		MaxRetries:        3,
+		ConcurrentUploads: 1,
+	})
+	t.Cleanup(fs.Shutdown)
+
+	dir := newNode("dir_fid", "0", "dir", "/dir", true)
+	a := newNode("fid_a", "dir_fid", "a.txt", "/dir/a.txt", false)
+	b := newNode("fid_b", "dir_fid", "b.txt", "/dir/b.txt", false)
+	for _, fid := range []string{"fid_a", "fid_b", "dir_fid"} {
+		fs.activeDeletions.Store(fid, &deletionState{parentFid: "0"})
+	}
+
+	fs.processBatchMetadataTasks([]metadataTask{
+		{opType: "DELETE", path: "/dir/a.txt", node: a, fids: []string{"fid_a"}},
+		{opType: "DELETE", path: "/dir/b.txt", node: b, fids: []string{"fid_b"}},
+		{opType: "DELETE", path: "/dir", node: dir, fids: []string{"dir_fid"}},
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		drv.mu.Lock()
+		batches := append([][]drivers.Entry(nil), drv.batches...)
+		drv.mu.Unlock()
+		if len(batches) > 0 {
+			if len(batches[0]) != 1 || batches[0][0].ID != "dir_fid" {
+				t.Fatalf("BatchRemove entries = %#v, want only dir_fid", batches[0])
+			}
+			for _, fid := range []string{"fid_a", "fid_b", "dir_fid"} {
+				v, ok := fs.activeDeletions.Load(fid)
+				if !ok {
+					t.Fatalf("missing deletion state for %s", fid)
+				}
+				if !v.(*deletionState).apiDone {
+					t.Fatalf("deletion state for %s was not marked done", fid)
+				}
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("BatchRemove was not called")
+}
+
+func TestUnlinkUnderDeletedDirectoryTombstoneIsAbsorbed(t *testing.T) {
+	logger, _ := logging.New("off", "", nil)
+	logging.L = logger
+
+	cph, _ := cipher.NewRcloneCipher("testpassword", "")
+	drv := &countingBatchRemoveDriver{}
+	fs := NewFS(drv, cph, nil, "0", FSOptions{
+		MaxRetries:        3,
+		ConcurrentUploads: 1,
+	})
+	t.Cleanup(fs.Shutdown)
+
+	fs.storeNode("/", &Node{fid: "0", name: "", currentPath: "/", isFolder: true, source: "remote"})
+	dir := newNode("dir_fid", "0", "dir", "/dir", true)
+	fs.storeNode("/dir", dir)
+	fs.storeNode("/dir/late.txt", newNode("late_fid", "dir_fid", "late.txt", "/dir/late.txt", false))
+	fs.markDeletingPathDone("/dir")
+
+	if errc := fs.Unlink("/dir/late.txt"); errc != 0 {
+		t.Fatalf("Unlink under deleted dir: errc=%d", errc)
+	}
+	if _, ok := fs.nodes.Load("/dir/late.txt"); ok {
+		t.Fatal("late child should be removed locally")
+	}
+
+	time.Sleep(700 * time.Millisecond)
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	if len(drv.batches) != 0 {
+		t.Fatalf("late child delete should not call BatchRemove, got %#v", drv.batches)
+	}
+}
+
+func TestDeletingPathTombstoneExpires(t *testing.T) {
+	fs := newTestFS(t)
+
+	fs.deletingPaths.Store("/expired", &deletingPathState{
+		expiresAt: time.Now().Add(-time.Second),
+	})
+	if fs.isUnderDeletingDir("/expired/child.txt") {
+		t.Fatal("expired deleting path tombstone should not absorb child paths")
+	}
+	if _, ok := fs.deletingPaths.Load("/expired"); ok {
+		t.Fatal("expired deleting path tombstone should be removed")
+	}
+}
+
 func TestStoreNode(t *testing.T) {
 	fs := newTestFS(t)
 

@@ -13,6 +13,9 @@ import (
 )
 
 func (fs *QryptFS) Readdir(path string, fill func(name string, stat *fuse.Stat_t, ofst int64) bool, ofst int64, fh uint64) (errc int) {
+	start := time.Now()
+	defer logFuseResult("Readdir", path, start, &errc)
+
 	fill(".", nil, 0)
 	fill("..", nil, 0)
 
@@ -379,7 +382,7 @@ func (fs *QryptFS) MergeRemoteChanges(parentPath string, parentFid string, remot
 				if state.apiDone {
 					if !remoteFids[fid] {
 						if state.path != "" {
-							fs.deletingPaths.Delete(state.path)
+							fs.markDeletingPathDone(state.path)
 						}
 						fs.activeDeletions.Delete(fid)
 						childMap.Delete(fid)
@@ -409,7 +412,7 @@ func (fs *QryptFS) purgeTombstonesRecursively(parentFid string) {
 			if stateVal, ok := fs.activeDeletions.Load(fid); ok {
 				state := stateVal.(*deletionState)
 				if state.path != "" {
-					fs.deletingPaths.Delete(state.path)
+					fs.markDeletingPathDone(state.path)
 				}
 			}
 			fs.activeDeletions.Delete(fid)
