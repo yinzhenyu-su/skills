@@ -14,11 +14,13 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/fusefs"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
+	vfsimpl "github.com/yinzhenyu/skills/qrypt/internal/vfs"
 )
 
 type fuseMountBackend struct {
-	vfs  *fusefs.QryptFS
-	host *fuse.FileSystemHost
+	fuseAdapter *fusefs.FUSEAdapter
+	host        *fuse.FileSystemHost
+	vfsImpl     *vfsimpl.VFSImpl
 }
 
 func newPlatformMountBackend() mountBackend {
@@ -26,18 +28,17 @@ func newPlatformMountBackend() mountBackend {
 }
 
 func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drivers.Driver, cp *cipher.RcloneCipher, cacheMgr *qrypt.CacheManager) error {
-	rootFid := getRootFid(ctx, drv, rc)
-
 	writeBackDelay, _ := time.ParseDuration(rc.Sync.WriteBackTimeout)
 
-	fb.vfs = fusefs.NewFS(drv, cp, cacheMgr, rootFid, fusefs.FSOptions{
+	fb.vfsImpl = vfsimpl.NewVFSImpl(drv, cp, rc.CacheDir, vfsimpl.FSOptions{
 		MaxRetries:        rc.Sync.MaxRetries,
 		ConcurrentUploads: rc.Sync.ConcurrentUploads,
 		MemCacheSizeMB:    rc.Cache.MemCacheSizeMB,
 		WriteBackTimeout:  writeBackDelay,
 	})
 
-	fb.host = fuse.NewFileSystemHost(fb.vfs)
+	fb.fuseAdapter = fusefs.NewFUSEAdapter(fb.vfsImpl)
+	fb.host = fuse.NewFileSystemHost(fb.fuseAdapter)
 	options := fusefs.MountOptions(rc.AllowOther, rc.VolName)
 
 	go func() {
@@ -49,12 +50,12 @@ func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountC
 }
 
 func (fb *fuseMountBackend) VFS() CacheInvalidatable {
-	return fb.vfs
+	return fb.fuseAdapter
 }
 
 func (fb *fuseMountBackend) unmount() error {
-	if fb.vfs != nil {
-		fb.vfs.Shutdown()
+	if fb.fuseAdapter != nil {
+		fb.fuseAdapter.Shutdown()
 	}
 	if fb.host != nil {
 		fb.host.Unmount()

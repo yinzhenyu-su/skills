@@ -490,13 +490,13 @@ func (a *FileAPI) readFile(ctx context.Context, drv drivers.Driver, target drive
 		return nil, WrapError(ErrNetwork, "read body", err)
 	}
 
-	decReader := NewDecryptingReader(rcBody, a.cp, fileNonce)
+	decReader := cipher.NewDecryptingReader(rcBody, a.cp, fileNonce)
 
 	return &decryptReadCloser{decReader, rcBody}, nil
 }
 
 type decryptReadCloser struct {
-	*DecryptingReader
+	*cipher.DecryptingReader
 	body io.Closer
 }
 
@@ -565,7 +565,7 @@ func (a *FileAPI) pushFile(ctx context.Context, mount, localPath, remotePath str
 	wg.Add(1)
 	queued := a.uploadQ.Submit(func(ctx context.Context) error {
 		defer wg.Done()
-		_, putErr := EncryptAndPut(ctx, up, a.cp, EncryptPutRequest{
+		_, putErr := cipher.EncryptAndPut(ctx, up, a.cp, cipher.EncryptPutRequest{
 			Reader:    f,
 			PlainSize: fi.Size(),
 			PlainName: fileName,
@@ -689,7 +689,7 @@ func (a *FileAPI) pushDirectory(ctx context.Context, mount, localDir, remoteDir 
 		}
 		encName := a.cp.EncryptSegment(info.Name())
 		encSize := a.cp.EncryptedSize(fi.Size())
-		encReader := NewEncryptingReader(f, a.cp, nonce, fi.Size())
+		encReader := cipher.NewEncryptingReader(f, a.cp, nonce, fi.Size())
 
 		wg.Add(1)
 		submitted := a.uploadQ.Submit(func(ctx context.Context) error {
@@ -834,7 +834,7 @@ func (a *FileAPI) Pull(ctx context.Context, mount, remotePath, localPath string,
 		}
 		defer rcBody.Close()
 
-		decReader := NewDecryptingReader(rcBody, a.cp, fileNonce)
+		decReader := cipher.NewDecryptingReader(rcBody, a.cp, fileNonce)
 
 		if _, err := io.Copy(outFile, decReader); err != nil {
 			return WrapError(ErrNetwork, "copy decrypted stream", err)

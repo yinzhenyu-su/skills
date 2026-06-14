@@ -3,6 +3,7 @@
 package fusefs
 
 import (
+	"context"
 	"os/exec"
 )
 
@@ -26,6 +27,14 @@ func (*QryptFS) Shutdown() {}
 
 // IsShuttingDown is a no-op when FUSE is not available.
 func (*QryptFS) IsShuttingDown() bool { return false }
+
+// UploadQueue is a stub when FUSE is not available.
+type UploadQueue interface {
+	Submit(job func(ctx context.Context) error) bool
+}
+
+// SetUploadQueue is a no-op when FUSE is not available.
+func (*QryptFS) SetUploadQueue(q UploadQueue) {}
 
 // MountOptions returns macOS mount options.
 func MountOptions(allowOther bool, _ string) []string {

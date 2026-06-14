@@ -856,7 +856,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	plaintext := []byte("hello world this is a test message that spans multiple blocks")
 	nonce, _ := cp.GenerateRandomNonce()
 
-	er := NewEncryptingReader(bytes.NewReader(plaintext), cp, nonce, int64(len(plaintext)))
+	er := cipher.NewEncryptingReader(bytes.NewReader(plaintext), cp, nonce, int64(len(plaintext)))
 	encData, err := io.ReadAll(er)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
@@ -866,7 +866,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 		t.Fatal("encrypted data too short")
 	}
 
-	dr := NewDecryptingReader(bytes.NewReader(encData[cipher.FileHeaderSize:]), cp, nonce)
+	dr := cipher.NewDecryptingReader(bytes.NewReader(encData[cipher.FileHeaderSize:]), cp, nonce)
 	decrypted, err := io.ReadAll(dr)
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)

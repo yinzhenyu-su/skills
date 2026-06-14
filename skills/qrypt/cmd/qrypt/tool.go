@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/skills/qrypt/cipher"
-	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
 )
 
@@ -55,7 +54,7 @@ func encryptFile(cmd *cobra.Command, path string) {
 		os.Exit(1)
 	}
 
-	er := qrypt.NewEncryptingReader(r, cp, nonce, plainSize)
+	er := cipher.NewEncryptingReader(r, cp, nonce, plainSize)
 	if _, err := io.Copy(os.Stdout, er); err != nil {
 		fmt.Fprintf(os.Stderr, "加密失败: %v\n", err)
 		os.Exit(1)
@@ -106,7 +105,7 @@ func decryptFile(cmd *cobra.Command, path string) {
 	copy(nonce[:], header[cipher.FileMagicSize:])
 
 	cp := loadCipherForTool(cmd)
-	dr := qrypt.NewDecryptingReader(r, cp, nonce)
+	dr := cipher.NewDecryptingReader(r, cp, nonce)
 
 	if _, err := io.Copy(os.Stdout, dr); err != nil {
 		fmt.Fprintf(os.Stderr, "解密失败: %v\n", err)

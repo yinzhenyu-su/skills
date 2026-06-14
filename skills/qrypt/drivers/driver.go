@@ -14,15 +14,7 @@ import (
 )
 
 // Entry is a single file-system entry returned by a storage backend.
-type Entry struct {
-	ID       string
-	ParentID string
-	Name     string
-	IsDir    bool
-	Size     int64
-	ModTime  time.Time
-	Extra    any
-}
+type Entry = cipher.Entry
 
 // Driver is the fundamental read-only storage backend interface.
 type Driver interface {
@@ -48,9 +40,7 @@ type BatchRemover interface {
 }
 
 // Uploader handles streaming uploads to the backend.
-type Uploader interface {
-	Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error)
-}
+type Uploader = cipher.Uploader
 
 // PathResolver resolves a logical path to a backend-specific file identifier.
 type PathResolver interface {
