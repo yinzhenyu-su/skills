@@ -10,8 +10,11 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 )
 
-// FetchFunc retrieves a decrypted block from the remote via CipherDriver.
-type FetchFunc func(ctx context.Context, fid string, blockIdx uint64) ([]byte, error)
+// ReadBatchBlocks is the number of consecutive blocks fetched in a single request.
+// Must match cipherdriver.ReadBatchBlocks (same value: 16 blocks ≈ 1MB).
+const ReadBatchBlocks = 16
+
+type FetchFunc func(ctx context.Context, fid string, startBlock uint64, count int) ([][]byte, error)
 
 type dedupCall struct {
 	ch   chan struct{}
@@ -19,17 +22,13 @@ type dedupCall struct {
 	err  error
 }
 
-// CacheLayer provides L1 (mem) and L2 (disk) caching for decrypted blocks,
-// with concurrent fetch deduplication.
 type CacheLayer struct {
 	memCache  *lru.Cache[string, []byte]
 	diskCache *qrypt.CacheManager
-	dedup     sync.Map // key → *dedupCall
+	dedup     sync.Map
 	fetcher   FetchFunc
 }
 
-// NewCacheLayer creates a CacheLayer with the given memory cache size in MB,
-// disk cache, and fetch callback.
 func NewCacheLayer(memSizeMB int, diskCache *qrypt.CacheManager, fetcher FetchFunc) *CacheLayer {
 	maxEntries := (memSizeMB * 1024) / 64
 	if maxEntries <= 0 {
@@ -48,7 +47,6 @@ func blockKey(fid string, blockIdx uint64) string {
 	return fmt.Sprintf("%s_%d", fid, blockIdx)
 }
 
-// ReadBlock returns plaintext block data, checking L1 → L2 → fetcher.
 func (cl *CacheLayer) ReadBlock(ctx context.Context, fid string, blockIdx uint64) ([]byte, error) {
 	key := blockKey(fid, blockIdx)
 
@@ -64,8 +62,12 @@ func (cl *CacheLayer) ReadBlock(ctx context.Context, fid string, blockIdx uint64
 		}
 	}
 
+	// Align to batch boundary for efficient fetching.
+	batchStart := (blockIdx / ReadBatchBlocks) * ReadBatchBlocks
+	batchKey := blockKey(fid, batchStart)
+
 	call := &dedupCall{ch: make(chan struct{})}
-	actual, loaded := cl.dedup.LoadOrStore(key, call)
+	actual, loaded := cl.dedup.LoadOrStore(batchKey, call)
 	if loaded {
 		entry := actual.(*dedupCall)
 		select {
@@ -75,9 +77,6 @@ func (cl *CacheLayer) ReadBlock(ctx context.Context, fid string, blockIdx uint64
 		}
 		if entry.err != nil {
 			return nil, entry.err
-		}
-		if entry.data != nil {
-			return entry.data, nil
 		}
 		if data, ok := cl.memCache.Get(key); ok {
 			return data, nil
@@ -94,23 +93,71 @@ func (cl *CacheLayer) ReadBlock(ctx context.Context, fid string, blockIdx uint64
 
 	defer func() {
 		close(call.ch)
-		cl.dedup.Delete(key)
+		cl.dedup.Delete(batchKey)
 	}()
 
-	data, err := cl.fetcher(ctx, fid, blockIdx)
+	blocks, err := cl.fetcher(ctx, fid, batchStart, int(ReadBatchBlocks))
 	if err != nil {
 		call.err = err
 		return nil, err
 	}
-	call.data = data
-
-	if cl.diskCache != nil {
-		cl.diskCache.PutChunk(fid, int64(blockIdx), data, false)
+	for i, data := range blocks {
+		idx := batchStart + uint64(i)
+		k := blockKey(fid, idx)
+		cl.memCache.Add(k, data)
+		if cl.diskCache != nil {
+			_ = cl.diskCache.PutChunk(fid, int64(idx), data, false)
+		}
 	}
 
-	cl.memCache.Add(key, data)
+	if data, ok := cl.memCache.Get(key); ok {
+		return data, nil
+	}
+	if cl.diskCache != nil {
+		data, err := cl.diskCache.GetChunk(fid, int64(blockIdx))
+		if err == nil && data != nil {
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("block %s lost after batch fetch", key)
+}
 
-	return data, nil
+func (cl *CacheLayer) NotifyRead(fid string, blockIdx uint64) {
+	isFirstBlock := blockIdx%ReadBatchBlocks == 0
+	if !isFirstBlock {
+		return
+	}
+	nextBatch := ((blockIdx / ReadBatchBlocks) + 1) * ReadBatchBlocks
+	go cl.prefetchBatch(fid, nextBatch)
+}
+
+func (cl *CacheLayer) prefetchBatch(fid string, batchStart uint64) {
+	key := blockKey(fid, batchStart)
+	if cl.memCache.Contains(key) {
+		return
+	}
+
+	call := &dedupCall{ch: make(chan struct{})}
+	if _, loaded := cl.dedup.LoadOrStore(key, call); loaded {
+		return
+	}
+
+	blocks, err := cl.fetcher(context.Background(), fid, batchStart, int(ReadBatchBlocks))
+	if err != nil {
+		close(call.ch)
+		cl.dedup.Delete(key)
+		return
+	}
+	for i, data := range blocks {
+		idx := batchStart + uint64(i)
+		k := blockKey(fid, idx)
+		cl.memCache.Add(k, data)
+		if cl.diskCache != nil {
+			cl.diskCache.PutChunk(fid, int64(idx), data, false)
+		}
+	}
+	close(call.ch)
+	cl.dedup.Delete(key)
 }
 
 // InvalidateFid removes all cached entries for a file (both L1 and L2).

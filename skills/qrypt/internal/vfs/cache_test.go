@@ -18,9 +18,16 @@ import (
 func newTestCacheLayer(t *testing.T, callCount *atomic.Int64, data []byte, fetchErr error) (*CacheLayer, *qrypt.CacheManager) {
 	t.Helper()
 
-	fetcher := func(ctx context.Context, fid string, blockIdx uint64) ([]byte, error) {
+	fetcher := func(ctx context.Context, fid string, startBlock uint64, count int) ([][]byte, error) {
 		callCount.Add(1)
-		return data, fetchErr
+		if data == nil {
+			return nil, fetchErr
+		}
+		blocks := make([][]byte, count)
+		for i := 0; i < count; i++ {
+			blocks[i] = data
+		}
+		return blocks, fetchErr
 	}
 
 	tmpDir := t.TempDir()
@@ -61,9 +68,13 @@ func TestCacheLayer_L2Hit(t *testing.T) {
 	data := []byte("block-data")
 	var callCount atomic.Int64
 
-	fetcher := func(ctx context.Context, fid string, blockIdx uint64) ([]byte, error) {
+	fetcher := func(ctx context.Context, fid string, startBlock uint64, count int) ([][]byte, error) {
 		callCount.Add(1)
-		return data, nil
+		blocks := make([][]byte, count)
+		for i := 0; i < count; i++ {
+			blocks[i] = data
+		}
+		return blocks, nil
 	}
 
 	tmpDir := t.TempDir()
@@ -95,12 +106,18 @@ func TestCacheLayer_FetcherCalled(t *testing.T) {
 	data1 := []byte("block-one")
 	var fetcherCalls atomic.Int64
 
-	fetcher := func(ctx context.Context, fid string, blockIdx uint64) ([]byte, error) {
+	fetcher := func(ctx context.Context, fid string, startBlock uint64, count int) ([][]byte, error) {
 		fetcherCalls.Add(1)
-		if blockIdx == 0 {
-			return data0, nil
+		blocks := make([][]byte, count)
+		for i := 0; i < count; i++ {
+			idx := startBlock + uint64(i)
+			if idx == 0 {
+				blocks[i] = data0
+			} else {
+				blocks[i] = data1
+			}
 		}
-		return data1, nil
+		return blocks, nil
 	}
 
 	tmpDir := t.TempDir()
@@ -114,11 +131,12 @@ func TestCacheLayer_FetcherCalled(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, data0, result)
 
-	result, err = cl.ReadBlock(context.Background(), "fid", 1)
+	// Block 16 is in a different batch (batch[16-31]) than block 0 (batch[0-15]).
+	result, err = cl.ReadBlock(context.Background(), "fid", 16)
 	require.NoError(t, err)
 	assert.Equal(t, data1, result)
 
-	assert.Equal(t, int64(2), fetcherCalls.Load(), "fetcher should be called for each unique block")
+	assert.Equal(t, int64(2), fetcherCalls.Load(), "fetcher should be called for each unique batch")
 }
 
 // TestCacheLayer_ConcurrentDedup verifies that concurrent reads of the same
@@ -130,10 +148,14 @@ func TestCacheLayer_ConcurrentDedup(t *testing.T) {
 	startCh := make(chan struct{})
 	data := []byte("dedup-data")
 
-	fetcher := func(ctx context.Context, fid string, blockIdx uint64) ([]byte, error) {
+	fetcher := func(ctx context.Context, fid string, startBlock uint64, count int) ([][]byte, error) {
 		callCount.Add(1)
 		<-startCh // block until test releases
-		return data, nil
+		blocks := make([][]byte, count)
+		for i := 0; i < count; i++ {
+			blocks[i] = data
+		}
+		return blocks, nil
 	}
 
 	cl, _ := newTestCacheLayer(t, &callCount, nil, nil)
@@ -195,12 +217,19 @@ func TestCacheLayer_InvalidateFid(t *testing.T) {
 	t.Parallel()
 
 	var callCount atomic.Int64
-	fetcher := func(ctx context.Context, fid string, blockIdx uint64) ([]byte, error) {
+	fetcher := func(ctx context.Context, fid string, startBlock uint64, count int) ([][]byte, error) {
 		callCount.Add(1)
+		var blockData []byte
 		if fid == "f1" {
-			return []byte("data-f1"), nil
+			blockData = []byte("data-f1")
+		} else {
+			blockData = []byte("data-f2")
 		}
-		return []byte("data-f2"), nil
+		blocks := make([][]byte, count)
+		for i := 0; i < count; i++ {
+			blocks[i] = blockData
+		}
+		return blocks, nil
 	}
 
 	tmpDir := t.TempDir()
