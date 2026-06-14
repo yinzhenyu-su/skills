@@ -3,12 +3,18 @@
 package fusefs
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unsafe"
+
 	"github.com/winfsp/cgofuse/fuse"
+
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 )
 
@@ -186,6 +192,7 @@ func (fs *QryptFS) Truncate(path string, size int64, fh uint64) (errc int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	oldSize := n.size
 	n.size = size
 	n.isDirty = true
 	n.expectedFid = ""
@@ -198,6 +205,14 @@ func (fs *QryptFS) Truncate(path string, size int64, fh uint64) (errc int) {
 		localPath, err := fs.staging.Create(newFid)
 		if err != nil {
 			return -fuse.EIO
+		}
+		// If the file has remote content (fid is not local_), download it
+		// into the staging file so truncate preserves the first N bytes.
+		if oldSize > 0 && !strings.HasPrefix(n.fid, "local_") {
+			if err := fs.downloadToStaging(n.fid, localPath, oldSize); err != nil {
+				fs.staging.Remove(localPath)
+				return -fuse.EIO
+			}
 		}
 		n.localPath = localPath
 	}
@@ -333,6 +348,24 @@ func (fs *QryptFS) Fsync(path string, datasync bool, fh uint64) (errc int) {
 		}
 	}
 	return 0
+}
+
+func (fs *QryptFS) downloadToStaging(fid, localPath string, size int64) error {
+	entry := drivers.Entry{ID: fid, Size: size}
+	rc, err := fs.drv.Read(context.Background(), entry, 0, size)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	f, err := os.OpenFile(localPath, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, rc)
+	return err
 }
 
 func (fs *QryptFS) Ftruncate(path string, size int64, fh uint64) (errc int) {

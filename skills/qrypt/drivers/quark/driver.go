@@ -350,15 +350,12 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 	}
 
 	if preResp.Data.Finish && preResp.Data.Fid != "" {
-		finishData := map[string]interface{}{
-			"fid":       preResp.Data.Fid,
-			"obj_key":   preResp.Data.ObjKey,
-			"bucket":    preResp.Data.Bucket,
-			"task_id":   preResp.Data.TaskId,
-			"upload_id": preResp.Data.UploadId,
+		logging.L.Debugf("quark upload: quick finish for %s fid=%s\n", name, preResp.Data.Fid)
+		finalFid, err := d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskId)
+		if err != nil {
+			return drivers.Entry{}, fmt.Errorf("upload finish: %w", err)
 		}
-		d.cl.request(http.MethodPost, "/file/upload/finish", nil, finishData, nil)
-		return drivers.Entry{ID: preResp.Data.Fid, Name: name, Size: size}, nil
+		return drivers.Entry{ID: finalFid, Name: name, Size: size}, nil
 	}
 
 	partSize := preResp.Metadata.PartSize
@@ -425,9 +422,12 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 		if hashResp.Data.Fid != "" {
 			preResp.Data.Fid = hashResp.Data.Fid
 		}
-		d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskId)
+		finalFid, err := d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskId)
+		if err != nil {
+			return drivers.Entry{}, fmt.Errorf("upload finish: %w", err)
+		}
 		return drivers.Entry{
-			ID:   preResp.Data.Fid,
+			ID:   finalFid,
 			Name: name,
 			Size: encSize,
 		}, nil
@@ -437,20 +437,42 @@ func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64
 		return drivers.Entry{}, fmt.Errorf("upload complete: %w", err)
 	}
 
-	d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskId)
+	finalFid, err := d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskId)
+	if err != nil {
+		return drivers.Entry{}, fmt.Errorf("upload finish: %w", err)
+	}
 	return drivers.Entry{
-		ID:   preResp.Data.Fid,
+		ID:   finalFid,
 		Name: name,
 		Size: encSize,
 	}, nil
 }
 
-func (d *QuarkDriver) uploadFinish(fid, objKey, taskID string) {
+func (d *QuarkDriver) uploadFinish(fid, objKey, taskID string) (string, error) {
 	finishData := map[string]interface{}{
 		"obj_key": objKey,
 		"task_id": taskID,
 	}
-	d.cl.request(http.MethodPost, "/file/upload/finish", nil, finishData, nil)
+	var rr struct {
+		resp
+		Data struct {
+			Fid string `json:"fid"`
+		} `json:"data"`
+	}
+	if err := d.cl.request(http.MethodPost, "/file/upload/finish", nil, finishData, &rr); err != nil {
+		logging.L.Warnf("quark upload finish FAILED fid=%s: %v", fid, err)
+		return fid, fmt.Errorf("upload finish: %w", err)
+	}
+	if rerr := apiError(rr.resp); rerr != nil {
+		logging.L.Warnf("quark upload finish API error fid=%s: %v", fid, rerr)
+		return fid, rerr
+	}
+	finalFid := rr.Data.Fid
+	if finalFid == "" {
+		finalFid = fid
+	}
+	logging.L.Debugf("quark upload finish OK fid=%s finalFid=%s status=%d", fid, finalFid, rr.Status)
+	return finalFid, nil
 }
 
 // ossComplete sends OSS CompleteMultipartUpload directly to Alibaba OSS

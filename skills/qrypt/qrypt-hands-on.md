@@ -52,12 +52,21 @@ Quick-reference skill for working on the qrypt project. Assumes familiarity with
 - **Test discovery**: Config mount with `test_enabled = true` is auto-discovered by `DiscoverTestMounts()`. Without it, `TestConfiguredMounts` skips.
 - **Run command**: `go test -tags=integration -race ./internal/fusefs/integration/`
 - **Suite structure**: `runSuite(t, drv)` runs grouped scenarios (FileCreateWriteRead, MkdirAndList, RenameFile, RenameCrossDir, DeleteFile, DeleteDir, OverwriteFile). Each scenario auto-skips if the driver lacks required optional interfaces via helpers like `skipIfNotUploader(t, drv)`.
-- **Concurrency safety**: Tests use `uid()` (pid + atomic counter) for unique file/dir names. `TestRoot()` creates isolated subdirectories per test.
+- **Edge case suite** (`suite_edge.go`): Additional scenarios not in basic suite — `testMkdirExisting` (重名创建), `testDeleteNonExistent` (删除不存在), `testReadNonExistent`, `testListNonExistentParent`, `testSpecialCharsInName` (中文/空格/点号), `testLargeFileUpload` (100B~5MB+1), `testBatchRemove`, `testConcurrentPutSamePath`, `testDeepNestedDelete`, `testRepeatedUpload`. Register via `runEdgeSuite(t, drv)`.
+- **Test isolation**: Each test creates its own `TestRoot()` subdirectory. `uid()` (pid + atomic counter) ensures unique names. `t.Cleanup()` removes test artifacts. Drivers must handle NotFound errors gracefully for non-existent entries.
 - **FUSE-level test**: `hack/test-fs-ops.sh <mount_point>` — bash script testing POSIX ops (create, read, write, move, delete, permissions, symlinks) on a live FUSE mount. Not driver-specific; validates FUSE integration layer.
 - **Mock drivers**: Each driver can have a mock package under its directory (`drivers/<name>/mock/`) for unit testing dependents without real API credentials.
 - **Staging pattern**: release-before-write — staging dir captures file content before FUSE write returns, then async upload picks it up.
 - **Upload sync**: debounce + retry loop. Uploader watches staging, uploads with backoff, reports progress.
 - **FileAPI per-mount**: Each mount has its own `FileAPI` instance (driver + cipher + root_path). Avoid global state.
+
+### Patterns
+
+- **Tombstone for delete coalescing**: `delete.go` tracks `fid→bool` in `deletedFids` map (sync.Map). When a parent directory is being deleted (batch detect), subsequent child Unlinks set tombstone markers rather than submitting individual DELETE intents. `Create/Mkdir` must clear ancestor `deletingPaths` markers (`clearAncestorDeletingPaths`) and remove stale tombstones to prevent false-positive delete absorption — otherwise newly created files under a previously-deleted dir get silently ignored.
+- **Batch delete detection**: `deleteBatchThreshold=20` — when N+ individual file Unlinks under the same parent are detected in `incDeleteBatchCounter`, `detectBatchDelete` proactively promotes to a single directory-level DELETE. Prevents the 952× API call amplification seen when Finder `rm -rf`s a large directory (Finder sends per-file Unlink + final Rmdir).
+- **Write-back coalescer**: `OperationCoalescer` (in `coalescer.go`) batches adjacent UPLOAD/DELETE/MKDIR intents within a flush window. The `flush()` must check `intent.Upload.Started` before generating each intent (`MarkUploadStarted`) to prevent duplicates. Intents use write-back delay — coalesced dir DELETEs absorb late-arriving child Unlinks via `absorbDeleteUnderDeletingDir`.
+- **Background cleanup on mount**: Recovery (`recoverFromCrash`) and staging cleanup (`cleanupStaleStaging`) run in background goroutines after mount returns. Don't block FUSE mount startup on potentially slow cleanup operations.
+- **Upload staged logging**: Upload lifecycle logged in segments (`/file/create` duration, PUT part duration, `/file/complete` duration) via `logUploadSegment`. Helps identify which phase is the bottleneck — particularly useful for cloud drivers with varying API performance.
 
 ### Code Conventions
 - **Language**: Chinese CLI output, English code identifiers and comments
@@ -81,7 +90,7 @@ Quick-reference skill for working on the qrypt project. Assumes familiarity with
 
 ## Dynamic Knowledge (check each session — may have changed)
 
-### Recent Refactoring Status (last verified: 2026-06-10)
+### Recent Refactoring Status (last verified: 2026-06-13)
 - ✅ Core v2 architecture — platform-agnostic kernel extracted
 - ✅ Driver self-registration — switch-case eliminated
 - ✅ MountParams `struct → map[string]string` — all driver-specific switch-cases removed from config layer
@@ -92,6 +101,55 @@ Quick-reference skill for working on the qrypt project. Assumes familiarity with
 - ✅ Integration test framework — `work_dir` + `test_enabled` config options, env-based test config
 - ✅ yun139 personal cloud API — dynamic host resolution for personal cloud accounts
 - ✅ CI — GitHub Actions release workflow for binary builds
+- ✅ AppleDouble 处理 — `noappledouble` 配置项，`._*` 幽灵节点跳过远端列举，`lookupExtended` 性能优化
+- ✅ Operation coalescer — 合并相邻的 UPLOAD/DELETE/MKDIR intent，防止重复上传
+- ✅ FUSE 操作耗时日志 — 所有 FUSE 操作添加 `logFuseResult`，便于性能分析
+- ✅ macFUSE unmount drain — 50ms drain 窗口避免 "Interrupted system call"
+- ✅ Background recovery/staging cleanup — mount 不阻塞于清理操作
+- ✅ Batch delete detection — 20+ 同目录 Unlink 折叠为单个目录 DELETE，避免 952× API 放大
+- ✅ Tombstone 模式 — deletedFids 跟踪 + Create/Mkdir 清除标记防误吸收
+- ✅ Write-back 延迟合并 — coalescer 批量 flush 相邻 intent，`absorbDeleteUnderDeletingDir` 吸收后续子删除
+- ✅ 上传分段耗时日志 — `logUploadSegment` 分段记录 create/upload/complete 耗时
+- ✅ Edge case 集成测试 — `suite_edge.go` 覆盖并发上传、深嵌套删除、特殊字符、大文件等场景
+
+### Debugging & Problem-Solving Patterns (macOS + FUSE)
+
+以下是从 AppleDouble/`._DS_Store` 支持调试过程中总结的通用排查方法：
+
+#### 定位 Bug 的思路
+1. **先确定是哪一层的问题**：FUSE 操作层 (`internal/fusefs/tree.go`) vs. 驱动层 (`drivers/`) vs. 内核/macFUSE 层（`/var/log/system.log` 或 `console` app 搜索 `"mFUSE"`）。三分钟无响应的 bug 通常不是远端慢，而是 FUSE 操作内的同步调用阻塞了内核线程。
+2. **macFUSE 没有 strace**，替代方案：
+   - 在 FUSE 操作入口加 `logFuseResult` 日志，记录操作名 + 耗时（参考 `getattr.go`、`readdir.go` 等文件的做法）
+   - `sysctl vfs.generic.nclisten` 或 `fs_usage -w -f filesys /path/to/mount` 可以看内核侧挂载点的 I/O 事件
+   - 如果 qrypt 假死，`kill -USR1 <pid>` 打 goroutine 堆栈（qrypt 注册了 `SIGUSR1` 处理）
+3. **Finder 操作的特性**：
+   - Finder 批量操作时并发度极高，`lookupExtended` 会被反复调用
+   - 一次 `rm -rf 478 文件目录` 会触发 ~500 次 lookup，每次如果走 `fetchFiles`（~2s/次），总阻塞时间可达 14+ 分钟
+   - 解决方案：已有节点跳过远端 fetch，只更新时间戳；AppleDouble 幽灵节点在远端列举之前创建
+
+#### 常见 macOS/FUSE 问题及排查
+| 症状 | 排查方向 | 常见根因 |
+|------|----------|----------|
+| Finder 复制目录报错 -36 / -50 | 检查 `lookupExtended` 对 `._*` 文件的处理 | AppleDouble `._*` 文件在远端不存在，FUSE 返回 ENOENT |
+| 批量操作超时/挂起 | 加耗时日志，看哪个 FUSE 操作耗时异常 | `lookupExtended` 对已有节点仍执行 `fetchFiles` |
+| 文件写入后不出现 | 检查 coalescer → UPLOAD intent → sync 链路 | intent 被重复生成或 sync 跳过 |
+| unmount 后内核日志 "Interrupted system call" | 检查 `mount_fuse.go` 的 unmount 流程 | macFUSE 需要 drain 窗口（~50ms） |
+| 文件拖拽到挂载点失败 | 检查 `mkdir` 是否走本地 + 远端双路径 | `Mkdir` 的 `source` 标记为 `local` 但未同步到远端 |
+
+#### 常用排查命令
+```bash
+# 实时跟踪 FUSE 操作
+fs_usage -w -f filesys /path/to/mount 2>&1 | grep qrypt
+
+# 查看 macFUSE 内核日志
+log stream --predicate 'subsystem contains "mFUSE"' --info
+
+# 打印 qrypt goroutine 堆栈（排查死锁）
+kill -USR1 <qrypt-pid>
+
+# 手动测试 FUSE 挂载点
+hack/test-fs-ops.sh /path/to/mount
+```
 
 ### Common Gotchas
 - **Session key stability**: SessionKey is in-memory only (not persisted), so changing key generation logic is safe to deploy.
@@ -100,6 +158,11 @@ Quick-reference skill for working on the qrypt project. Assumes familiarity with
 - **Mock drivers**: quark and yun139 have mocks in test packages; always check mock coverage when adding new driver methods.
 - **FUSE + concurrent writes**: Staging layer handles concurrent write races; check `staging/store.go` for locking guarantees.
 - **WebSocket state reporting**: Reconnection triggers state snapshot via dashboard RPC.
+- **Coalescer duplicate intents**: `flush()` 必须检查 `intent.Upload.Started` 防止每次 flush 都生成相同 UPLOAD intent，分发后调用 `MarkUploadStarted`。
+- **AppleDouble 性能陷阱**: `._*` 的 ghost 节点必须在 `fetchFiles`（远端目录列举）之前创建，否则每次 lookup 都阻塞在慢速远端调用上。
+- **Tombstone 失效**: `Create/Mkdir` 必须调用 `clearAncestorDeletingPaths` 清除祖先删除标记，否则新建文件会被 `absorbDeleteUnderDeletingDir` 吞掉。参考 `mkdir.go` 和 `tree.go` 中 `clearAncestorDeletingPaths` 的调用位置。
+- **并发 Create 重复文件**: `sync.go` 中的上传后检查 `node.Cancel` 状态：如果两个 Create 同一路径并发，后完成的写入需要跳过上传（`skipUploadIfReplaced`），否则旧数据覆盖新文件。
+- **Readdir 加锁**: `readdir.go` 的 `Readdir` 需要对 `MetadataTTL` 检查加锁，防止 `refreshDirAsync` 并发刷新导致数据竞争。
 
 ### Testing Patterns
 - **Unit tests**: `_test.go` alongside source file
@@ -108,6 +171,84 @@ Quick-reference skill for working on the qrypt project. Assumes familiarity with
 - **Config tests**: `internal/config/config_test.go` — test multi-path config loading, validation. Note: imports all drivers as side-effects to make `drivers.GetMeta` work.
 - **FUSE-level test**: `hack/test-fs-ops.sh <mount_point>` — bash-based FUSE mount point POSIX op integrity validation
 - **Race detection**: Mandatory `-race` flag on all test runs
+
+### 测试实操经验
+
+#### 分层测试策略
+
+| 层 | 命令 | 何时用 | 反馈速度 |
+|----|------|--------|----------|
+| **单元测试** | `go test -count=1 ./internal/fusefs/` | 每次改动后 | ~10s |
+| **集成(localfs)** | `LOCALFS_ROOT=/tmp/qrypt-int-test go test -count=1 -tags=integration -run 'TestConfiguredMounts$' ./internal/fusefs/integration/` | FUSE 层改动后 | ~1s |
+| **集成(真实云)** | `YUN139_AUTH=xxx YUN139_ROOT_ID=xxx go test -count=1 -tags=integration ./internal/fusefs/integration/` | 云驱动改动后 | ~30s+ |
+| **手动挂载测试** | `./qrypt mount 139yun` + Finder 操作 + 检查日志 | 端到端验证 | 分钟级 |
+
+#### 集成测试添加流程
+
+1. **写测试函数** `testXxx(t, drv)` 在 `suite_edge.go`（新场景）或 `suite_fileops.go`（基础 ops）
+2. **注册** 到 `suite.go` 的 `runSuite` 中 `t.Run("Xxx", func() { testXxx(t, drv) })`
+3. **优先 localfs 验证**：`LOCALFS_ROOT=/tmp/qrypt-int-test go test -tags=integration -v -run 'Xxx'`
+4. **再云驱动验证**（需要凭据）：`YUN139_AUTH=... go test -tags=integration -v -run 'Xxx'`
+
+#### 关键测试模式
+
+**并发写入测试** — 两个 goroutine 同时 `Put` 同路径：
+```go
+// 一个结果成功即可（localfs 覆盖，云驱动可能 auto_rename）
+entries, _ := drv.List(ctx, root)
+for _, e := range entries { if e.Name == name { matching++ } }
+if matching == 0 { t.Fatal("expected at least one file") }
+```
+
+**深层嵌套删除测试** — 10 子目录 × 2 子子目录 × 1 文件，BatchRemove 后验证根为空：
+```go
+for i := 0; i < 10; i++ {
+    sub, _ := w.Mkdir(ctx, root, subName)
+    leaf, _ := w.Mkdir(ctx, sub.ID, leafName)
+    up.Put(ctx, leaf.ID, "f.txt", size, body)
+}
+br.BatchRemove(ctx, allEntries)
+remaining, _ := drv.List(ctx, root)
+if len(remaining) != 0 { t.Errorf("expected empty, got %d", len(remaining)) }
+```
+
+**重复上传测试** — 同位文件名 3 次 Put，验证只有一个文件：
+```go
+up.Put(ctx, root, name, size1, body1)
+up.Put(ctx, root, name, size2, body2)
+up.Put(ctx, root, name, size3, body3)
+// List 后断言只有 1 个匹配项
+```
+
+**批量计数器单元测试** — `incDeleteBatchCounter` 19 次不触发，20 次触发：
+```go
+fs := newTestFS(t)
+for i := 0; i < 19; i++ { fs.incDeleteBatchCounter("parent") }
+// counter == 19, detectBatchDelete 未被调用
+fs.incDeleteBatchCounter("parent")  // counter == 20, 触发
+```
+
+#### 手动挂载测试 CheckList
+
+修改 FUSE 层逻辑后，必须在真实 mount 上验证：
+
+1. `./qrypt mount 139yun` — 确认挂载成功
+2. `ls ~/Qrypt139/` — 确认目录可见
+3. 触发场景（创建/修改/删除目录）
+4. `grep 'syncFile\|coalescer\|auto_rename\|Batch delete' ~/.qrypt/qrypt.log` — 检查关键日志
+5. `./qrypt ls /` — 确认远端状态正确、无孤儿文件
+6. `./qrypt rm -F "/xxx"` — 手动清理残留文件
+
+#### 已知 Flaky Tests
+
+| 测试 | 症状 | 原因 | 处理 |
+|------|------|------|------|
+| `TestRename` | `old path should be gone` | 时序依赖 | 重跑会过 |
+| `TestE2E_LargeFileMultiChunk` | `read 0 bytes, want N` | staging 快照竞态 | 重跑会过 |
+| `TestE2E_Truncate` | `got "\x00...", want "hello"` | 写入时序 | 重跑会过 |
+| `TestDeleteNodePath_DirItself` | 偶发 panic | 树操作竞态 | 已知 pre-existing |
+
+> 这些不是本次改动引入的。重跑 `go test -count=1 -run=<Name>` 通常能过。
 
 ### Architecture Docs
 | Doc | Content |

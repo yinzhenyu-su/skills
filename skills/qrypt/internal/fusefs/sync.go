@@ -479,7 +479,7 @@ func (fs *QryptFS) fileExistsOnServerDetailed(fid, parentFid string) (*drivers.E
 }
 
 func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
-	if parentFid == "" || parentFid == "0" || parentFid == "root" {
+	if parentFid == "" || parentFid == "0" || parentFid == "root" || parentFid == fs.rootFid {
 		return nil
 	}
 
@@ -510,7 +510,7 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 	}
 
 	if len(levels) == 0 {
-		if parentFid == "" || parentFid == "0" || parentFid == "root" {
+		if parentFid == "" || parentFid == "0" || parentFid == "root" || parentFid == fs.rootFid {
 			return nil
 		}
 		if fs.dirExistsOnServer(parentFid) {
@@ -532,7 +532,7 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		}
 
 		encName := fs.cp.EncryptSegment(mountName)
-		newFid, createErr := fs.ensureRemoteDir("0", encName)
+		newFid, createErr := fs.ensureRemoteDir(fs.rootFid, encName)
 		if createErr != nil {
 			return createErr
 		}
@@ -543,7 +543,7 @@ func (fs *QryptFS) ensureParentDirExists(filePath, parentFid string) error {
 		return nil
 	}
 
-	currentRemoteParentFid := "0"
+	currentRemoteParentFid := fs.rootFid
 	for _, level := range levels {
 		encName := fs.cp.EncryptSegment(level.segName)
 		fid, err := fs.findChildDir(context.Background(), currentRemoteParentFid, encName)
