@@ -161,9 +161,26 @@ func (tm *TreeManager) Delete(path string, n *VFSNode) {
 	if n != nil {
 		n.mu.RLock()
 		fid := n.fid
+		altPath := n.currentPath
 		n.mu.RUnlock()
 
-		if n.currentPath == path {
+		if altPath == path {
+			n.mu.Lock()
+			n.currentPath = ""
+			n.mu.Unlock()
+		} else if altPath != "" {
+			// Node has a stale phantom entry at altPath (e.g. from a
+			// buggy Store call). Remove it so it doesn't appear as a
+			// file in the wrong parent directory.
+			tm.nodes.Delete(altPath)
+			if altParent := filepath.Dir(altPath); altParent != "" {
+				if v, ok := tm.nodes.Load(altParent); ok {
+					p := v.(*VFSNode)
+					p.mu.Lock()
+					delete(p.children, filepath.Base(altPath))
+					p.mu.Unlock()
+				}
+			}
 			n.mu.Lock()
 			n.currentPath = ""
 			n.mu.Unlock()
@@ -181,6 +198,18 @@ func (tm *TreeManager) LookupByFid(fid string) *VFSNode {
 		return v.(*VFSNode)
 	}
 	return nil
+}
+
+// UpdateFid replaces the old FID with newFid in the fidNodes map.
+// oldFid may be empty or "local_..." — those are not stored in fidNodes
+// and are silently ignored. This does NOT change the node's tree position.
+func (tm *TreeManager) UpdateFid(oldFid, newFid string, n *VFSNode) {
+	if oldFid != "" && !strings.HasPrefix(oldFid, "local_") {
+		tm.fidNodes.Delete(oldFid)
+	}
+	if newFid != "" && !strings.HasPrefix(newFid, "local_") {
+		tm.fidNodes.Store(newFid, n)
+	}
 }
 
 // RootFid returns the root directory's fid.

@@ -713,7 +713,6 @@ func (vfs *VFSImpl) cleanupLocal(intent RemoteIntent) {
 	if intent.Staging != "" && vfs.staging != nil {
 		vfs.staging.Remove(intent.Staging)
 	}
-	vfs.deleting.Delete(intent.Path)
 }
 
 func (vfs *VFSImpl) executeCoalescedRename(intent RemoteIntent) {
@@ -798,8 +797,9 @@ func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, err error) {
 	state.lastUpload = time.Now()
 
 	if newFid != "" && !strings.HasPrefix(newFid, "local_") {
+		oldFid := n.fid
 		n.fid = newFid
-		vfs.tree.Store("/"+n.Name(), n)
+		vfs.tree.UpdateFid(oldFid, newFid, n)
 	}
 
 	if state.oldRemoteFid != "" {
@@ -968,6 +968,22 @@ func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles
 		state.baseSize = decSize
 		state.lastCheck = lastCheck
 	}
+
+	// Clean up deleting entries that the remote has confirmed gone.
+	// We must NOT delete the guard in cleanupLocal (executeDelete runs
+	// async, and a subsequent remote refresh may still see the item due
+	// to API caching, causing re-creation).
+	vfs.deleting.Range(func(key, value interface{}) bool {
+		dPath := key.(string)
+		if !strings.HasPrefix(dPath, prefix) {
+			return true
+		}
+		name := strings.TrimPrefix(dPath, prefix)
+		if _, exists := remoteMap[name]; !exists {
+			vfs.deleting.Delete(dPath)
+		}
+		return true
+	})
 }
 
 func (vfs *VFSImpl) Shutdown() {
