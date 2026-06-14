@@ -64,7 +64,7 @@ type observerCall struct {
 	err  error
 }
 
-func (m *mockObserver) OnUploadComplete(path string, err error) {
+func (m *mockObserver) OnUploadComplete(path string, newFid string, err error) {
 	m.mu.Lock()
 	m.calls = append(m.calls, observerCall{path, err})
 	m.mu.Unlock()
@@ -113,7 +113,7 @@ func TestUploadManager_MarkDirty_TriggersUpload(t *testing.T) {
 	exec := &mockExecutor{}
 	um, obs := newUploadManager(t, exec)
 
-	um.MarkDirty("/file.txt", "parent_1", "file.txt", 42, stagingReader("hello"))
+	um.MarkDirty("/file.txt", "parent_1", "file.txt", 42, "", stagingReader("hello"))
 
 	assert.True(t, um.IsPending("/file.txt"), "should be pending before timer fires")
 
@@ -139,7 +139,7 @@ func TestUploadManager_CancelSync_PreventsUpload(t *testing.T) {
 	exec := &mockExecutor{}
 	um, obs := newUploadManager(t, exec)
 
-	um.MarkDirty("/file.txt", "parent_1", "file.txt", 100, stagingReader("data"))
+	um.MarkDirty("/file.txt", "parent_1", "file.txt", 100, "", stagingReader("data"))
 	assert.True(t, um.IsPending("/file.txt"))
 
 	um.CancelSync("/file.txt")
@@ -157,8 +157,8 @@ func TestUploadManager_MultipleMarksSameFile(t *testing.T) {
 	exec := &mockExecutor{}
 	um, obs := newUploadManager(t, exec)
 
-	um.MarkDirty("/file.txt", "parent_1", "old.txt", 10, stagingReader("old"))
-	um.MarkDirty("/file.txt", "parent_1", "new.txt", 20, stagingReader("new"))
+	um.MarkDirty("/file.txt", "parent_1", "old.txt", 10, "", stagingReader("old"))
+	um.MarkDirty("/file.txt", "parent_1", "new.txt", 20, "", stagingReader("new"))
 
 	fireAll(um)
 
@@ -182,7 +182,7 @@ func TestUploadManager_RetryOnFailure(t *testing.T) {
 	um, obs := newUploadManager(t, exec)
 	um.SetMaxRetries(3)
 
-	um.MarkDirty("/file.txt", "p", "f.txt", 1, stagingReader("x"))
+	um.MarkDirty("/file.txt", "p", "f.txt", 1, "", stagingReader("x"))
 
 	fireAll(um) // attempt 1 → fail → retry 1 timer created
 	fireAll(um) // attempt 2 → fail → retry 2 timer created
@@ -208,7 +208,7 @@ func TestUploadManager_UploadAfterSuccessfulRetry(t *testing.T) {
 	um, obs := newUploadManager(t, exec)
 	um.SetMaxRetries(3)
 
-	um.MarkDirty("/file.txt", "p", "f.txt", 1, stagingReader("hello"))
+	um.MarkDirty("/file.txt", "p", "f.txt", 1, "", stagingReader("hello"))
 
 	fireAll(um) // attempt 1 → fail → retry timer created
 	fireAll(um) // attempt 2 → success
@@ -240,7 +240,7 @@ func TestUploadManager_RetryPreservesInfo(t *testing.T) {
 	um, obs := newUploadManager(t, wrapped)
 	um.SetMaxRetries(3)
 
-	um.MarkDirty("/file.txt", "p", "f.txt", 99, stagingReader("data"))
+	um.MarkDirty("/file.txt", "p", "f.txt", 99, "", stagingReader("data"))
 
 	fireAll(um) // attempt 1
 	fireAll(um) // attempt 2
@@ -281,7 +281,7 @@ func TestUploadManager_ConcurrentCancelAndMark(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 10; i++ {
-			um.MarkDirty("/file.txt", "p", "f.txt", 1, stagingReader("x"))
+			um.MarkDirty("/file.txt", "p", "f.txt", 1, "", stagingReader("x"))
 		}
 	}()
 
@@ -302,4 +302,24 @@ func TestUploadManager_ConcurrentCancelAndMark(t *testing.T) {
 	// At minimum the mock executor should have been called at most once per pending
 	// mark that survived the cancels.
 	t.Logf("upload calls: %d, observer calls: %d", len(exec.calls()), len(obs.results()))
+}
+
+func TestUploadManager_InFlight(t *testing.T) {
+	exec := &mockExecutor{}
+	obs := &mockObserver{}
+	um := NewUploadManager(exec, 50*time.Millisecond, obs)
+
+	um.MarkDirty("/f.txt", "0", "f.txt", 10, "", stagingReader("v1"))
+	time.Sleep(100 * time.Millisecond)
+
+	// Second write while first upload may be running.
+	um.MarkDirty("/f.txt", "0", "f.txt", 20, "", stagingReader("v2-final"))
+	time.Sleep(200 * time.Millisecond)
+
+	c := exec.calls()
+	assert.GreaterOrEqual(t, len(c), 1, "should have at least one upload")
+	if len(c) > 0 {
+		last := c[len(c)-1]
+		assert.Equal(t, int64(20), last.size, "last upload should use final size 20")
+	}
 }

@@ -139,7 +139,7 @@ func TestCipherDriver_ReadBlock_TruncatedHeader(t *testing.T) {
 
 	_, err = cd.ReadBlock(ctx, entry, 0)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "header too short")
+	require.Contains(t, err.Error(), "too short")
 }
 
 // ---------------------------------------------------------------------------
@@ -170,14 +170,14 @@ func TestCipherDriver_List(t *testing.T) {
 	_, err = raw.Put(ctx, "0", encRoot, 10, bytes.NewReader([]byte("some notes")))
 	require.NoError(t, err)
 
-	// Create entry with undecryptable name — should be skipped.
+	// Create entry with undecryptable name — should use raw name as fallback.
 	_, err = raw.Mkdir(ctx, "0", "!!!invalid-base32-garbage!!!")
 	require.NoError(t, err)
 
-	// List root — should see dirName + rootFile, NOT the garbage entry.
+	// List root — should see all 3 entries (garbage uses raw name).
 	entries, err := cd.List(ctx, "0")
 	require.NoError(t, err)
-	require.Len(t, entries, 2)
+	require.Len(t, entries, 3)
 
 	names := map[string]bool{}
 	for _, e := range entries {

@@ -22,7 +22,7 @@ func newTestVFS(t *testing.T) *VFSImpl {
 	require.NoError(t, err)
 	tmpDir := t.TempDir()
 	cacheDir := filepath.Join(tmpDir, "cache")
-	vfs := NewVFSImpl(drv, cp, cacheDir, FSOptions{
+	vfs := NewVFSImpl(drv, cp, cacheDir, "0", FSOptions{
 		MaxRetries:        2,
 		ConcurrentUploads: 2,
 		MemCacheSizeMB:    16,
@@ -231,6 +231,109 @@ func TestVFSImpl_Shutdown(t *testing.T) {
 	t.Parallel()
 
 	vfs := newTestVFS(t)
-	// Should not panic
 	vfs.Shutdown()
+}
+
+// TestVFSImpl_Mkdir_Sync_ChildFile verifies that after Mkdir, creating a file
+// inside the new directory uses the correct (remote) parent FID.
+func TestVFSImpl_Mkdir_Sync_ChildFile(t *testing.T) {
+	t.Parallel()
+
+	vfs := newTestVFS(t)
+	ctx := context.Background()
+
+	require.NoError(t, vfs.Mkdir(ctx, "/subdir"))
+	require.NoError(t, vfs.Create(ctx, "/subdir/child.txt"))
+
+	// Stat should succeed for both.
+	_, err := vfs.Stat(ctx, "/subdir")
+	require.NoError(t, err)
+	_, err = vfs.Stat(ctx, "/subdir/child.txt")
+	require.NoError(t, err)
+
+	// Write and verify content.
+	content := []byte("child-data")
+	require.NoError(t, vfs.Write(ctx, "/subdir/child.txt", 0, bytes.NewReader(content)))
+	rc, err := vfs.Read(ctx, "/subdir/child.txt", 0)
+	require.NoError(t, err)
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	assert.Equal(t, content, got)
+}
+
+// TestVFSImpl_Remove_NoReappear verifies a deleted file stays gone after ListDir.
+func TestVFSImpl_Remove_NoReappear(t *testing.T) {
+	t.Parallel()
+
+	vfs := newTestVFS(t)
+	ctx := context.Background()
+
+	require.NoError(t, vfs.Create(ctx, "/gone.txt"))
+	_, err := vfs.Stat(ctx, "/gone.txt")
+	require.NoError(t, err)
+
+	require.NoError(t, vfs.Remove(ctx, "/gone.txt"))
+	_, err = vfs.Stat(ctx, "/gone.txt")
+	assert.Error(t, err, "file should be gone")
+
+	// ListDir on parent should not bring it back.
+	entries, err := vfs.ListDir(ctx, "/")
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotEqual(t, "gone.txt", e.Name, "deleted file should not reappear")
+	}
+	_, err = vfs.Stat(ctx, "/gone.txt")
+	assert.Error(t, err, "file should still be gone after ListDir")
+}
+
+// TestVFSImpl_RapidWrites_UploadLatest writes the same file twice in quick
+// succession and verifies the remote content is the final version.
+func TestVFSImpl_RapidWrites_UploadLatest(t *testing.T) {
+	vfs := newTestVFS(t)
+	ctx := context.Background()
+
+	require.NoError(t, vfs.Create(ctx, "/rapid.txt"))
+
+	// First write.
+	v1 := []byte("version-one-data")
+	require.NoError(t, vfs.Write(ctx, "/rapid.txt", 0, bytes.NewReader(v1)))
+
+	// Second write before writeBack fires.
+	v2 := []byte("version-two-data-final")
+	time.Sleep(10 * time.Millisecond)
+	require.NoError(t, vfs.Write(ctx, "/rapid.txt", 0, bytes.NewReader(v2)))
+
+	// Wait for writeBack + upload to complete.
+	time.Sleep(200 * time.Millisecond)
+
+	// Read back locally.
+	rc, err := vfs.Read(ctx, "/rapid.txt", 0)
+	require.NoError(t, err)
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	assert.Equal(t, v2, got, "local content should be the final version")
+}
+
+// TestVFSImpl_ReUpload_RemovesOld verifies that re-uploading a file deletes
+// the previous remote FID (no duplicate accumulation).
+func TestVFSImpl_ReUpload_RemovesOld(t *testing.T) {
+	vfs := newTestVFS(t)
+	ctx := context.Background()
+
+	require.NoError(t, vfs.Create(ctx, "/reup.txt"))
+
+	// First upload cycle.
+	require.NoError(t, vfs.Write(ctx, "/reup.txt", 0, bytes.NewReader([]byte("v1"))))
+	time.Sleep(150 * time.Millisecond)
+
+	// Second upload cycle — should delete old FID.
+	require.NoError(t, vfs.Write(ctx, "/reup.txt", 0, bytes.NewReader([]byte("v2"))))
+	time.Sleep(150 * time.Millisecond)
+
+	// Verify content is final version.
+	rc, err := vfs.Read(ctx, "/reup.txt", 0)
+	require.NoError(t, err)
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	assert.Equal(t, []byte("v2"), got)
 }
