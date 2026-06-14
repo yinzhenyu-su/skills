@@ -30,7 +30,8 @@ func newPlatformMountBackend() mountBackend {
 func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drivers.Driver, cp *cipher.RcloneCipher, cacheMgr *qrypt.CacheManager) error {
 	writeBackDelay, _ := time.ParseDuration(rc.Sync.WriteBackTimeout)
 
-	fb.vfsImpl = vfsimpl.NewVFSImpl(drv, cp, rc.CacheDir, vfsimpl.FSOptions{
+	rootFid := getRootFid(ctx, drv, rc)
+	fb.vfsImpl = vfsimpl.NewVFSImpl(drv, cp, rc.CacheDir, rootFid, vfsimpl.FSOptions{
 		MaxRetries:        rc.Sync.MaxRetries,
 		ConcurrentUploads: rc.Sync.ConcurrentUploads,
 		MemCacheSizeMB:    rc.Cache.MemCacheSizeMB,
@@ -39,7 +40,7 @@ func (fb *fuseMountBackend) mount(ctx context.Context, rc *config.ResolvedMountC
 
 	fb.fuseAdapter = fusefs.NewFUSEAdapter(fb.vfsImpl)
 	fb.host = fuse.NewFileSystemHost(fb.fuseAdapter)
-	options := fusefs.MountOptions(rc.AllowOther, rc.VolName)
+	options := fusefs.MountOptions(rc.AllowOther, rc.VolName, rc.NoAppleDouble)
 
 	go func() {
 		fb.host.Mount(rc.MountPoint, options)

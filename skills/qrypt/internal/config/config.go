@@ -62,18 +62,19 @@ type DefaultsConfig struct {
 
 // MountInstance declares one cloud drive mount.
 type MountInstance struct {
-	Name       string      `toml:"name"`        // unique identifier, [a-z0-9-]{1,32}
-	Type       string      `toml:"type"`        // "quark" | "yun139" | "localfs"
-	MountPoint string      `toml:"mount_point"` // FUSE mount path
-	Enabled    *bool       `toml:"enabled"`     // nil = true
-	Default    bool        `toml:"default"`     // true = selection target when --mount omitted
-	AllowOther bool        `toml:"allow_other"`
-	VolName    string      `toml:"volname"`     // macOS Finder volume name (default: QryptDrive)
+	Name          string `toml:"name"`        // unique identifier, [a-z0-9-]{1,32}
+	Type          string `toml:"type"`        // "quark" | "yun139" | "localfs"
+	MountPoint    string `toml:"mount_point"` // FUSE mount path
+	Enabled       *bool  `toml:"enabled"`     // nil = true
+	Default       bool   `toml:"default"`     // true = selection target when --mount omitted
+	AllowOther    bool   `toml:"allow_other"`
+	VolName       string `toml:"volname"`       // macOS Finder volume name (default: QryptDrive)
+	NoAppleDouble bool   `toml:"noappledouble"` // macOS: disable ._ AppleDouble files (default: false)
 
-	Params     MountParams        `toml:"params"`
-	Encryption *EncryptionConfig  `toml:"encryption"` // nil = use defaults
-	Sync       *SyncConfig        `toml:"sync"`       // nil = use defaults
-	Cache      *CacheConfig       `toml:"cache"`      // nil = use defaults
+	Params     MountParams       `toml:"params"`
+	Encryption *EncryptionConfig `toml:"encryption"` // nil = use defaults
+	Sync       *SyncConfig       `toml:"sync"`       // nil = use defaults
+	Cache      *CacheConfig      `toml:"cache"`      // nil = use defaults
 
 	// TestEnabled marks this mount for inclusion in integration tests.
 	// When running `go test -tags=integration`, mounts with test_enabled = true
@@ -93,21 +94,20 @@ type MountParams = map[string]string
 
 // ResolvedMountConfig is a mount instance with all defaults merged in.
 type ResolvedMountConfig struct {
-	Name       string
-	Type       string
-	MountPoint string
-	AllowOther bool
-	VolName    string
-	Enabled    bool
-	Params     MountParams
+	Name          string
+	Type          string
+	MountPoint    string
+	AllowOther    bool
+	VolName       string
+	NoAppleDouble bool
+	Enabled       bool
+	Params        MountParams
 
 	Encryption EncryptionConfig
 	Sync       SyncConfig
 	Cache      CacheConfig
 	CacheDir   string // computed: ~/.qrypt/cache/<name>/
 }
-
-
 
 type EncryptionConfig struct {
 	Password           string `toml:"password"`
@@ -117,15 +117,16 @@ type EncryptionConfig struct {
 }
 
 type CacheConfig struct {
-	Dir            string `toml:"-"`      // computed: $QRYPT_WORK_DIR/cache
+	Dir            string `toml:"-"` // computed: $QRYPT_WORK_DIR/cache
 	MaxSize        string `toml:"max_size"`
 	MemCacheSizeMB int    `toml:"mem_cache_size_mb"`
 }
 
 type MountConfig struct {
-	Point      string
-	AllowOther bool
-	VolName    string `toml:"volname"`
+	Point         string
+	AllowOther    bool
+	VolName       string `toml:"volname"`
+	NoAppleDouble bool   `toml:"noappledouble"`
 }
 
 type SyncConfig struct {
@@ -137,7 +138,7 @@ type SyncConfig struct {
 
 type LogConfig struct {
 	Level      string `toml:"level"`
-	File       string `toml:"-"`      // computed: $QRYPT_WORK_DIR/qrypt.log
+	File       string `toml:"-"`           // computed: $QRYPT_WORK_DIR/qrypt.log
 	MaxSize    int    `toml:"max_size"`    // MB, single log file max before rotation
 	MaxBackups int    `toml:"max_backups"` // count, old log files to retain
 	MaxAge     int    `toml:"max_age"`     // days, old log files to retain
@@ -234,18 +235,32 @@ func (c *Config) MergeInstanceConfig(m MountInstance) *ResolvedMountConfig {
 		volName = "QryptDrive"
 	}
 
+	noAppleDouble := m.NoAppleDouble || c.Defaults.Mount.NoAppleDouble
+
+	// Merge sync.DirCacheTTL into params for driver consumption.
+	// The Quark driver reads params["dir_cache_ttl"] directly from mount params;
+	// this ensures defaults.sync.dir_cache_ttl is inherited.
+	params := make(MountParams)
+	for k, v := range m.Params {
+		params[k] = v
+	}
+	if _, exists := params["dir_cache_ttl"]; !exists && sync.DirCacheTTL != "" {
+		params["dir_cache_ttl"] = sync.DirCacheTTL
+	}
+
 	return &ResolvedMountConfig{
-		Name:       m.Name,
-		Type:       m.Type,
-		MountPoint: ExpandHome(m.MountPoint),
-		AllowOther: m.AllowOther,
-		VolName:    volName,
-		Enabled:    enabled,
-		Params:     m.Params,
-		Encryption: enc,
-		Sync:       sync,
-		Cache:      cache,
-		CacheDir:   cacheDir,
+		Name:          m.Name,
+		Type:          m.Type,
+		MountPoint:    ExpandHome(m.MountPoint),
+		AllowOther:    m.AllowOther,
+		VolName:       volName,
+		NoAppleDouble: noAppleDouble,
+		Enabled:       enabled,
+		Params:        params,
+		Encryption:    enc,
+		Sync:          sync,
+		Cache:         cache,
+		CacheDir:      cacheDir,
 	}
 }
 
@@ -482,4 +497,3 @@ func MakeCipher(enc EncryptionConfig, defaults EncryptionConfig, password, salt 
 
 	return cipher.NewRcloneCipher(password, salt, filenameEnc, filenameEncryption)
 }
-
