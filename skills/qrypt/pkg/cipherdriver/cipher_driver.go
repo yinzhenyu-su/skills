@@ -13,6 +13,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yinzhenyu/skills/qrypt/cipher"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
@@ -50,7 +51,8 @@ func (cd *CipherDriver) Drop(ctx context.Context) error {
 }
 
 // List returns directory entries with decrypted names. Entries whose names
-// cannot be decrypted are logged and skipped.
+// cannot be decrypted are returned with the raw name as a fallback, ensuring
+// non-encrypted files (e.g. .DS_Store) are still visible.
 func (cd *CipherDriver) List(ctx context.Context, parentID string) ([]drivers.Entry, error) {
 	entries, err := cd.raw.List(ctx, parentID)
 	if err != nil {
@@ -61,10 +63,12 @@ func (cd *CipherDriver) List(ctx context.Context, parentID string) ([]drivers.En
 	for _, e := range entries {
 		decName, err := cd.cp.DecryptSegment(e.Name)
 		if err != nil {
-			logging.L.Warnf("cipherdriver: decrypt name %q: %v", e.Name, err)
-			continue
+			logging.L.Debugf("cipherdriver: decrypt name %q: %v, using raw name", e.Name, err)
+			decName = e.Name
+		} else {
+			decName = strings.TrimSpace(decName)
 		}
-		e.Name = strings.TrimSpace(decName)
+		e.Name = decName
 		decrypted = append(decrypted, e)
 	}
 	return decrypted, nil
@@ -182,37 +186,112 @@ func (cd *CipherDriver) Put(ctx context.Context, parentID, name string, size int
 	return entry, nil
 }
 
-// --------------------------------------------------------------------------
-// Block-level decryption (extra method)
-// --------------------------------------------------------------------------
+const ReadBatchBlocks = 16
 
 // ReadBlock decrypts a single block at blockIdx and returns the plaintext.
 // The file nonce is cached internally after the first block read for a given
 // file so the header is only fetched once per fid.
 func (cd *CipherDriver) ReadBlock(ctx context.Context, entry drivers.Entry, blockIdx uint64) ([]byte, error) {
-	nonce, err := cd.getNonce(ctx, entry)
+	blocks, err := cd.ReadBlocks(ctx, entry, blockIdx, 1)
 	if err != nil {
 		return nil, err
 	}
+	return blocks[0], nil
+}
 
-	offset := int64(cipher.FileHeaderSize) + int64(blockIdx)*int64(cipher.BlockSize)
+func (cd *CipherDriver) ReadBlocks(ctx context.Context, entry drivers.Entry, startBlock uint64, count int) ([][]byte, error) {
+	if count <= 0 {
+		return nil, fmt.Errorf("count must be positive")
+	}
 
-	rc, err := cd.raw.Read(ctx, entry, offset, int64(cipher.BlockSize))
+	needHeader := false
+	if _, cached := cd.nonceCache.Load(entry.ID); !cached && startBlock == 0 {
+		needHeader = true
+	}
+
+	dataOffset := int64(cipher.FileHeaderSize)
+	offset := dataOffset + int64(startBlock)*int64(cipher.BlockSize)
+	if needHeader {
+		offset = 0
+	}
+	readSize := int64(count) * int64(cipher.BlockSize)
+	if needHeader {
+		readSize += int64(cipher.FileHeaderSize)
+	}
+	if remain := entry.Size - offset; remain < readSize {
+		if remain <= 0 {
+			return nil, fmt.Errorf("blocks start at offset %d beyond file size %d", offset, entry.Size)
+		}
+		readSize = remain
+	}
+
+	readStart := time.Now()
+	rc, err := cd.raw.Read(ctx, entry, offset, readSize)
 	if err != nil {
-		return nil, fmt.Errorf("read encrypted block: %w", err)
+		return nil, fmt.Errorf("read encrypted blocks: %w", err)
 	}
 	defer rc.Close()
 
 	ciphertext, err := io.ReadAll(rc)
-	if err != nil {
-		return nil, fmt.Errorf("read encrypted block data: %w", err)
+	readElapsed := time.Since(readStart)
+	if readElapsed > 200*time.Millisecond {
+		logging.L.Warnf("cipherdriver: slow network read for %s blocks %d-%d: %v (%.1f KB/s)\n",
+			entry.ID, startBlock, startBlock+uint64(count-1), readElapsed,
+			float64(len(ciphertext))/readElapsed.Seconds()/1024)
 	}
 
-	plaintext, err := cd.cp.DecryptBlock(ciphertext, blockIdx, nonce)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt block %d: %w", blockIdx, err)
+	var nonce [cipher.FileNonceSize]byte
+	if needHeader {
+		if len(ciphertext) < cipher.FileHeaderSize {
+			return nil, fmt.Errorf("response too short for header: %d bytes", len(ciphertext))
+		}
+		if !bytes.Equal(ciphertext[:cipher.FileMagicSize], []byte(cipher.FileMagic)) {
+			return nil, errors.New("invalid file magic")
+		}
+		copy(nonce[:], ciphertext[cipher.FileMagicSize:cipher.FileHeaderSize])
+		cd.nonceCache.Store(entry.ID, nonce)
+		ciphertext = ciphertext[cipher.FileHeaderSize:]
+	} else {
+		var err error
+		nonce, err = cd.getNonce(ctx, entry)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return plaintext, nil
+
+	decryptStart := time.Now()
+	blocks := make([][]byte, 0, count)
+	rd := bytes.NewReader(ciphertext)
+	for i := 0; i < count; i++ {
+		idx := startBlock + uint64(i)
+		encBlock := make([]byte, cipher.BlockSize)
+		n, err := io.ReadFull(rd, encBlock)
+		if err == io.EOF {
+			break
+		}
+		if err == io.ErrUnexpectedEOF {
+			if n > cipher.BlockHeaderSize {
+				encBlock = encBlock[:n]
+			} else {
+				break
+			}
+		} else if err != nil {
+			return nil, fmt.Errorf("read block %d: %w", idx, err)
+		}
+
+		plain, err := cd.cp.DecryptBlock(encBlock, idx, nonce)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt block %d: %w", idx, err)
+		}
+		blocks = append(blocks, plain)
+	}
+	decryptElapsed := time.Since(decryptStart)
+	if decryptElapsed > 100*time.Millisecond {
+		logging.L.Warnf("cipherdriver: slow decrypt for %s blocks %d-%d: %v (%d blocks)\n",
+			entry.ID, startBlock, startBlock+uint64(count-1), decryptElapsed, len(blocks))
+	}
+
+	return blocks, nil
 }
 
 // getNonce returns the file nonce for entry, reading the file header once and
