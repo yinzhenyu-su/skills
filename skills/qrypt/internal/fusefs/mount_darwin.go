@@ -2,18 +2,20 @@
 
 package fusefs
 
-func MountOptions(allowOther bool, volName string) []string {
+func MountOptions(allowOther bool, volName string, noAppleDouble bool) []string {
 	if volName == "" {
 		volName = "QryptDrive"
 	}
 	opts := []string{
 		"-o", "rw",
-		"-o", "noappledouble",
 		"-o", "defer_permissions",
 		"-o", "volname=" + volName,
 		"-o", "iosize=1048576",
 		"-o", "attr_timeout=0",
 		"-o", "entry_timeout=0",
+	}
+	if noAppleDouble {
+		opts = append(opts, "-o", "noappledouble")
 	}
 	if allowOther {
 		opts = append(opts, "-o", "allow_other")

@@ -37,7 +37,7 @@ type UploadQueue interface {
 func (*QryptFS) SetUploadQueue(q UploadQueue) {}
 
 // MountOptions returns macOS mount options.
-func MountOptions(allowOther bool, _ string) []string {
+func MountOptions(allowOther bool, _ string, _ bool) []string {
 	opts := []string{"-o", "rw"}
 	if allowOther {
 		opts = append(opts, "-o", "allow_other")

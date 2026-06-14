@@ -2,7 +2,7 @@
 
 package fusefs
 
-func MountOptions(allowOther bool, _ string) []string {
+func MountOptions(allowOther bool, _ string, _ bool) []string {
 	opts := []string{
 		"-o", "rw",
 		"-o", "nonempty",

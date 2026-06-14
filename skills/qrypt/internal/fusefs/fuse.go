@@ -29,8 +29,9 @@ type UploadQueue interface {
 // callbacks not explicitly handled (Chmod, Chown, xattr, etc.).
 type FUSEAdapter struct {
 	fuse.FileSystemBase
-	vfs         vfspkg.VFS
+	vfs          vfspkg.VFS
 	shuttingDown int32
+	fhCounter    uint64
 }
 
 // NewFUSEAdapter creates a new FUSEAdapter backed by the given VFS.
@@ -111,7 +112,7 @@ func (fa *FUSEAdapter) Readdir(path string, fill func(name string, stat *fuse.St
 }
 
 func (fa *FUSEAdapter) Read(path string, buff []byte, ofst int64, fh uint64) (n int) {
-	logging.L.Infof("[FUSE] Read: path=%s, len=%d, offset=%d\n", path, len(buff), ofst)
+	start := time.Now()
 
 	rc, err := fa.vfs.Read(context.Background(), path, ofst)
 	if err != nil {
@@ -120,6 +121,11 @@ func (fa *FUSEAdapter) Read(path string, buff []byte, ofst int64, fh uint64) (n 
 	defer rc.Close()
 
 	total, _ := io.ReadFull(rc, buff)
+	elapsed := time.Since(start)
+	if elapsed > 100*time.Millisecond {
+		logging.L.Warnf("[FUSE] Read slow: path=%s offset=%d len=%d -> %dB in %v (%.1f KB/s)\n",
+			path, ofst, len(buff), total, elapsed, float64(total)/elapsed.Seconds()/1024)
+	}
 	return total
 }
 
@@ -155,7 +161,7 @@ func (fa *FUSEAdapter) Create(path string, flags int, mode uint32) (errc int, fh
 	if err != nil {
 		return -fuse.EIO, 0
 	}
-	return 0, 0
+	return 0, atomic.AddUint64(&fa.fhCounter, 1)
 }
 
 func (fa *FUSEAdapter) Mkdir(path string, mode uint32) (errc int) {
@@ -249,7 +255,11 @@ func (fa *FUSEAdapter) Fsync(path string, datasync bool, fh uint64) (errc int) {
 }
 
 func (fa *FUSEAdapter) Open(path string, flags int) (errc int, fh uint64) {
-	return 0, 0
+	_, err := fa.vfs.Stat(context.Background(), path)
+	if err != nil {
+		return -fuse.ENOENT, 0
+	}
+	return 0, atomic.AddUint64(&fa.fhCounter, 1)
 }
 
 func (fa *FUSEAdapter) Release(path string, fh uint64) (errc int) {
@@ -261,19 +271,25 @@ func (fa *FUSEAdapter) Releasedir(path string, fh uint64) (errc int) {
 }
 
 func (fa *FUSEAdapter) Statfs(path string, stat *fuse.Statfs_t) (errc int) {
-	return 0 // return 0, FUSE kernel handles defaults
+	stat.Bsize = 4096
+	stat.Blocks = 128 * 1024 * 1024
+	stat.Bfree = 100 * 1024 * 1024
+	stat.Bavail = 100 * 1024 * 1024
+	stat.Frsize = 4096
+	stat.Namemax = 255
+	return 0
 }
 
 func (fa *FUSEAdapter) Chmod(path string, mode uint32) (errc int) { return 0 }
 func (fa *FUSEAdapter) Chown(path string, uid uint32, gid uint32) (errc int) { return 0 }
 func (fa *FUSEAdapter) Setxattr(path string, name string, value []byte, flags int) (errc int) {
-	return -fuse.ENOATTR
+	return 0
 }
 func (fa *FUSEAdapter) Getxattr(path string, name string) (int, []byte) {
 	return -fuse.ENOATTR, nil
 }
 func (fa *FUSEAdapter) Removexattr(path string, name string) (errc int) {
-	return -fuse.ENOATTR
+	return 0
 }
 func (fa *FUSEAdapter) Listxattr(path string, fill func(name string) bool) (errc int) {
 	return 0
