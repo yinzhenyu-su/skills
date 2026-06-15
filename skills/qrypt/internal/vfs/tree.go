@@ -2,7 +2,6 @@ package vfs
 
 import (
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -60,12 +59,10 @@ func (tm *TreeManager) Store(path string, n *VFSNode) {
 		}
 	}
 
-	// Store by fid
-	n.mu.RLock()
-	fid := n.fid
-	n.mu.RUnlock()
-	if fid != "" && !strings.HasPrefix(fid, "local_") {
-		tm.fidNodes.Store(fid, n)
+	// Index by staging UUID (for cache lookups) and remote FID (for remote ops).
+	tm.fidNodes.Store(n.fid, n)
+	if n.IsUploaded() && n.remoteFid != n.fid {
+		tm.fidNodes.Store(n.remoteFid, n)
 	}
 }
 
@@ -160,7 +157,7 @@ func (tm *TreeManager) Delete(path string, n *VFSNode) {
 
 	if n != nil {
 		n.mu.RLock()
-		fid := n.fid
+		remoteFid := n.remoteFid
 		altPath := n.currentPath
 		n.mu.RUnlock()
 
@@ -169,9 +166,6 @@ func (tm *TreeManager) Delete(path string, n *VFSNode) {
 			n.currentPath = ""
 			n.mu.Unlock()
 		} else if altPath != "" {
-			// Node has a stale phantom entry at altPath (e.g. from a
-			// buggy Store call). Remove it so it doesn't appear as a
-			// file in the wrong parent directory.
 			tm.nodes.Delete(altPath)
 			if altParent := filepath.Dir(altPath); altParent != "" {
 				if v, ok := tm.nodes.Load(altParent); ok {
@@ -186,8 +180,14 @@ func (tm *TreeManager) Delete(path string, n *VFSNode) {
 			n.mu.Unlock()
 		}
 
-		if fid != "" && !strings.HasPrefix(fid, "local_") {
-			tm.fidNodes.Delete(fid)
+		n.mu.RLock()
+		sid := n.fid
+		n.mu.RUnlock()
+		if sid != "" {
+			tm.fidNodes.Delete(sid)
+		}
+		if remoteFid != "" && remoteFid != sid {
+			tm.fidNodes.Delete(remoteFid)
 		}
 	}
 }
@@ -198,18 +198,6 @@ func (tm *TreeManager) LookupByFid(fid string) *VFSNode {
 		return v.(*VFSNode)
 	}
 	return nil
-}
-
-// UpdateFid replaces the old FID with newFid in the fidNodes map.
-// oldFid may be empty or "local_..." — those are not stored in fidNodes
-// and are silently ignored. This does NOT change the node's tree position.
-func (tm *TreeManager) UpdateFid(oldFid, newFid string, n *VFSNode) {
-	if oldFid != "" && !strings.HasPrefix(oldFid, "local_") {
-		tm.fidNodes.Delete(oldFid)
-	}
-	if newFid != "" && !strings.HasPrefix(newFid, "local_") {
-		tm.fidNodes.Store(newFid, n)
-	}
 }
 
 // RootFid returns the root directory's fid.

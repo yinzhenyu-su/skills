@@ -76,12 +76,16 @@ func TestCoalescer_SubmitDelete(t *testing.T) {
 func TestCoalescer_SubmitRename(t *testing.T) {
 	c, ch := newCoalescer(t)
 
+	node := NewVFSNode("staging_fid_a", "parent", "old.txt", "/old.txt", false)
+	node.SetUploaded("remote_fid_a")
+
 	c.Submit(FileOp{
 		Kind:    OpRename,
 		Path:    "/old.txt",
 		NewPath: "/new.txt",
-		Fid:     "fid_a",
+		Fid:     "staging_fid_a",
 		Time:    time.Now(),
+		Node:    node,
 	})
 
 	intents := recvIntents(t, ch, 2*time.Second)

@@ -64,7 +64,7 @@ type observerCall struct {
 	err  error
 }
 
-func (m *mockObserver) OnUploadComplete(path string, newFid string, err error) {
+func (m *mockObserver) OnUploadComplete(path string, newFid string, encSize int64, err error) {
 	m.mu.Lock()
 	m.calls = append(m.calls, observerCall{path, err})
 	m.mu.Unlock()

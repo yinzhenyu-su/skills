@@ -39,10 +39,11 @@ func TestTreeManager_LookupByFid(t *testing.T) {
 	t.Parallel()
 
 	tm := setupTree(t)
-	node := NewVFSNode("f1", "0", "test.txt", "/test.txt", false)
+	node := NewVFSNode("staging1", "0", "test.txt", "/test.txt", false)
+	node.SetUploaded("f1")
 	tm.Store("/test.txt", node)
 
-	// Find by fid
+	// Find by remote fid (indexed after SetUploaded)
 	got := tm.LookupByFid("f1")
 	assert.NotNil(t, got)
 	assert.Equal(t, "/test.txt", got.CurrentPath())
@@ -51,20 +52,24 @@ func TestTreeManager_LookupByFid(t *testing.T) {
 	assert.Nil(t, tm.LookupByFid("nonexistent"))
 }
 
-func TestTreeManager_LocalFidNotInFidNodes(t *testing.T) {
+func TestTreeManager_FidIndexing(t *testing.T) {
 	t.Parallel()
 
 	tm := setupTree(t)
-	node := NewVFSNode("local_abc123", "0", "local.txt", "/local.txt", false)
+	node := NewVFSNode("staging_abc", "0", "local.txt", "/local.txt", false)
 	tm.Store("/local.txt", node)
 
-	// local_ fids are not indexed
-	assert.Nil(t, tm.LookupByFid("local_abc123"))
+	// Staging UUID is indexed (for cache lookups)
+	assert.NotNil(t, tm.LookupByFid("staging_abc"))
 
-	// Path-based lookup still works
-	got := tm.Lookup("/local.txt")
-	assert.NotNil(t, got)
-	assert.Equal(t, "local_abc123", got.FID())
+	// Remote FID is NOT indexed until SetUploaded
+	assert.Nil(t, tm.LookupByFid("remote_fid"))
+
+	// After SetUploaded, remote FID is also indexed
+	node.SetUploaded("remote_fid")
+	tm.Store("/local.txt", node)
+	assert.NotNil(t, tm.LookupByFid("remote_fid"))
+	assert.NotNil(t, tm.LookupByFid("staging_abc"))
 }
 
 func TestTreeManager_ReplacePath_SameDir(t *testing.T) {

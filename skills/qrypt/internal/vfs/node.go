@@ -1,9 +1,19 @@
 package vfs
 
 import (
+	"crypto/rand"
+	"fmt"
 	"sync"
 	"time"
 )
+
+// stagingID generates a short unique identifier for local staging files.
+// Format: 20 random bytes hex-encoded = 40 characters, fixed-length.
+func stagingID() string {
+	b := make([]byte, 20)
+	rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
 
 // VFSNode is the in-memory representation of a filesystem node.
 // It contains only tree structure and metadata fields.
@@ -13,7 +23,9 @@ type VFSNode struct {
 	mu sync.RWMutex
 
 	// Tree structure
-	fid         string
+	fid         string // staging ID (local UUID, never changes)
+	remoteFid   string // remote FID (set after first upload, empty until then)
+	isUploaded  bool   // true after at least one successful upload
 	parentFid   string
 	name        string
 	currentPath string
@@ -27,6 +39,7 @@ type VFSNode struct {
 }
 
 // NewVFSNode creates a new VFSNode with the given identity fields.
+// fid is the staging ID (UUID) — use stagingID() to generate one.
 func NewVFSNode(fid, parentFid, name, currentPath string, isFolder bool) *VFSNode {
 	return &VFSNode{
 		fid:         fid,
@@ -38,11 +51,38 @@ func NewVFSNode(fid, parentFid, name, currentPath string, isFolder bool) *VFSNod
 	}
 }
 
-// FID returns the backend file identifier.
+// FID returns the staging identifier. This is NOT the remote FID —
+// use RemoteFID() for that. The staging ID is stable for the node's
+// lifetime and is used for coalescer dedup, staging file paths, etc.
 func (n *VFSNode) FID() string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.fid
+}
+
+// RemoteFID returns the remote file identifier, or "" if the file has
+// not been uploaded yet.
+func (n *VFSNode) RemoteFID() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.remoteFid
+}
+
+// IsUploaded returns true if this node has been uploaded to remote at
+// least once and has a valid remote FID.
+func (n *VFSNode) IsUploaded() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.isUploaded
+}
+
+// SetUploaded marks the node as successfully uploaded and records its
+// remote FID. The staging ID (n.fid) stays unchanged.
+func (n *VFSNode) SetUploaded(remoteFid string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.remoteFid = remoteFid
+	n.isUploaded = true
 }
 
 // ParentFID returns the parent's backend file identifier.

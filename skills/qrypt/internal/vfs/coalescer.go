@@ -56,6 +56,7 @@ type PendingIntent struct {
 	Started      bool
 	Committed    bool
 	ChildFids    []string
+	Node         *VFSNode
 }
 
 type PathTombstone struct {
@@ -233,13 +234,14 @@ func (oc *OperationCoalescer) flush(ops []FileOp) []RemoteIntent {
 			continue
 		}
 
+		remoteExists := op.Node != nil && op.Node.IsUploaded()
 		intent, exists := intents[fid]
 		if !exists {
 			intent = &PendingIntent{
 				Fid:          fid,
 				Path:         op.Path,
 				IsDir:        op.IsDir,
-				RemoteExists: !strings.HasPrefix(fid, "local_"),
+				RemoteExists: remoteExists,
 			}
 			intents[fid] = intent
 			orderedFids = append(orderedFids, fid)
@@ -307,6 +309,7 @@ func (oc *OperationCoalescer) flush(ops []FileOp) []RemoteIntent {
 					Fid:       fid,
 					Fids:      fids,
 					Recursive: intent.IsDir,
+					Node:      intent.Node,
 				})
 			} else {
 				results = append(results, RemoteIntent{
@@ -315,6 +318,7 @@ func (oc *OperationCoalescer) flush(ops []FileOp) []RemoteIntent {
 					Fid:        fid,
 					Fids:       fids,
 					SkipRemote: true,
+					Node:       intent.Node,
 				})
 			}
 			continue
@@ -458,6 +462,7 @@ func (oc *OperationCoalescer) applyEventToIntent(intent *PendingIntent, op FileO
 	case OpDelete:
 		intent.Path = op.Path
 		intent.Delete = true
+		intent.Node = op.Node
 		if len(op.Fids) > 0 {
 			intent.ChildFids = op.Fids
 		}

@@ -227,8 +227,10 @@ func apiError(resp resp) error {
 		return nil
 	}
 	switch resp.Code {
-	case 23001, 23004:
+	case 23001:
 		return drivers.ErrNotFound
+	case 23004:
+		return nil
 	case 23008:
 		return drivers.ErrDirAlreadyExists
 	}
@@ -308,6 +310,7 @@ func (d *QuarkDriver) BatchRemove(ctx context.Context, entries []drivers.Entry) 
 	for i, e := range entries {
 		ids[i] = e.ID
 	}
+	logging.L.Debugf("BatchRemove: fids=%v\n", ids)
 	data := map[string]interface{}{
 		"action_type":  1,
 		"exclude_fids": []string{},
@@ -315,7 +318,9 @@ func (d *QuarkDriver) BatchRemove(ctx context.Context, entries []drivers.Entry) 
 	}
 	var resp resp
 	err := d.cl.request(http.MethodPost, "/file/delete", nil, data, &resp)
+	logging.L.Debugf("BatchRemove: resp status=%d code=%d msg=%s\n", resp.Status, resp.Code, resp.Message)
 	if err != nil {
+		logging.L.Debugf("BatchRemove: err=%v\n", err)
 		return fmt.Errorf("batch delete: %w", err)
 	}
 	if rerr := apiError(resp); rerr != nil {

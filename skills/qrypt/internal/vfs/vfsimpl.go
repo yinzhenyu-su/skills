@@ -107,8 +107,12 @@ func NewVFSImpl(drv drivers.Driver, cp cipher.Cipher, cacheDir string, rootFid s
 			if node == nil {
 				return nil, fmt.Errorf("vfs: node not found for fid %s", fid)
 			}
+			rfid := node.RemoteFID()
+			if rfid == "" {
+				rfid = node.FID()
+			}
 			entry := drivers.Entry{
-				ID:   node.FID(),
+				ID:   rfid,
 				Size: node.EncSize(),
 			}
 			return cipherDrv.ReadBlocks(ctx, entry, startBlock, count)
@@ -126,7 +130,9 @@ func NewVFSImpl(drv drivers.Driver, cp cipher.Cipher, cacheDir string, rootFid s
 	}
 	vfsImpl.coalescer = NewOperationCoalescer(caps, vfsImpl.handleCoalescedIntents)
 
-	vfsImpl.tree.Store("/", NewVFSNode(vfsImpl.rootFid, "0", "", "/", true))
+	rootNode := NewVFSNode(stagingID(), "0", "", "/", true)
+	rootNode.SetUploaded(vfsImpl.rootFid)
+	vfsImpl.tree.Store("/", rootNode)
 	state := &nodeState{source: "remote"}
 	vfsImpl.states.Store("/", state)
 
@@ -134,13 +140,13 @@ func NewVFSImpl(drv drivers.Driver, cp cipher.Cipher, cacheDir string, rootFid s
 }
 
 // resolveParentFid returns the current parent FID for a given path/node.
-// It looks up the parent directory in the tree and returns its latest FID,
-// which may have been updated from a local_ FID to a remote FID by
-// executeCoalescedMkdir.
+// It looks up the parent directory in the tree and returns its remote FID.
 func (vfs *VFSImpl) resolveParentFid(path string, n *VFSNode) string {
 	parentPath := filepath.Dir(path)
 	if p := vfs.tree.Lookup(parentPath); p != nil {
-		return p.FID()
+		if rfid := p.RemoteFID(); rfid != "" {
+			return rfid
+		}
 	}
 	return n.ParentFID()
 }
@@ -165,8 +171,12 @@ func (vfs *VFSImpl) Stat(ctx context.Context, path string) (vfsapi.NodeInfo, err
 	if n == nil {
 		return vfsapi.NodeInfo{}, fmt.Errorf("not found: %s", path)
 	}
+	id := n.RemoteFID()
+	if id == "" {
+		id = n.FID()
+	}
 	return vfsapi.NodeInfo{
-		ID:      n.FID(),
+		ID:      id,
 		Name:    n.Name(),
 		IsDir:   n.IsFolder(),
 		Size:    n.Size(),
@@ -183,7 +193,10 @@ func (vfs *VFSImpl) ListDir(ctx context.Context, path string) ([]vfsapi.DirEntry
 		return nil, fmt.Errorf("not a directory: %s", path)
 	}
 
-	parentFid := n.FID()
+	parentFid := n.RemoteFID()
+	if parentFid == "" {
+		parentFid = n.FID()
+	}
 	state := vfs.getOrCreateState(path)
 
 	forceRefresh := false
@@ -303,15 +316,19 @@ func (vfs *VFSImpl) Create(ctx context.Context, path string) error {
 		return vfs.Mkdir(ctx, path)
 	}
 
-	fid := "local_" + name + "_" + fmt.Sprint(time.Now().UnixNano())
+	sid := stagingID()
+	parentFid := parentNode.RemoteFID()
+	if parentFid == "" {
+		parentFid = parentNode.FID()
+	}
 
-	n := NewVFSNode(fid, parentNode.FID(), name, path, false)
+	n := NewVFSNode(sid, parentFid, name, path, false)
 	state := vfs.getOrCreateState(path)
 	state.isDirty = true
 	state.source = "local"
 
 	if vfs.staging != nil {
-		localPath, err := vfs.staging.Create(fid)
+		localPath, err := vfs.staging.Create(sid)
 		if err != nil {
 			return fmt.Errorf("create staging: %w", err)
 		}
@@ -338,8 +355,7 @@ func (vfs *VFSImpl) Write(ctx context.Context, path string, offset int64, reader
 	}
 
 	if state.localPath == "" {
-		newFid := "local_" + n.Name() + "_" + fmt.Sprint(time.Now().UnixNano())
-		localPath, err := vfs.staging.Create(newFid)
+		localPath, err := vfs.staging.Create(stagingID())
 		if err != nil {
 			return fmt.Errorf("create staging for write: %w", err)
 		}
@@ -366,8 +382,8 @@ func (vfs *VFSImpl) Write(ctx context.Context, path string, offset int64, reader
 
 	var oldFid string
 	if state != nil {
-		if fid := n.FID(); fid != "" && !strings.HasPrefix(fid, "local_") {
-			oldFid = fid
+		if n.IsUploaded() {
+			oldFid = n.RemoteFID()
 		}
 	}
 	parentFid := vfs.resolveParentFid(path, n)
@@ -387,12 +403,32 @@ func (vfs *VFSImpl) Mkdir(ctx context.Context, path string) error {
 		return fmt.Errorf("parent not found: %s", parentPath)
 	}
 
-	entry, err := vfs.executor.Mkdir(ctx, parentNode.FID(), name)
-	if err != nil {
-		if !strings.Contains(err.Error(), "already exists") {
-			return fmt.Errorf("mkdir remote: %w", err)
+	parentRemoteFid := parentNode.RemoteFID()
+	if parentRemoteFid == "" {
+		parentRemoteFid = parentNode.FID()
+	}
+	var entry drivers.Entry
+	var err error
+	for retry := 0; retry < 4; retry++ {
+		entry, err = vfs.executor.Mkdir(ctx, parentRemoteFid, name)
+		if err == nil {
+			break
 		}
-		if entries, listErr := vfs.cipherDrv.List(ctx, parentNode.FID()); listErr == nil {
+		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "同名冲突") {
+			// Directory exists on remote (from previous upload or concurrent
+			// operation). Fall through to the fallback list below.
+			time.Sleep(time.Duration(retry) * 500 * time.Millisecond)
+			break
+		}
+		logging.L.Warnf("mkdir: remote error for %s (parentFid=%s): %v\n", path, parentRemoteFid, err)
+		return fmt.Errorf("mkdir remote: %w", err)
+	}
+	if err != nil {
+		if !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "同名冲突") {
+			return err
+		}
+
+		if entries, listErr := vfs.cipherDrv.List(ctx, parentRemoteFid); listErr == nil {
 			for _, e := range entries {
 				if e.Name == name {
 					entry = e
@@ -402,16 +438,29 @@ func (vfs *VFSImpl) Mkdir(ctx context.Context, path string) error {
 			}
 		}
 		if err != nil {
+			logging.L.Warnf("mkdir: fallback list failed for %s parentFid=%s: %v\n", path, parentRemoteFid, err)
 			return err
 		}
 	}
 
-	fid := entry.ID
-	if fid == "" {
+	if entry.ID == "" {
 		return fmt.Errorf("mkdir: remote returned empty fid for %s", path)
 	}
 
-	n := NewVFSNode(fid, parentNode.FID(), name, path, true)
+	// If the node already exists in the tree (e.g. "already exists" fallback
+	// or concurrent Mkdir), update its remote FID without losing children.
+	if existing := vfs.tree.Lookup(path); existing != nil {
+		existing.SetUploaded(entry.ID)
+		vfs.tree.Store(path, existing)
+		return nil
+	}
+
+	parentFid := parentNode.RemoteFID()
+	if parentFid == "" {
+		parentFid = parentNode.FID()
+	}
+	n := NewVFSNode(stagingID(), parentFid, name, path, true)
+	n.SetUploaded(entry.ID)
 	vfs.tree.Store(path, n)
 
 	state := vfs.getOrCreateState(path)
@@ -467,9 +516,8 @@ func (vfs *VFSImpl) rmdir(path string, n *VFSNode) error {
 	}
 	n.mu.RLock()
 	for _, child := range n.children {
-		cfid := child.FID()
-		if cfid != "" && !strings.HasPrefix(cfid, "local_") {
-			childFids = append(childFids, cfid)
+		if child.IsUploaded() {
+			childFids = append(childFids, child.RemoteFID())
 		}
 	}
 	n.mu.RUnlock()
@@ -553,13 +601,12 @@ func (vfs *VFSImpl) Truncate(ctx context.Context, path string, size int64) error
 	}
 
 	if state.localPath == "" {
-		newFid := "local_" + n.Name() + "_" + fmt.Sprint(time.Now().UnixNano())
-		localPath, err := vfs.staging.Create(newFid)
+		localPath, err := vfs.staging.Create(stagingID())
 		if err != nil {
 			return fmt.Errorf("create staging for truncate: %w", err)
 		}
-		if oldSize > 0 && !strings.HasPrefix(n.FID(), "local_") {
-			entry := drivers.Entry{ID: n.FID(), Size: oldSize}
+		if oldSize > 0 && n.IsUploaded() {
+			entry := drivers.Entry{ID: n.RemoteFID(), Size: oldSize}
 			rc, err := vfs.cipherDrv.Read(ctx, entry, 0, oldSize)
 			if err == nil {
 				defer rc.Close()
@@ -574,7 +621,7 @@ func (vfs *VFSImpl) Truncate(ctx context.Context, path string, size int64) error
 		return err
 	}
 
-	vfs.uploads.MarkDirty(path, n.ParentFID(), n.Name(), size, "", func() (io.ReadCloser, error) {
+	vfs.uploads.MarkDirty(path, vfs.resolveParentFid(path, n), n.Name(), size, "", func() (io.ReadCloser, error) {
 		return vfs.staging.OpenReader(state.localPath)
 	})
 
@@ -644,7 +691,9 @@ func (vfs *VFSImpl) handleCoalescedIntents(intents []RemoteIntent) {
 				state.syncQueued = true
 	parentFid := intent.ParentFid
 	if p := vfs.tree.Lookup(filepath.Dir(intent.Path)); p != nil {
-		parentFid = p.FID()
+		if rfid := p.RemoteFID(); rfid != "" {
+			parentFid = rfid
+		}
 	}
 	vfs.uploads.MarkDirty(
 		intent.Path,
@@ -672,13 +721,26 @@ func (vfs *VFSImpl) handleCoalescedIntents(intents []RemoteIntent) {
 
 func (vfs *VFSImpl) executeDelete(intent RemoteIntent) {
 	fids := intent.Fids
-	if len(fids) == 0 {
-		fids = []string{intent.Fid}
+	rfid := intent.Fid
+	if intent.Node != nil && intent.Node.IsUploaded() {
+		rfid = intent.Node.RemoteFID()
+	}
+	if rfid != "" {
+		found := false
+		for _, f := range fids {
+			if f == rfid {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fids = append(fids, rfid)
+		}
 	}
 
 	var remoteFids []drivers.Entry
 	for _, fid := range fids {
-		if fid != "" && !strings.HasPrefix(fid, "local_") {
+		if fid != "" {
 			remoteFids = append(remoteFids, drivers.Entry{ID: fid})
 		}
 	}
@@ -718,7 +780,10 @@ func (vfs *VFSImpl) cleanupLocal(intent RemoteIntent) {
 func (vfs *VFSImpl) executeCoalescedRename(intent RemoteIntent) {
 	fid := intent.Fid
 	newPath := intent.NewPath
-	if fid == "" || strings.HasPrefix(fid, "local_") || newPath == "" {
+	if intent.Node != nil && intent.Node.IsUploaded() {
+		fid = intent.Node.RemoteFID()
+	}
+	if fid == "" || newPath == "" {
 		return
 	}
 
@@ -758,7 +823,11 @@ func (vfs *VFSImpl) executeCoalescedMkdir(intent RemoteIntent) {
 		return
 	}
 
-	entry, err := vfs.executor.Mkdir(context.Background(), parentNode.FID(), name)
+	parentRemoteFid := parentNode.RemoteFID()
+	if parentRemoteFid == "" {
+		parentRemoteFid = parentNode.FID()
+	}
+	entry, err := vfs.executor.Mkdir(context.Background(), parentRemoteFid, name)
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			return
@@ -768,14 +837,14 @@ func (vfs *VFSImpl) executeCoalescedMkdir(intent RemoteIntent) {
 	}
 
 	if intent.Node != nil && entry.ID != "" {
-		intent.Node.fid = entry.ID
-		vfs.tree.fidNodes.Store(entry.ID, intent.Node)
+		intent.Node.SetUploaded(entry.ID)
+		vfs.tree.Store(path, intent.Node)
 		state := vfs.getOrCreateState(path)
 		state.source = "remote"
 	}
 }
 
-func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, err error) {
+func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, encSize int64, err error) {
 	n := vfs.tree.Lookup(path)
 	if n == nil {
 		return
@@ -796,10 +865,17 @@ func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, err error) {
 	state.syncQueued = false
 	state.lastUpload = time.Now()
 
-	if newFid != "" && !strings.HasPrefix(newFid, "local_") {
-		oldFid := n.fid
-		n.fid = newFid
-		vfs.tree.UpdateFid(oldFid, newFid, n)
+	if state.localPath != "" && vfs.staging != nil {
+		vfs.staging.Remove(state.localPath)
+		state.localPath = ""
+	}
+
+	if newFid != "" {
+		n.SetUploaded(newFid)
+		if encSize > 0 {
+			n.SetEncSize(encSize)
+		}
+		vfs.tree.Store(path, n)
 	}
 
 	if state.oldRemoteFid != "" {
@@ -819,9 +895,8 @@ func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, err error) {
 func (vfs *VFSImpl) InvalidateDirCache(path string) {
 	n := vfs.tree.Lookup(path)
 	if n != nil {
-		fid := n.FID()
-		if fid != "" && !strings.HasPrefix(fid, "local_") {
-			vfs.tree.fidNodes.Delete(fid)
+		if n.IsUploaded() {
+			vfs.tree.fidNodes.Delete(n.RemoteFID())
 		}
 		vfs.tree.nodes.Delete(filepath.Clean(path))
 	}
@@ -896,7 +971,7 @@ func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles
 		}
 
 		if state != nil && state.expectedFid != "" && rf.ID == state.expectedFid {
-			nn.fid = rf.ID
+			nn.SetUploaded(rf.ID)
 			state.source = "remote"
 		}
 
@@ -907,29 +982,32 @@ func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles
 			}
 		}
 
-		if !strings.HasPrefix(fid, "local_") && rf.ID != fid {
-			if state == nil || !state.isDirty {
-				if state == nil || state.lastUpload.IsZero() || time.Since(state.lastUpload) >= 30*time.Second {
-					nn.fid = rf.ID
-					state = vfs.getOrCreateState(entry.path)
-					state.source = "remote"
-				}
-			}
-
-			remoteMtime := rf.ModTime.UnixMilli()
-			if state != nil && state.source == "remote" && state.baseMtime > 0 && remoteMtime > state.baseMtime+2000 {
-				if !state.isDirty {
-					decSize, errDec := vfs.cp.DecryptedSize(rf.Size)
-					if errDec == nil {
-						nn.fid = rf.ID
-						nn.SetSize(decSize)
-						nn.SetEncSize(rf.Size)
-						nn.SetModTime(rf.ModTime)
-						state.baseMtime = remoteMtime
-						state.baseSize = decSize
-						state.lastCheck = time.Now()
+		if nn.IsUploaded() {
+			existingRemote := nn.RemoteFID()
+			if existingRemote != "" && rf.ID != existingRemote {
+				if state == nil || !state.isDirty {
+					if state == nil || state.lastUpload.IsZero() || time.Since(state.lastUpload) >= 30*time.Second {
+						vfs.cache.InvalidateFid(existingRemote)
+						nn.SetUploaded(rf.ID)
+						state = vfs.getOrCreateState(entry.path)
 						state.source = "remote"
-						vfs.cache.InvalidateFid(fid)
+					}
+				}
+
+				remoteMtime := rf.ModTime.UnixMilli()
+				if state != nil && state.source == "remote" && state.baseMtime > 0 && remoteMtime > state.baseMtime+2000 {
+					if !state.isDirty {
+						decSize, errDec := vfs.cp.DecryptedSize(rf.Size)
+						if errDec == nil {
+							nn.SetUploaded(rf.ID)
+							nn.SetSize(decSize)
+							nn.SetEncSize(rf.Size)
+							nn.SetModTime(rf.ModTime)
+							state.baseMtime = remoteMtime
+							state.baseSize = decSize
+							state.lastCheck = time.Now()
+							state.source = "remote"
+						}
 					}
 				}
 			}
@@ -955,7 +1033,8 @@ func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles
 			lastCheck = time.Time{}
 		}
 
-		child := NewVFSNode(rf.ID, parentFid, name, childPath, rf.IsDir)
+		child := NewVFSNode(stagingID(), parentFid, name, childPath, rf.IsDir)
+		child.SetUploaded(rf.ID)
 		child.SetSize(decSize)
 		child.SetEncSize(rf.Size)
 		child.SetModTime(modTime)

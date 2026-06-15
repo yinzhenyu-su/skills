@@ -135,7 +135,7 @@ func (um *UploadManager) IsPending(path string) bool {
 	return ok
 }
 
-func (um *UploadManager) uploadDone(path string, newFid string, err error) {
+func (um *UploadManager) uploadDone(path string, newFid string, encSize int64, err error) {
 	um.mu.Lock()
 	delete(um.inFlight, path)
 	if _, stillDirty := um.infos[path]; stillDirty && err == nil {
@@ -162,7 +162,7 @@ func (um *UploadManager) uploadDone(path string, newFid string, err error) {
 	}
 	um.mu.Unlock()
 	if um.observer != nil {
-		um.observer.OnUploadComplete(path, newFid, err)
+		um.observer.OnUploadComplete(path, newFid, encSize, err)
 	}
 }
 
@@ -174,7 +174,7 @@ func (um *UploadManager) enqueueUpload(path string, info *uploadInfo) {
 		delete(um.infos, path)
 		delete(um.inFlight, path)
 		um.mu.Unlock()
-		um.uploadDone(path, "", err)
+		um.uploadDone(path, "", 0, err)
 		return
 	}
 	defer reader.Close()
@@ -189,12 +189,13 @@ func (um *UploadManager) enqueueUpload(path string, info *uploadInfo) {
 
 	entry, err := um.executor.Upload(ctx, info.ParentID, info.Name, info.Size, reader)
 	newFid := entry.ID
+	newSize := entry.Size
 	if err == nil {
 		um.mu.Lock()
 		delete(um.infos, path)
 		delete(um.retryCount, path)
 		um.mu.Unlock()
-		um.uploadDone(path, newFid, nil)
+		um.uploadDone(path, newFid, newSize, nil)
 		return
 	}
 
@@ -235,7 +236,7 @@ func (um *UploadManager) enqueueUpload(path string, info *uploadInfo) {
 		delete(um.timers, path)
 		delete(um.inFlight, path)
 		um.mu.Unlock()
-		um.uploadDone(path, "", err)
+		um.uploadDone(path, "", 0, err)
 	}
 }
 
