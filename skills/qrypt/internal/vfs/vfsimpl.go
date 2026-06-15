@@ -29,18 +29,16 @@ type FSOptions struct {
 }
 
 type nodeState struct {
-	localPath    string
-	nonce        [cipher.FileNonceSize]byte
-	hasNonce     bool
-	isDirty      bool
-	syncQueued   bool
-	source       string
-	baseMtime    int64
-	baseSize     int64
-	lastUpload   time.Time
-	lastCheck    time.Time
-	expectedFid  string
-	oldRemoteFid string // remote FID from previous upload, to delete after next successful upload
+	mu sync.Mutex
+
+	localPath  string
+	isDirty    bool
+	syncQueued bool
+	source     string
+	baseMtime  int64
+	baseSize   int64
+	lastUpload time.Time
+	lastCheck  time.Time
 }
 
 // VFSImpl is the concrete implementation of vfsapi.VFS. It owns and wires
@@ -199,23 +197,31 @@ func (vfs *VFSImpl) ListDir(ctx context.Context, path string) ([]vfsapi.DirEntry
 	}
 	state := vfs.getOrCreateState(path)
 
+	state.mu.Lock()
+	lastCheck := state.lastCheck
+	state.mu.Unlock()
+
 	forceRefresh := false
 	n.mu.RLock()
 	childCount := len(n.children)
 	n.mu.RUnlock()
-	if childCount == 0 && time.Since(state.lastCheck) > 5*time.Second {
+	if childCount == 0 && time.Since(lastCheck) > 5*time.Second {
 		forceRefresh = true
 	}
 
-	if time.Since(state.lastCheck) > 15*time.Second || forceRefresh {
+	if time.Since(lastCheck) > 15*time.Second || forceRefresh {
 		if forceRefresh {
 			entries, err := vfs.cipherDrv.List(ctx, parentFid)
 			if err == nil {
 				vfs.mergeRemoteChanges(path, parentFid, entries)
 			}
+			state.mu.Lock()
 			state.lastCheck = time.Now()
+			state.mu.Unlock()
 		} else {
+			state.mu.Lock()
 			state.lastCheck = time.Now()
+			state.mu.Unlock()
 			go vfs.refreshDirAsync(path, parentFid)
 		}
 	}
@@ -249,8 +255,13 @@ func (vfs *VFSImpl) Read(ctx context.Context, path string, offset int64) (io.Rea
 	}
 
 	state := vfs.getState(path)
-	if state != nil && state.localPath != "" && vfs.staging != nil && vfs.staging.Exists(state.localPath) {
-		return vfs.staging.OpenReader(state.localPath)
+	if state != nil && vfs.staging != nil {
+		state.mu.Lock()
+		lp := state.localPath
+		state.mu.Unlock()
+		if lp != "" && vfs.staging.Exists(lp) {
+			return vfs.staging.OpenReader(lp)
+		}
 	}
 
 	return &vfsReader{
@@ -324,16 +335,23 @@ func (vfs *VFSImpl) Create(ctx context.Context, path string) error {
 
 	n := NewVFSNode(sid, parentFid, name, path, false)
 	state := vfs.getOrCreateState(path)
-	state.isDirty = true
-	state.source = "local"
 
+	var localPath string
 	if vfs.staging != nil {
-		localPath, err := vfs.staging.Create(sid)
+		var err error
+		localPath, err = vfs.staging.Create(sid)
 		if err != nil {
 			return fmt.Errorf("create staging: %w", err)
 		}
+	}
+
+	state.mu.Lock()
+	state.isDirty = true
+	state.source = "local"
+	if localPath != "" {
 		state.localPath = localPath
 	}
+	state.mu.Unlock()
 
 	vfs.tree.Store(path, n)
 
@@ -354,12 +372,19 @@ func (vfs *VFSImpl) Write(ctx context.Context, path string, offset int64, reader
 		return fmt.Errorf("staging unavailable")
 	}
 
-	if state.localPath == "" {
-		localPath, err := vfs.staging.Create(stagingID())
+	state.mu.Lock()
+	localPath := state.localPath
+	state.mu.Unlock()
+
+	if localPath == "" {
+		var err error
+		localPath, err = vfs.staging.Create(stagingID())
 		if err != nil {
 			return fmt.Errorf("create staging for write: %w", err)
 		}
+		state.mu.Lock()
 		state.localPath = localPath
+		state.mu.Unlock()
 	}
 
 	data, err := io.ReadAll(reader)
@@ -367,16 +392,18 @@ func (vfs *VFSImpl) Write(ctx context.Context, path string, offset int64, reader
 		return err
 	}
 
-	written, err := vfs.staging.WriteAt(state.localPath, data, offset)
+	written, err := vfs.staging.WriteAt(localPath, data, offset)
 	if err != nil {
 		return err
 	}
 
+	state.mu.Lock()
 	state.isDirty = true
+	state.mu.Unlock()
 	n.SetModTime(time.Now())
 	newSize := offset + int64(written)
 	if newSize < n.Size() && vfs.staging != nil {
-		vfs.staging.Truncate(state.localPath, newSize)
+		vfs.staging.Truncate(localPath, newSize)
 	}
 	n.SetSize(newSize)
 
@@ -388,7 +415,10 @@ func (vfs *VFSImpl) Write(ctx context.Context, path string, offset int64, reader
 	}
 	parentFid := vfs.resolveParentFid(path, n)
 	vfs.uploads.MarkDirty(path, parentFid, n.Name(), n.Size(), oldFid, func() (io.ReadCloser, error) {
-		return vfs.staging.OpenReader(state.localPath)
+		state.mu.Lock()
+		lp := state.localPath
+		state.mu.Unlock()
+		return vfs.staging.OpenReader(lp)
 	})
 
 	return nil
@@ -464,7 +494,9 @@ func (vfs *VFSImpl) Mkdir(ctx context.Context, path string) error {
 	vfs.tree.Store(path, n)
 
 	state := vfs.getOrCreateState(path)
+	state.mu.Lock()
 	state.source = "remote"
+	state.mu.Unlock()
 
 	return nil
 }
@@ -593,15 +625,23 @@ func (vfs *VFSImpl) Truncate(ctx context.Context, path string, size int64) error
 	n.SetSize(size)
 
 	state := vfs.getOrCreateState(path)
+
+	state.mu.Lock()
 	state.isDirty = true
+	state.mu.Unlock()
 	n.SetModTime(time.Now())
 
 	if vfs.staging == nil {
 		return fmt.Errorf("staging unavailable")
 	}
 
-	if state.localPath == "" {
-		localPath, err := vfs.staging.Create(stagingID())
+	state.mu.Lock()
+	localPath := state.localPath
+	state.mu.Unlock()
+
+	if localPath == "" {
+		var err error
+		localPath, err = vfs.staging.Create(stagingID())
 		if err != nil {
 			return fmt.Errorf("create staging for truncate: %w", err)
 		}
@@ -614,15 +654,20 @@ func (vfs *VFSImpl) Truncate(ctx context.Context, path string, size int64) error
 				vfs.staging.WriteAt(localPath, data, 0)
 			}
 		}
+		state.mu.Lock()
 		state.localPath = localPath
+		state.mu.Unlock()
 	}
 
-	if err := vfs.staging.Truncate(state.localPath, size); err != nil {
+	if err := vfs.staging.Truncate(localPath, size); err != nil {
 		return err
 	}
 
 	vfs.uploads.MarkDirty(path, vfs.resolveParentFid(path, n), n.Name(), size, "", func() (io.ReadCloser, error) {
-		return vfs.staging.OpenReader(state.localPath)
+		state.mu.Lock()
+		lp := state.localPath
+		state.mu.Unlock()
+		return vfs.staging.OpenReader(lp)
 	})
 
 	return nil
@@ -643,10 +688,16 @@ func (vfs *VFSImpl) Flush(ctx context.Context, path string) error {
 		return fmt.Errorf("not found: %s", path)
 	}
 	state := vfs.getState(path)
-	if state == nil || !state.isDirty {
+	if state == nil {
 		return nil
 	}
+	state.mu.Lock()
+	isDirty := state.isDirty
 	localPath := state.localPath
+	state.mu.Unlock()
+	if !isDirty {
+		return nil
+	}
 	if localPath != "" && vfs.staging != nil {
 		vfs.staging.Sync(localPath)
 	}
@@ -671,7 +722,9 @@ func (vfs *VFSImpl) Fsync(ctx context.Context, path string) error {
 	if state == nil {
 		return nil
 	}
+	state.mu.Lock()
 	localPath := state.localPath
+	state.mu.Unlock()
 	if localPath != "" && vfs.staging != nil {
 		return vfs.staging.Sync(localPath)
 	}
@@ -688,25 +741,33 @@ func (vfs *VFSImpl) handleCoalescedIntents(intents []RemoteIntent) {
 		case "UPLOAD":
 			if intent.Node != nil {
 				state := vfs.getOrCreateState(intent.Node.CurrentPath())
+				state.mu.Lock()
 				state.syncQueued = true
-	parentFid := intent.ParentFid
-	if p := vfs.tree.Lookup(filepath.Dir(intent.Path)); p != nil {
-		if rfid := p.RemoteFID(); rfid != "" {
-			parentFid = rfid
-		}
-	}
-	vfs.uploads.MarkDirty(
-		intent.Path,
-		parentFid,
-		filepath.Base(intent.Path),
-		intent.Node.Size(),
-		"",
-		func() (io.ReadCloser, error) {
+				state.mu.Unlock()
+				parentFid := intent.ParentFid
+				if p := vfs.tree.Lookup(filepath.Dir(intent.Path)); p != nil {
+					if rfid := p.RemoteFID(); rfid != "" {
+						parentFid = rfid
+					}
+				}
+				vfs.uploads.MarkDirty(
+					intent.Path,
+					parentFid,
+					filepath.Base(intent.Path),
+					intent.Node.Size(),
+					"",
+					func() (io.ReadCloser, error) {
 						state := vfs.getState(intent.Path)
-						if state == nil || state.localPath == "" || vfs.staging == nil {
+						if state == nil || vfs.staging == nil {
 							return nil, fmt.Errorf("staging not found for %s", intent.Path)
 						}
-						return vfs.staging.OpenReader(state.localPath)
+						state.mu.Lock()
+						lp := state.localPath
+						state.mu.Unlock()
+						if lp == "" {
+							return nil, fmt.Errorf("staging not found for %s", intent.Path)
+						}
+						return vfs.staging.OpenReader(lp)
 					})
 			}
 		case "DELETE":
@@ -768,8 +829,13 @@ func (vfs *VFSImpl) executeDelete(intent RemoteIntent) {
 func (vfs *VFSImpl) cleanupLocal(intent RemoteIntent) {
 	if intent.Node != nil {
 		state := vfs.getState(intent.Node.CurrentPath())
-		if state != nil && state.localPath != "" && vfs.staging != nil {
-			vfs.staging.Remove(state.localPath)
+		if state != nil && vfs.staging != nil {
+			state.mu.Lock()
+			lp := state.localPath
+			state.mu.Unlock()
+			if lp != "" {
+				vfs.staging.Remove(lp)
+			}
 		}
 	}
 	if intent.Staging != "" && vfs.staging != nil {
@@ -840,7 +906,9 @@ func (vfs *VFSImpl) executeCoalescedMkdir(intent RemoteIntent) {
 		intent.Node.SetUploaded(entry.ID)
 		vfs.tree.Store(path, intent.Node)
 		state := vfs.getOrCreateState(path)
+		state.mu.Lock()
 		state.source = "remote"
+		state.mu.Unlock()
 	}
 }
 
@@ -856,18 +924,24 @@ func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, encSize int64, 
 
 	if err != nil {
 		logging.L.Warnf("upload: failed for %s: %v\n", path, err)
+		state.mu.Lock()
 		state.syncQueued = false
+		state.mu.Unlock()
 		return
 	}
 
 	logging.L.Infof("upload: succeeded for %s\n", path)
+
+	state.mu.Lock()
 	state.isDirty = false
 	state.syncQueued = false
 	state.lastUpload = time.Now()
+	lp := state.localPath
+	state.localPath = ""
+	state.mu.Unlock()
 
-	if state.localPath != "" && vfs.staging != nil {
-		vfs.staging.Remove(state.localPath)
-		state.localPath = ""
+	if lp != "" && vfs.staging != nil {
+		vfs.staging.Remove(lp)
 	}
 
 	if newFid != "" {
@@ -876,15 +950,6 @@ func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, encSize int64, 
 			n.SetEncSize(encSize)
 		}
 		vfs.tree.Store(path, n)
-	}
-
-	if state.oldRemoteFid != "" {
-		go func(fid string) {
-			if err := vfs.executor.Remove(context.Background(), drivers.Entry{ID: fid}); err != nil {
-				logging.L.Debugf("upload: remove old fid %s for %s: %v\n", fid, path, err)
-			}
-		}(state.oldRemoteFid)
-		state.oldRemoteFid = ""
 	}
 
 	if vfs.diskCache != nil {
@@ -910,7 +975,9 @@ func (vfs *VFSImpl) refreshDirAsync(path, parentFid string) {
 	_ = entries
 	vfs.mergeRemoteChanges(path, parentFid, entries)
 	state := vfs.getOrCreateState(path)
+	state.mu.Lock()
 	state.lastCheck = time.Now()
+	state.mu.Unlock()
 }
 
 func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles []drivers.Entry) {
@@ -961,8 +1028,13 @@ func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles
 		seenLocalNames[name] = true
 
 		state := vfs.getState(entry.path)
-		if state != nil && state.syncQueued {
-			continue
+		if state != nil {
+			state.mu.Lock()
+			sq := state.syncQueued
+			state.mu.Unlock()
+			if sq {
+				continue
+			}
 		}
 
 		rf, exists := remoteMap[name]
@@ -970,16 +1042,15 @@ func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles
 			continue
 		}
 
-		if state != nil && state.expectedFid != "" && rf.ID == state.expectedFid {
-			nn.SetUploaded(rf.ID)
-			state.source = "remote"
-		}
-
-		if state != nil && !state.isDirty && (state.source == "local" || state.source == "merged" ||
-			(!state.lastUpload.IsZero() && time.Since(state.lastUpload) < 30*time.Second)) {
-			if rf.ID == fid {
-				state.source = "remote"
+		if state != nil {
+			state.mu.Lock()
+			if !state.isDirty && (state.source == "local" || state.source == "merged" ||
+				(!state.lastUpload.IsZero() && time.Since(state.lastUpload) < 30*time.Second)) {
+				if rf.ID == fid {
+					state.source = "remote"
+				}
 			}
+			state.mu.Unlock()
 		}
 
 		if nn.IsUploaded() {
@@ -990,7 +1061,9 @@ func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles
 						vfs.cache.InvalidateFid(existingRemote)
 						nn.SetUploaded(rf.ID)
 						state = vfs.getOrCreateState(entry.path)
+						state.mu.Lock()
 						state.source = "remote"
+						state.mu.Unlock()
 					}
 				}
 
@@ -1003,10 +1076,12 @@ func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles
 							nn.SetSize(decSize)
 							nn.SetEncSize(rf.Size)
 							nn.SetModTime(rf.ModTime)
+							state.mu.Lock()
 							state.baseMtime = remoteMtime
 							state.baseSize = decSize
 							state.lastCheck = time.Now()
 							state.source = "remote"
+							state.mu.Unlock()
 						}
 					}
 				}
@@ -1042,10 +1117,12 @@ func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles
 		vfs.tree.Store(childPath, child)
 
 		state := vfs.getOrCreateState(childPath)
+		state.mu.Lock()
 		state.source = "remote"
 		state.baseMtime = modTime.UnixMilli()
 		state.baseSize = decSize
 		state.lastCheck = lastCheck
+		state.mu.Unlock()
 	}
 
 	// Clean up deleting entries that the remote has confirmed gone.
