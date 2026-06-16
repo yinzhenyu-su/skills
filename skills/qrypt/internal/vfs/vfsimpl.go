@@ -121,12 +121,14 @@ func NewVFSImpl(drv drivers.Driver, cp cipher.Cipher, cacheDir string, rootFid s
 		writeBackTimeout = 5 * time.Second
 	}
 	vfsImpl.uploads = NewUploadManager(executor, writeBackTimeout, vfsImpl)
+	vfsImpl.uploads.SetConcurrencyLimit(opts.ConcurrentUploads)
 
 	caps := Capabilities{BatchDelete: false, Rename: true, Move: true}
 	if _, ok := drv.(drivers.BatchRemover); ok {
 		caps.BatchDelete = true
 	}
 	vfsImpl.coalescer = NewOperationCoalescer(caps, vfsImpl.handleCoalescedIntents)
+	vfsImpl.uploads.SetCoalescer(vfsImpl.coalescer)
 
 	rootNode := NewVFSNode(stagingID(), "0", "", "/", true)
 	rootNode.SetUploaded(vfsImpl.rootFid)
@@ -419,7 +421,7 @@ func (vfs *VFSImpl) Write(ctx context.Context, path string, offset int64, reader
 		lp := state.localPath
 		state.mu.Unlock()
 		return vfs.staging.OpenReader(lp)
-	})
+	}, n)
 
 	return nil
 }
@@ -668,7 +670,7 @@ func (vfs *VFSImpl) Truncate(ctx context.Context, path string, size int64) error
 		lp := state.localPath
 		state.mu.Unlock()
 		return vfs.staging.OpenReader(lp)
-	})
+	}, n)
 
 	return nil
 }
@@ -750,25 +752,26 @@ func (vfs *VFSImpl) handleCoalescedIntents(intents []RemoteIntent) {
 						parentFid = rfid
 					}
 				}
-				vfs.uploads.MarkDirty(
-					intent.Path,
-					parentFid,
-					filepath.Base(intent.Path),
-					intent.Node.Size(),
-					"",
-					func() (io.ReadCloser, error) {
-						state := vfs.getState(intent.Path)
-						if state == nil || vfs.staging == nil {
-							return nil, fmt.Errorf("staging not found for %s", intent.Path)
-						}
-						state.mu.Lock()
-						lp := state.localPath
-						state.mu.Unlock()
-						if lp == "" {
-							return nil, fmt.Errorf("staging not found for %s", intent.Path)
-						}
-						return vfs.staging.OpenReader(lp)
-					})
+			vfs.uploads.MarkDirty(
+				intent.Path,
+				parentFid,
+				filepath.Base(intent.Path),
+				intent.Node.Size(),
+				intent.Node.RemoteFID(),
+				func() (io.ReadCloser, error) {
+					state := vfs.getState(intent.Path)
+					if state == nil || vfs.staging == nil {
+						return nil, fmt.Errorf("staging not found for %s", intent.Path)
+					}
+					state.mu.Lock()
+					lp := state.localPath
+					state.mu.Unlock()
+					if lp == "" {
+						return nil, fmt.Errorf("staging not found for %s", intent.Path)
+					}
+					return vfs.staging.OpenReader(lp)
+				},
+				intent.Node)
 			}
 		case "DELETE":
 			vfs.executeDelete(intent)
@@ -912,7 +915,35 @@ func (vfs *VFSImpl) executeCoalescedMkdir(intent RemoteIntent) {
 	}
 }
 
-func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, encSize int64, err error) {
+func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, encSize int64, err error, attempt *uploadAttempt) {
+	// --- Stale upload detection ---
+	if attempt != nil {
+		curNode := vfs.tree.Lookup(path)
+		stale := false
+
+		if curNode == nil {
+			// Path was deleted or renamed away since upload started.
+			stale = true
+		} else if attempt.Node != nil && curNode.FID() != attempt.Fid {
+			// A different node replaced this path; the old upload is stale.
+			stale = true
+		} else if attempt.Generation > 0 && vfs.coalescer != nil {
+			if intent := vfs.coalescer.findIntent(attempt.Fid); intent != nil && intent.Upload != nil {
+				if intent.Upload.Generation != attempt.Generation {
+					// Coalescer has tracked a newer generation for this fid.
+					stale = true
+				}
+			}
+			// If intent is nil (coalescer flushed), skip generation check.
+		}
+
+		if stale {
+			logging.L.Warnf("upload: stale commit rejected for %s (fid=%s): path was modified since upload started\n",
+				path, attempt.Fid)
+			return
+		}
+	}
+
 	n := vfs.tree.Lookup(path)
 	if n == nil {
 		return
@@ -950,6 +981,13 @@ func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, encSize int64, 
 			n.SetEncSize(encSize)
 		}
 		vfs.tree.Store(path, n)
+	}
+
+	// OldFid cleanup: only after validated commit, not on stale uploads.
+	if attempt != nil && attempt.OldFid != "" {
+		if err := vfs.executor.Remove(context.Background(), drivers.Entry{ID: attempt.OldFid}); err != nil {
+			logging.L.Warnf("upload: failed to remove old fid %s: %v\n", attempt.OldFid, err)
+		}
 	}
 
 	if vfs.diskCache != nil {
@@ -1144,4 +1182,5 @@ func (vfs *VFSImpl) mergeRemoteChanges(parentPath, parentFid string, remoteFiles
 
 func (vfs *VFSImpl) Shutdown() {
 	vfs.coalescer.Shutdown()
+	vfs.uploads.Shutdown()
 }

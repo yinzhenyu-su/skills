@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/yinzhenyu/skills/qrypt/cipher"
+	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/mockdrive"
 )
 
@@ -336,4 +337,168 @@ func TestVFSImpl_ReUpload_RemovesOld(t *testing.T) {
 	got, _ := io.ReadAll(rc)
 	rc.Close()
 	assert.Equal(t, []byte("v2"), got)
+}
+
+func TestVFSImpl_Shutdown_StopsUploads(t *testing.T) {
+	vfs := newTestVFS(t)
+	ctx := context.Background()
+
+	require.NoError(t, vfs.Create(ctx, "/test.txt"))
+	require.NoError(t, vfs.Write(ctx, "/test.txt", 0, bytes.NewReader([]byte("data"))))
+
+	// Wait for writeBack timer to be scheduled.
+	time.Sleep(20 * time.Millisecond)
+
+	assert.True(t, vfs.uploads.IsPending("/test.txt"), "should be pending before shutdown")
+
+	// Shutdown stops the timer and drains.
+	vfs.Shutdown()
+
+	// After shutdown, MarkDirty state is still recorded.
+	assert.True(t, vfs.uploads.IsPending("/test.txt"), "info should survive shutdown")
+
+	// FireAllTimers should not start any new upload (timers were cleared).
+	vfs.uploads.FireAllTimers()
+	time.Sleep(50 * time.Millisecond)
+
+	// Still pending — no upload was triggered.
+	assert.True(t, vfs.uploads.IsPending("/test.txt"), "should still be pending after shutdown+fire")
+
+	// Write again after shutdown: MarkDirty records state but does not schedule upload.
+	require.NoError(t, vfs.Write(ctx, "/test.txt", 0, bytes.NewReader([]byte("data2"))))
+	assert.True(t, vfs.uploads.IsPending("/test.txt"), "should be pending after post-shutdown write")
+}
+
+// ---------------------------------------------------------------------------
+// Stale upload commit detection tests
+// ---------------------------------------------------------------------------
+
+// blockingDriver wraps mockdrive.MockDriver and gates Put calls so tests
+// can delay upload completion and simulate rename/delete races.
+type blockingDriver struct {
+	*mockdrive.MockDriver
+	started chan struct{} // closed when Put is entered
+	proceed chan struct{} // close to unblock all waiting Puts
+}
+
+func (d *blockingDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drivers.Entry, error) {
+	d.started <- struct{}{}
+	<-d.proceed
+	return d.MockDriver.Put(ctx, parentID, name, size, body)
+}
+
+// newTestVFSWithBlocking creates a VFSImpl whose uploads block at the driver
+// Put call. Call close(bd.proceed) to unblock.
+func newTestVFSWithBlocking(t *testing.T) (*VFSImpl, *blockingDriver) {
+	t.Helper()
+	bd := &blockingDriver{
+		MockDriver: mockdrive.NewDriver(),
+		started:    make(chan struct{}, 1),
+		proceed:    make(chan struct{}),
+	}
+	cp, err := cipher.NewRcloneCipher("test-password", "")
+	require.NoError(t, err)
+	tmpDir := t.TempDir()
+	cacheDir := filepath.Join(tmpDir, "cache")
+	vfs := NewVFSImpl(bd, cp, cacheDir, "0", FSOptions{
+		MaxRetries:        0, // no retries for deterministic stale behavior
+		ConcurrentUploads: 2,
+		MemCacheSizeMB:    16,
+		WriteBackTimeout:  50 * time.Millisecond,
+	})
+	return vfs, bd
+}
+
+// TestVFSImpl_RenameCancelsInFlightUpload verifies that renaming a file
+// while its upload is in-flight prevents the stale upload from committing.
+// The rename calls CancelSync which cancels the upload context; the upload
+// may still complete (driver ignores cancel) but OnUploadComplete detects
+// staleness because the path no longer exists in the tree.
+func TestVFSImpl_RenameCancelsInFlightUpload(t *testing.T) {
+	ctx := context.Background()
+	vfs, bd := newTestVFSWithBlocking(t)
+
+	require.NoError(t, vfs.Create(ctx, "/test.txt"))
+	require.NoError(t, vfs.Write(ctx, "/test.txt", 0, bytes.NewReader([]byte("data"))))
+
+	// Fire writeBack timer so upload starts, then wait for it to block.
+	vfs.uploads.FireAllTimers()
+	<-bd.started
+
+	// Rename while upload is blocked.
+	require.NoError(t, vfs.Rename(ctx, "/test.txt", "/renamed.txt"))
+
+	// Unblock the upload — it completes but OnUploadComplete detects staleness.
+	close(bd.proceed)
+	time.Sleep(50 * time.Millisecond)
+
+	// The old path must not exist.
+	_, err := vfs.Stat(ctx, "/test.txt")
+	assert.Error(t, err, "old path should not exist after rename")
+
+	// The renamed path should still be local-only (upload was stale, not committed).
+	rn := vfs.tree.Lookup("/renamed.txt")
+	require.NotNil(t, rn, "renamed path should exist in tree")
+	assert.False(t, rn.IsUploaded(), "renamed file should not be marked as uploaded; stale upload was rejected")
+}
+
+// TestVFSImpl_DeleteRejectsInFlightUploadCommit verifies that deleting a
+// file while its upload is in-flight does not resurrect it. The upload
+// completes but OnUploadComplete sees the tree node is gone.
+func TestVFSImpl_DeleteRejectsInFlightUploadCommit(t *testing.T) {
+	ctx := context.Background()
+	vfs, bd := newTestVFSWithBlocking(t)
+
+	require.NoError(t, vfs.Create(ctx, "/test.txt"))
+	require.NoError(t, vfs.Write(ctx, "/test.txt", 0, bytes.NewReader([]byte("data"))))
+
+	vfs.uploads.FireAllTimers()
+	<-bd.started
+
+	// Delete while upload is blocked.
+	require.NoError(t, vfs.Remove(ctx, "/test.txt"))
+
+	close(bd.proceed)
+	time.Sleep(50 * time.Millisecond)
+
+	// The file must stay deleted.
+	_, err := vfs.Stat(ctx, "/test.txt")
+	assert.Error(t, err, "file should remain deleted after stale upload commit")
+}
+
+// TestVFSImpl_RecreateSamePathRejectsOldUploadCommit verifies that if a
+// file is deleted and recreated while an old upload is in-flight, the old
+// upload's commit does not overwrite the new node's content. The old upload
+// carries a stale uploadAttempt whose FID differs from the current tree node.
+func TestVFSImpl_RecreateSamePathRejectsOldUploadCommit(t *testing.T) {
+	ctx := context.Background()
+	vfs, bd := newTestVFSWithBlocking(t)
+
+	require.NoError(t, vfs.Create(ctx, "/test.txt"))
+	require.NoError(t, vfs.Write(ctx, "/test.txt", 0, bytes.NewReader([]byte("v1"))))
+
+	// Start the first upload and wait for it to block.
+	vfs.uploads.FireAllTimers()
+	<-bd.started
+
+	// Delete and recreate at the same path — this creates a new VFSNode.
+	require.NoError(t, vfs.Remove(ctx, "/test.txt"))
+	require.NoError(t, vfs.Create(ctx, "/test.txt"))
+	require.NoError(t, vfs.Write(ctx, "/test.txt", 0, bytes.NewReader([]byte("v2"))))
+
+	// Unblock the old upload — OnUploadComplete should detect staleness.
+	close(bd.proceed)
+	time.Sleep(50 * time.Millisecond)
+
+	// Fire the new upload timer (for v2) and let it complete.
+	vfs.uploads.FireAllTimers()
+	time.Sleep(100 * time.Millisecond)
+
+	// Read back — the file should contain v2, proving the old stale upload
+	// did not overwrite the new node.
+	rc, err := vfs.Read(ctx, "/test.txt", 0)
+	require.NoError(t, err)
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	assert.Equal(t, []byte("v2"), got, "content should be v2, not v1 from stale upload")
 }

@@ -331,6 +331,7 @@ func (d *QuarkDriver) BatchRemove(ctx context.Context, entries []drivers.Entry) 
 
 func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drivers.Entry, error) {
 	d.deleteExistingFileByName(parentID, name)
+	defer d.cache.removeDir(parentID)
 
 	mtime := time.Now()
 	if mt, ok := drivers.MtimeFromContext(ctx); ok {
