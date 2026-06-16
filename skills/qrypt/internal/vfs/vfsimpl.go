@@ -534,6 +534,16 @@ func (vfs *VFSImpl) unlink(path string, n *VFSNode) error {
 
 	vfs.uploads.CancelSync(path)
 	vfs.deleting.Store(path, true)
+
+	if state := vfs.getState(path); state != nil && vfs.staging != nil {
+		state.mu.Lock()
+		lp := state.localPath
+		state.mu.Unlock()
+		if lp != "" {
+			vfs.staging.Remove(lp)
+		}
+	}
+
 	vfs.states.Delete(path)
 	vfs.tree.Delete(path, n)
 	return nil
@@ -569,6 +579,16 @@ func (vfs *VFSImpl) rmdir(path string, n *VFSNode) error {
 
 	vfs.uploads.CancelSync(path)
 	vfs.deleting.Store(path, true)
+
+	if state := vfs.getState(path); state != nil && vfs.staging != nil {
+		state.mu.Lock()
+		lp := state.localPath
+		state.mu.Unlock()
+		if lp != "" {
+			vfs.staging.Remove(lp)
+		}
+	}
+
 	vfs.states.Delete(path)
 	vfs.tree.Delete(path, n)
 	return nil

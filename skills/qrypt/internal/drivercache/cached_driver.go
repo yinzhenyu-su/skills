@@ -148,6 +148,24 @@ func (d *CachedDriver) BatchRemove(ctx context.Context, entries []drivers.Entry)
 }
 
 // ---------------------------------------------------------------------------
+// drivers.Uploader (optional — delegated to inner)
+// ---------------------------------------------------------------------------
+
+// Put uploads a file and invalidates the cache for parentID on success.
+func (d *CachedDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drivers.Entry, error) {
+	u, ok := d.inner.(drivers.Uploader)
+	if !ok {
+		return drivers.Entry{}, drivers.ErrNotImplemented
+	}
+	entry, err := u.Put(ctx, parentID, name, size, body)
+	if err != nil {
+		return drivers.Entry{}, err
+	}
+	d.cache.RemoveDir(parentID)
+	return entry, nil
+}
+
+// ---------------------------------------------------------------------------
 // drivers.PathResolver (optional — delegated to inner)
 // ---------------------------------------------------------------------------
 
