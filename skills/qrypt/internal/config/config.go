@@ -181,8 +181,12 @@ func (c *Config) resolveWorkDir() {
 
 // EffectiveWorkDir returns the resolved working directory.
 // Priority: config file's work_dir > $QRYPT_WORK_DIR > ~/.qrypt
+// Falls back to WorkDir() if resolveWorkDir was not called (e.g. tests).
 func (c *Config) EffectiveWorkDir() string {
-	return c.effectiveWorkDir
+	if c.effectiveWorkDir != "" {
+		return c.effectiveWorkDir
+	}
+	return WorkDir()
 }
 
 // DiscoverTestMounts returns mounts with test_enabled = true,

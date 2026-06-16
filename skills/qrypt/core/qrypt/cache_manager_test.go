@@ -7,10 +7,10 @@ import (
 	"time"
 )
 
-func newTestManager(t *testing.T) *CacheManager {
+func newTestManager(t *testing.T) *FileBlockCache {
 	t.Helper()
 	dir := t.TempDir()
-	m, err := NewCacheManager(dir, 100*1024*1024)
+	m, err := NewFileBlockCache(dir, 100*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,16 +18,16 @@ func newTestManager(t *testing.T) *CacheManager {
 }
 
 // loadPendingNodes is a test helper: calls loadJournal and returns only the pending map.
-func loadPendingNodes(m *CacheManager) (map[string]*PendingNode, error) {
+func loadPendingNodes(m *FileBlockCache) (map[string]*PendingNode, error) {
 	_, p, err := m.loadJournal()
 	return p, err
 }
 
-func compactJournal(m *CacheManager) error {
+func compactJournal(m *FileBlockCache) error {
 	return m.compactJournal()
 }
 
-func TestNewCacheManager(t *testing.T) {
+func TestNewFileBlockCache(t *testing.T) {
 	m := newTestManager(t)
 	if m.CacheDir() == "" {
 		t.Error("expected non-empty cache dir")
@@ -438,7 +438,7 @@ func TestPendingJournal_CrossSessionPersistence(t *testing.T) {
 
 	// Session 1: create and save a pending node
 	{
-		m1, err := NewCacheManager(dir, 100*1024*1024)
+		m1, err := NewFileBlockCache(dir, 100*1024*1024)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -449,9 +449,9 @@ func TestPendingJournal_CrossSessionPersistence(t *testing.T) {
 		_ = m1
 	}
 
-	// Session 2: new CacheManager should recover the pending node from journal
+	// Session 2: new FileBlockCache should recover the pending node from journal
 	{
-		m2, err := NewCacheManager(dir, 100*1024*1024)
+		m2, err := NewFileBlockCache(dir, 100*1024*1024)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -473,7 +473,7 @@ func TestPendingJournal_CrossSessionCleanAfterUpload(t *testing.T) {
 
 	// Session 1: create, then remove (simulates completed upload)
 	{
-		m1, err := NewCacheManager(dir, 100*1024*1024)
+		m1, err := NewFileBlockCache(dir, 100*1024*1024)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -485,7 +485,7 @@ func TestPendingJournal_CrossSessionCleanAfterUpload(t *testing.T) {
 
 	// Session 2: should have no pending nodes
 	{
-		m2, err := NewCacheManager(dir, 100*1024*1024)
+		m2, err := NewFileBlockCache(dir, 100*1024*1024)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -592,7 +592,7 @@ func TestBatchDeleteNodeState_NoJournalClean(t *testing.T) {
 	_ = pn
 }
 
-func TestCacheManager_CloseCompactsJournal(t *testing.T) {
+func TestFileBlockCache_CloseCompactsJournal(t *testing.T) {
 	m := newTestManager(t)
 	m.SavePendingNode("/close_a.txt", "fa", "0", "close_a.txt", "", 1, false, nil, 0, 0, "", 0)
 	m.SavePendingNode("/close_b.txt", "fb", "0", "close_b.txt", "", 2, false, nil, 0, 0, "", 0)

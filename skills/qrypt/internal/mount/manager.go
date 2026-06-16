@@ -11,6 +11,7 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 	"github.com/yinzhenyu/skills/qrypt/drivers"
 	"github.com/yinzhenyu/skills/qrypt/internal/config"
+	"github.com/yinzhenyu/skills/qrypt/internal/drivercache"
 	"github.com/yinzhenyu/skills/qrypt/internal/fusefs"
 	"github.com/yinzhenyu/skills/qrypt/internal/logging"
 	"github.com/yinzhenyu/skills/qrypt/internal/protocol"
@@ -69,7 +70,7 @@ type MountInstance struct {
 	State   protocol.MountState
 	Driver  drivers.Driver
 	Cipher  *cipher.RcloneCipher
-	Cache   *qrypt.CacheManager
+	Cache   *qrypt.FileBlockCache
 	Backend mountBackend
 
 	sessionKey  qrypt.SessionKey
@@ -217,7 +218,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 		mm.publishMountEvent(name, protocol.MountStateError, err.Error())
 		return fmt.Errorf("mount %q session: %w", name, err)
 	}
-	inst.Driver = s.Drv
+	inst.Driver = drivercache.NewCachedDriver(s.Drv)
 
 	if setter, ok := inst.Driver.(drivers.CipherSetter); ok {
 		setter.SetCipher(rcloneCipher)
@@ -227,7 +228,7 @@ func (mm *MountManager) startLocked(ctx context.Context, name string) error {
 	if maxSize, err := config.ParseSize(rc.Cache.MaxSize); err == nil {
 		cacheMaxSize = maxSize
 	}
-	cacheMgr, err := qrypt.NewCacheManager(rc.CacheDir, cacheMaxSize)
+	cacheMgr, err := qrypt.NewFileBlockCache(rc.CacheDir, cacheMaxSize)
 	if err != nil {
 		inst.State = protocol.MountStateError
 		inst.LastError = err.Error()

@@ -47,12 +47,12 @@ type nodeState struct {
 type VFSImpl struct {
 	tree      *TreeManager
 	staging   *qrypt.Store
-	cache     *CacheLayer
+	cache     *ReadCache
 	cipherDrv *cipherdriver.CipherDriver
 	uploads   *UploadManager
 	coalescer *OperationCoalescer
 	executor  *OpExecutor
-	diskCache *qrypt.CacheManager
+	diskCache *qrypt.FileBlockCache
 
 	cp       *cipher.RcloneCipher
 	rootFid  string
@@ -89,7 +89,7 @@ func NewVFSImpl(drv drivers.Driver, cp cipher.Cipher, cacheDir string, rootFid s
 
 	vfsImpl.tree = NewTreeManager(vfsImpl.rootFid)
 
-	diskCache, err := qrypt.NewCacheManager(cacheDir, 10*1024*1024*1024)
+	diskCache, err := qrypt.NewFileBlockCache(cacheDir, 10*1024*1024*1024)
 	if err != nil {
 		logging.L.Errorf("vfs: failed to create disk cache: %v", err)
 	}
@@ -99,7 +99,7 @@ func NewVFSImpl(drv drivers.Driver, cp cipher.Cipher, cacheDir string, rootFid s
 	if cacheSizeMB <= 0 {
 		cacheSizeMB = 64
 	}
-	vfsImpl.cache = NewCacheLayer(cacheSizeMB, diskCache,
+	vfsImpl.cache = NewReadCache(cacheSizeMB, diskCache,
 		func(ctx context.Context, fid string, startBlock uint64, count int) ([][]byte, error) {
 			node := vfsImpl.tree.LookupByFid(fid)
 			if node == nil {
@@ -996,12 +996,11 @@ func (vfs *VFSImpl) OnUploadComplete(path string, newFid string, encSize int64, 
 }
 
 func (vfs *VFSImpl) InvalidateDirCache(path string) {
-	n := vfs.tree.Lookup(path)
-	if n != nil {
-		if n.IsUploaded() {
-			vfs.tree.fidNodes.Delete(n.RemoteFID())
-		}
-		vfs.tree.nodes.Delete(filepath.Clean(path))
+	state := vfs.getState(path)
+	if state != nil {
+		state.mu.Lock()
+		state.lastCheck = time.Time{}
+		state.mu.Unlock()
 	}
 }
 

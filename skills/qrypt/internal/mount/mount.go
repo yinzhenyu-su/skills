@@ -11,7 +11,7 @@ import (
 
 // mountBackend abstracts the FUSE filesystem lifecycle.
 type mountBackend interface {
-	mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drivers.Driver, cp *cipher.RcloneCipher, cacheMgr *qrypt.CacheManager) error
+	mount(ctx context.Context, rc *config.ResolvedMountConfig, drv drivers.Driver, cp *cipher.RcloneCipher, cacheMgr *qrypt.FileBlockCache) error
 	unmount() error
 	VFS() CacheInvalidatable
 }

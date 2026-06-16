@@ -2,7 +2,6 @@ package quark
 
 import (
 	"encoding/json"
-	"sync"
 	"time"
 
 	"github.com/yinzhenyu/skills/qrypt/drivers"
@@ -116,88 +115,7 @@ type createDirResp struct {
 	} `json:"data"`
 }
 
-type cacheManager struct {
-	dirCacheTTL time.Duration
-	negCacheTTL time.Duration
-
-	urlCache sync.Map
-	dirCache sync.Map
-	negCache sync.Map
-}
-
-func newCacheManager(dirCacheTTL time.Duration) *cacheManager {
-	if dirCacheTTL <= 0 {
-		dirCacheTTL = 60 * time.Second
-	}
-	return &cacheManager{
-		dirCacheTTL: dirCacheTTL,
-		negCacheTTL: 60 * time.Second,
-	}
-}
-
 type cachedURL struct {
 	url    string
 	expiry time.Time
-}
-
-type dirCacheEntry struct {
-	files  []file
-	expiry time.Time
-}
-
-func (m *cacheManager) getURL(fid string) (string, bool) {
-	if val, ok := m.urlCache.Load(fid); ok {
-		cu := val.(cachedURL)
-		if time.Now().Before(cu.expiry) {
-			return cu.url, true
-		}
-	}
-	return "", false
-}
-
-func (m *cacheManager) setURL(fid, url string) {
-	m.urlCache.Store(fid, cachedURL{url: url, expiry: time.Now().Add(10 * time.Minute)})
-}
-
-func (m *cacheManager) invalidateURL(fid string) {
-	m.urlCache.Delete(fid)
-}
-
-func (m *cacheManager) getDir(parentFid string) ([]file, bool) {
-	if val, ok := m.dirCache.Load(parentFid); ok {
-		entry := val.(dirCacheEntry)
-		if time.Now().Before(entry.expiry) {
-			return entry.files, true
-		}
-	}
-	return nil, false
-}
-
-func (m *cacheManager) setDir(parentFid string, files []file) {
-	m.dirCache.Store(parentFid, dirCacheEntry{files: files, expiry: time.Now().Add(m.dirCacheTTL)})
-}
-
-func (m *cacheManager) removeDir(parentFid string) {
-	m.dirCache.Delete(parentFid)
-}
-
-func (m *cacheManager) getNeg(parentFid, name string) bool {
-	key := parentFid + ":" + name
-	if val, ok := m.negCache.Load(key); ok {
-		expiry := val.(time.Time)
-		if time.Now().Before(expiry) {
-			return true
-		}
-	}
-	return false
-}
-
-func (m *cacheManager) setNeg(parentFid, name string) {
-	key := parentFid + ":" + name
-	m.negCache.Store(key, time.Now().Add(m.negCacheTTL))
-}
-
-func (m *cacheManager) deleteNeg(parentFid, name string) {
-	key := parentFid + ":" + name
-	m.negCache.Delete(key)
 }

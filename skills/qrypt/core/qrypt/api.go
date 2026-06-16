@@ -22,8 +22,7 @@ type Options struct {
 	DriverFactory DriverFactory
 	RateLimitBPS  int64
 	NumWorkers    int
-	MountLister   MountLister
-	CacheHooks    CacheInvalidatorHooks
+
 }
 
 type FileAPI struct {
@@ -35,7 +34,6 @@ type FileAPI struct {
 	uploadQ   Orchestrator
 	eventBus  EventBus
 	progress  ProgressHub
-	cacheInv  *CacheInvalidator
 	rateLimit RateLimiter
 }
 
@@ -71,10 +69,6 @@ func NewFileAPI(opts Options) (*FileAPI, error) {
 		progress:  ph,
 		rateLimit: rl,
 		uploadQ:   oq,
-	}
-
-	if opts.CacheHooks != nil {
-		api.cacheInv = NewCacheInvalidator(opts.CacheHooks, eb)
 	}
 
 	return api, nil

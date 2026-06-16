@@ -93,7 +93,7 @@ type fileChunkCache struct {
 	chunks map[int64]*ChunkInfo
 }
 
-type CacheManager struct {
+type FileBlockCache struct {
 	cacheDir   string
 	maxSize    int64
 	staging    *Store
@@ -105,23 +105,23 @@ type CacheManager struct {
 	chunkIndex   map[string]*fileChunkCache
 }
 
-func (m *CacheManager) CacheDir() string {
+func (m *FileBlockCache) CacheDir() string {
 	return m.cacheDir
 }
 
-func (m *CacheManager) StagingDir() string {
+func (m *FileBlockCache) StagingDir() string {
 	return filepath.Join(m.cacheDir, "staging")
 }
 
-func (m *CacheManager) ReadingDir() string {
+func (m *FileBlockCache) ReadingDir() string {
 	return filepath.Join(m.cacheDir, "reading")
 }
 
-func (m *CacheManager) Staging() *Store {
+func (m *FileBlockCache) Staging() *Store {
 	return m.staging
 }
 
-func NewCacheManager(cacheDir string, maxSize int64) (*CacheManager, error) {
+func NewFileBlockCache(cacheDir string, maxSize int64) (*FileBlockCache, error) {
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return nil, err
 	}
@@ -137,7 +137,7 @@ func NewCacheManager(cacheDir string, maxSize int64) (*CacheManager, error) {
 		return nil, fmt.Errorf("failed to create reading cache dir: %w", err)
 	}
 
-	m := &CacheManager{
+	m := &FileBlockCache{
 		cacheDir:     cacheDir,
 		maxSize:      maxSize,
 		staging:      store,
@@ -166,7 +166,7 @@ func NewCacheManager(cacheDir string, maxSize int64) (*CacheManager, error) {
 	return m, nil
 }
 
-func (m *CacheManager) cleanupOrphanedStagingFiles() {
+func (m *FileBlockCache) cleanupOrphanedStagingFiles() {
 	m.mu.RLock()
 	activeFids := make(map[string]bool)
 	for _, n := range m.pendingNodes {
@@ -188,7 +188,7 @@ func (m *CacheManager) cleanupOrphanedStagingFiles() {
 
 // --- Staging Meta (MetaStore interface) ---
 
-func (m *CacheManager) SaveStagingMeta(fid, localPath string, size int64) error {
+func (m *FileBlockCache) SaveStagingMeta(fid, localPath string, size int64) error {
 	m.mu.Lock()
 	m.stagingMetas[fid] = &StagingMeta{
 		Fid:       fid,
@@ -201,7 +201,7 @@ func (m *CacheManager) SaveStagingMeta(fid, localPath string, size int64) error 
 	return nil
 }
 
-func (m *CacheManager) UpdateStagingMeta(fid string, size int64) error {
+func (m *FileBlockCache) UpdateStagingMeta(fid string, size int64) error {
 	m.mu.Lock()
 	if s, ok := m.stagingMetas[fid]; ok {
 		s.Size = size
@@ -211,14 +211,14 @@ func (m *CacheManager) UpdateStagingMeta(fid string, size int64) error {
 	return nil
 }
 
-func (m *CacheManager) RemoveStagingMeta(fid string) error {
+func (m *FileBlockCache) RemoveStagingMeta(fid string) error {
 	m.mu.Lock()
 	delete(m.stagingMetas, fid)
 	m.mu.Unlock()
 	return nil
 }
 
-func (m *CacheManager) GetStagingMeta(fid string) *StagingMeta {
+func (m *FileBlockCache) GetStagingMeta(fid string) *StagingMeta {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.stagingMetas[fid]
@@ -226,7 +226,7 @@ func (m *CacheManager) GetStagingMeta(fid string) *StagingMeta {
 
 // --- Chunk Cache ---
 
-func (m *CacheManager) getOrCreateChunkCache(fid string) *fileChunkCache {
+func (m *FileBlockCache) getOrCreateChunkCache(fid string) *fileChunkCache {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	fc, ok := m.chunkIndex[fid]
@@ -237,7 +237,7 @@ func (m *CacheManager) getOrCreateChunkCache(fid string) *fileChunkCache {
 	return fc
 }
 
-func (m *CacheManager) GetChunk(fid string, chunkIndex int64) ([]byte, error) {
+func (m *FileBlockCache) GetChunk(fid string, chunkIndex int64) ([]byte, error) {
 	fc := m.getOrCreateChunkCache(fid)
 	fc.mu.RLock()
 	ci, ok := fc.chunks[chunkIndex]
@@ -270,7 +270,7 @@ func (m *CacheManager) GetChunk(fid string, chunkIndex int64) ([]byte, error) {
 	return data, nil
 }
 
-func (m *CacheManager) HasChunk(fid string, chunkIndex int64) (bool, error) {
+func (m *FileBlockCache) HasChunk(fid string, chunkIndex int64) (bool, error) {
 	fc := m.getOrCreateChunkCache(fid)
 	fc.mu.RLock()
 	_, ok := fc.chunks[chunkIndex]
@@ -278,7 +278,7 @@ func (m *CacheManager) HasChunk(fid string, chunkIndex int64) (bool, error) {
 	return ok, nil
 }
 
-func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDirty bool) error {
+func (m *FileBlockCache) PutChunk(fid string, chunkIndex int64, data []byte, isDirty bool) error {
 	suffix := ".dec.batch"
 	dir := m.cacheDir
 	if isDirty {
@@ -320,7 +320,7 @@ func (m *CacheManager) PutChunk(fid string, chunkIndex int64, data []byte, isDir
 	return nil
 }
 
-func (m *CacheManager) RemoveChunksByFid(fid string) error {
+func (m *FileBlockCache) RemoveChunksByFid(fid string) error {
 	fc := m.getOrCreateChunkCache(fid)
 	fc.mu.Lock()
 	paths := make(map[string]bool)
@@ -336,7 +336,7 @@ func (m *CacheManager) RemoveChunksByFid(fid string) error {
 	return nil
 }
 
-func (m *CacheManager) GetDirtyChunks(fid string) []int64 {
+func (m *FileBlockCache) GetDirtyChunks(fid string) []int64 {
 	fc := m.getOrCreateChunkCache(fid)
 	fc.mu.RLock()
 	defer fc.mu.RUnlock()
@@ -349,7 +349,7 @@ func (m *CacheManager) GetDirtyChunks(fid string) []int64 {
 	return indices
 }
 
-func (m *CacheManager) getTotalChunkSize() int64 {
+func (m *FileBlockCache) getTotalChunkSize() int64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var total int64
@@ -365,7 +365,7 @@ func (m *CacheManager) getTotalChunkSize() int64 {
 
 // --- Pending Nodes ---
 
-func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64, uploadID string, lastPart int) error {
+func (m *FileBlockCache) SavePendingNode(path, fid, parentFid, name, localPath string, size int64, isFolder bool, nonce []byte, baseMtime, baseSize int64, uploadID string, lastPart int) error {
 	m.mu.Lock()
 	m.pendingNodes[path] = &PendingNode{
 		Path:            path,
@@ -401,7 +401,7 @@ func (m *CacheManager) SavePendingNode(path, fid, parentFid, name, localPath str
 	return nil
 }
 
-func (m *CacheManager) RemovePendingNode(path string) error {
+func (m *FileBlockCache) RemovePendingNode(path string) error {
 	m.mu.Lock()
 	delete(m.pendingNodes, path)
 	m.mu.Unlock()
@@ -416,7 +416,7 @@ func (m *CacheManager) RemovePendingNode(path string) error {
 	return nil
 }
 
-func (m *CacheManager) UpdatePendingNodeUpload(path, uploadID string) error {
+func (m *FileBlockCache) UpdatePendingNodeUpload(path, uploadID string) error {
 	m.mu.Lock()
 	if n, ok := m.pendingNodes[path]; ok {
 		n.UploadID = uploadID
@@ -427,7 +427,7 @@ func (m *CacheManager) UpdatePendingNodeUpload(path, uploadID string) error {
 	return nil
 }
 
-func (m *CacheManager) UpdatePendingNodeLastPart(path string, lastPart int) error {
+func (m *FileBlockCache) UpdatePendingNodeLastPart(path string, lastPart int) error {
 	m.mu.Lock()
 	if n, ok := m.pendingNodes[path]; ok {
 		n.LastPart = lastPart
@@ -438,7 +438,7 @@ func (m *CacheManager) UpdatePendingNodeLastPart(path string, lastPart int) erro
 	return nil
 }
 
-func (m *CacheManager) RemovePendingNodesByPrefix(prefix string) error {
+func (m *FileBlockCache) RemovePendingNodesByPrefix(prefix string) error {
 	if prefix == "" {
 		return nil
 	}
@@ -456,7 +456,7 @@ func (m *CacheManager) RemovePendingNodesByPrefix(prefix string) error {
 	return nil
 }
 
-func (m *CacheManager) RemovePendingNodesByFid(fid string) error {
+func (m *FileBlockCache) RemovePendingNodesByFid(fid string) error {
 	if fid == "" {
 		return nil
 	}
@@ -470,7 +470,7 @@ func (m *CacheManager) RemovePendingNodesByFid(fid string) error {
 	return nil
 }
 
-func (m *CacheManager) GetPendingNodes() []PendingNode {
+func (m *FileBlockCache) GetPendingNodes() []PendingNode {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	nodes := make([]PendingNode, 0, len(m.pendingNodes))
@@ -486,7 +486,7 @@ func (m *CacheManager) GetPendingNodes() []PendingNode {
 
 // --- Cache Eviction ---
 
-func (m *CacheManager) EvictIfNeeded(lowWatermark int64) error {
+func (m *FileBlockCache) EvictIfNeeded(lowWatermark int64) error {
 	total := m.getTotalChunkSize()
 	if total <= m.maxSize {
 		return nil
@@ -554,11 +554,11 @@ const maintenanceInterval = 10 * time.Minute
 
 // --- Unified Journal (pending.jsonl) ---
 
-func (m *CacheManager) journalPath() string {
+func (m *FileBlockCache) journalPath() string {
 	return filepath.Join(m.cacheDir, "pending.jsonl")
 }
 
-func (m *CacheManager) appendJournal(entry *JournalEntry) error {
+func (m *FileBlockCache) appendJournal(entry *JournalEntry) error {
 	entry.Timestamp = time.Now().UnixNano()
 	data, err := json.Marshal(entry)
 	if err != nil {
@@ -577,7 +577,7 @@ func (m *CacheManager) appendJournal(entry *JournalEntry) error {
 // loadJournal reads pending.jsonl and returns:
 //   - deleteOps: pending delete entries (those not yet completed via delete_done)
 //   - pending:   dirty-file nodes (path → PendingNode, cross-checked against staging)
-func (m *CacheManager) loadJournal() (deleteOps []OpsLogEntry, pending map[string]*PendingNode, err error) {
+func (m *FileBlockCache) loadJournal() (deleteOps []OpsLogEntry, pending map[string]*PendingNode, err error) {
 	f, err := os.Open(m.journalPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -741,7 +741,7 @@ func (m *CacheManager) loadJournal() (deleteOps []OpsLogEntry, pending map[strin
 //   - delete + delete_done pairs are removed (the delete is done)
 //   - dirty + clean pairs are removed (the upload is done)
 //   - remaining entries are written to a new file atomically
-func (m *CacheManager) compactJournal() error {
+func (m *FileBlockCache) compactJournal() error {
 	deleteOps, pending, err := m.loadJournal()
 	if err != nil {
 		return err
@@ -815,7 +815,7 @@ func (m *CacheManager) compactJournal() error {
 
 // --- Compatibility wrappers (callers in fs/ use these types) ---
 
-func (m *CacheManager) AppendOpsLog(entry *OpsLogEntry) error {
+func (m *FileBlockCache) AppendOpsLog(entry *OpsLogEntry) error {
 	op := JOpDelete
 	switch entry.OpType {
 	case "COALESCED_RENAME":
@@ -830,7 +830,7 @@ func (m *CacheManager) AppendOpsLog(entry *OpsLogEntry) error {
 	})
 }
 
-func (m *CacheManager) LoadOpsLog() ([]OpsLogEntry, error) {
+func (m *FileBlockCache) LoadOpsLog() ([]OpsLogEntry, error) {
 	deleteOps, _, err := m.loadJournal()
 	return deleteOps, err
 }
@@ -839,7 +839,7 @@ func (m *CacheManager) LoadOpsLog() ([]OpsLogEntry, error) {
 // opType+Fid identify the exact pending op (two DELETEs on same path with different
 // fids must be completed independently). opType and Fid are encoded together in the
 // done marker's Fid field, separated by \x00.
-func (m *CacheManager) MarkOpsLogDone(path, opType, fid string) error {
+func (m *FileBlockCache) MarkOpsLogDone(path, opType, fid string) error {
 	doneKey := opType
 	if fid != "" {
 		doneKey = opType + "\x00" + fid
@@ -851,11 +851,11 @@ func (m *CacheManager) MarkOpsLogDone(path, opType, fid string) error {
 	})
 }
 
-func (m *CacheManager) PurgeOpsLog(_ time.Duration) error {
+func (m *FileBlockCache) PurgeOpsLog(_ time.Duration) error {
 	return m.compactJournal()
 }
 
-func (m *CacheManager) Maintenance() error {
+func (m *FileBlockCache) Maintenance() error {
 	m.EvictIfNeeded(m.maxSize * 7 / 10)
 	m.CleanupStagingMetas(24 * time.Hour)
 	m.compactJournal()
@@ -863,7 +863,7 @@ func (m *CacheManager) Maintenance() error {
 	return nil
 }
 
-func (m *CacheManager) reportStaleUploadIDs() {
+func (m *FileBlockCache) reportStaleUploadIDs() {
 	const staleThreshold = 2 * time.Hour
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -877,7 +877,7 @@ func (m *CacheManager) reportStaleUploadIDs() {
 	}
 }
 
-func (m *CacheManager) MaintenanceStart() {
+func (m *FileBlockCache) MaintenanceStart() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -893,13 +893,13 @@ func (m *CacheManager) MaintenanceStart() {
 	}()
 }
 
-func (m *CacheManager) Close() error {
+func (m *FileBlockCache) Close() error {
 	return m.compactJournal()
 }
 
 // --- Staging Cleanup (kept for compatibility) ---
 
-func (m *CacheManager) CleanupStagingMetas(abandonedMaxAge time.Duration) error {
+func (m *FileBlockCache) CleanupStagingMetas(abandonedMaxAge time.Duration) error {
 	m.mu.RLock()
 	activeFids := make(map[string]bool)
 	for _, n := range m.pendingNodes {
@@ -947,7 +947,7 @@ func (m *CacheManager) CleanupStagingMetas(abandonedMaxAge time.Duration) error 
 
 // --- Batch operations (in-memory iteration, no SQLite) ---
 
-func (m *CacheManager) BatchDeleteNodeState(fids []string, paths []string) error {
+func (m *FileBlockCache) BatchDeleteNodeState(fids []string, paths []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

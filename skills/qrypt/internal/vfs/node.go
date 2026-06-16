@@ -18,7 +18,7 @@ func stagingID() string {
 // VFSNode is the in-memory representation of a filesystem node.
 // It contains only tree structure and metadata fields.
 // Upload/dirty/cache state is managed by separate components
-// (UploadManager, CacheLayer).
+// (UploadManager, ReadCache).
 type VFSNode struct {
 	mu sync.RWMutex
 

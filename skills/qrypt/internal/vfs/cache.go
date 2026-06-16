@@ -22,21 +22,21 @@ type dedupCall struct {
 	err  error
 }
 
-type CacheLayer struct {
+type ReadCache struct {
 	memCache  *lru.Cache[string, []byte]
-	diskCache *qrypt.CacheManager
+	diskCache *qrypt.FileBlockCache
 	dedup     sync.Map
 	fetcher   FetchFunc
 }
 
-func NewCacheLayer(memSizeMB int, diskCache *qrypt.CacheManager, fetcher FetchFunc) *CacheLayer {
+func NewReadCache(memSizeMB int, diskCache *qrypt.FileBlockCache, fetcher FetchFunc) *ReadCache {
 	maxEntries := (memSizeMB * 1024) / 64
 	if maxEntries <= 0 {
 		maxEntries = 256
 	}
 	memCache, _ := lru.New[string, []byte](maxEntries)
 
-	return &CacheLayer{
+	return &ReadCache{
 		memCache:  memCache,
 		diskCache: diskCache,
 		fetcher:   fetcher,
@@ -47,7 +47,7 @@ func blockKey(fid string, blockIdx uint64) string {
 	return fmt.Sprintf("%s_%d", fid, blockIdx)
 }
 
-func (cl *CacheLayer) ReadBlock(ctx context.Context, fid string, blockIdx uint64) ([]byte, error) {
+func (cl *ReadCache) ReadBlock(ctx context.Context, fid string, blockIdx uint64) ([]byte, error) {
 	key := blockKey(fid, blockIdx)
 
 	if data, ok := cl.memCache.Get(key); ok {
@@ -122,7 +122,7 @@ func (cl *CacheLayer) ReadBlock(ctx context.Context, fid string, blockIdx uint64
 	return nil, fmt.Errorf("block %s lost after batch fetch", key)
 }
 
-func (cl *CacheLayer) NotifyRead(fid string, blockIdx uint64) {
+func (cl *ReadCache) NotifyRead(fid string, blockIdx uint64) {
 	isFirstBlock := blockIdx%ReadBatchBlocks == 0
 	if !isFirstBlock {
 		return
@@ -131,7 +131,7 @@ func (cl *CacheLayer) NotifyRead(fid string, blockIdx uint64) {
 	go cl.prefetchBatch(fid, nextBatch)
 }
 
-func (cl *CacheLayer) prefetchBatch(fid string, batchStart uint64) {
+func (cl *ReadCache) prefetchBatch(fid string, batchStart uint64) {
 	key := blockKey(fid, batchStart)
 	if cl.memCache.Contains(key) {
 		return
@@ -161,7 +161,7 @@ func (cl *CacheLayer) prefetchBatch(fid string, batchStart uint64) {
 }
 
 // InvalidateFid removes all cached entries for a file (both L1 and L2).
-func (cl *CacheLayer) InvalidateFid(fid string) {
+func (cl *ReadCache) InvalidateFid(fid string) {
 	if cl.diskCache != nil {
 		cl.diskCache.RemoveChunksByFid(fid)
 	}

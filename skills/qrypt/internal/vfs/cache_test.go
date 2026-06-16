@@ -13,9 +13,9 @@ import (
 	"github.com/yinzhenyu/skills/qrypt/core/qrypt"
 )
 
-// newTestCacheLayer creates a CacheLayer backed by a temp-dir disk cache,
+// newTestReadCache creates a ReadCache backed by a temp-dir disk cache,
 // with a controlled fetcher that tracks calls via callCount.
-func newTestCacheLayer(t *testing.T, callCount *atomic.Int64, data []byte, fetchErr error) (*CacheLayer, *qrypt.CacheManager) {
+func newTestReadCache(t *testing.T, callCount *atomic.Int64, data []byte, fetchErr error) (*ReadCache, *qrypt.FileBlockCache) {
 	t.Helper()
 
 	fetcher := func(ctx context.Context, fid string, startBlock uint64, count int) ([][]byte, error) {
@@ -31,22 +31,22 @@ func newTestCacheLayer(t *testing.T, callCount *atomic.Int64, data []byte, fetch
 	}
 
 	tmpDir := t.TempDir()
-	diskCache, err := qrypt.NewCacheManager(tmpDir, 500*1024*1024)
+	diskCache, err := qrypt.NewFileBlockCache(tmpDir, 500*1024*1024)
 	require.NoError(t, err)
 	t.Cleanup(func() { diskCache.Close() })
 
-	cl := NewCacheLayer(64, diskCache, fetcher)
+	cl := NewReadCache(64, diskCache, fetcher)
 	return cl, diskCache
 }
 
-// TestCacheLayer_L1Hit verifies the second ReadBlock hits the in-memory LRU
+// TestReadCache_L1Hit verifies the second ReadBlock hits the in-memory LRU
 // and does not call the fetcher again.
-func TestCacheLayer_L1Hit(t *testing.T) {
+func TestReadCache_L1Hit(t *testing.T) {
 	t.Parallel()
 
 	data := []byte("block-data")
 	var callCount atomic.Int64
-	cl, _ := newTestCacheLayer(t, &callCount, data, nil)
+	cl, _ := newTestReadCache(t, &callCount, data, nil)
 
 	result, err := cl.ReadBlock(context.Background(), "fid", 0)
 	require.NoError(t, err)
@@ -60,9 +60,9 @@ func TestCacheLayer_L1Hit(t *testing.T) {
 	assert.Equal(t, int64(1), callCount.Load(), "fetcher should not be called on L1 hit")
 }
 
-// TestCacheLayer_L2Hit verifies a fresh CacheLayer (empty L1) can still serve
+// TestReadCache_L2Hit verifies a fresh ReadCache (empty L1) can still serve
 // data from the shared disk cache without calling the fetcher.
-func TestCacheLayer_L2Hit(t *testing.T) {
+func TestReadCache_L2Hit(t *testing.T) {
 	t.Parallel()
 
 	data := []byte("block-data")
@@ -78,18 +78,18 @@ func TestCacheLayer_L2Hit(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	diskCache, err := qrypt.NewCacheManager(tmpDir, 500*1024*1024)
+	diskCache, err := qrypt.NewFileBlockCache(tmpDir, 500*1024*1024)
 	require.NoError(t, err)
 	t.Cleanup(func() { diskCache.Close() })
 
-	// First CacheLayer: populate L1 + disk.
-	cl1 := NewCacheLayer(64, diskCache, fetcher)
+	// First ReadCache: populate L1 + disk.
+	cl1 := NewReadCache(64, diskCache, fetcher)
 	result, err := cl1.ReadBlock(context.Background(), "fid", 0)
 	require.NoError(t, err)
 	assert.Equal(t, data, result)
 
-	// Second CacheLayer: fresh L1, same disk → should hit L2.
-	cl2 := NewCacheLayer(64, diskCache, fetcher)
+	// Second ReadCache: fresh L1, same disk → should hit L2.
+	cl2 := NewReadCache(64, diskCache, fetcher)
 	result, err = cl2.ReadBlock(context.Background(), "fid", 0)
 	require.NoError(t, err)
 	assert.Equal(t, data, result)
@@ -97,9 +97,9 @@ func TestCacheLayer_L2Hit(t *testing.T) {
 	assert.Equal(t, int64(1), callCount.Load(), "fetcher should be called only once (L2 hit)")
 }
 
-// TestCacheLayer_FetcherCalled verifies the fetcher is invoked for each
+// TestReadCache_FetcherCalled verifies the fetcher is invoked for each
 // unique block and returns the correct data.
-func TestCacheLayer_FetcherCalled(t *testing.T) {
+func TestReadCache_FetcherCalled(t *testing.T) {
 	t.Parallel()
 
 	data0 := []byte("block-zero")
@@ -121,11 +121,11 @@ func TestCacheLayer_FetcherCalled(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	diskCache, err := qrypt.NewCacheManager(tmpDir, 500*1024*1024)
+	diskCache, err := qrypt.NewFileBlockCache(tmpDir, 500*1024*1024)
 	require.NoError(t, err)
 	t.Cleanup(func() { diskCache.Close() })
 
-	cl := NewCacheLayer(64, diskCache, fetcher)
+	cl := NewReadCache(64, diskCache, fetcher)
 
 	result, err := cl.ReadBlock(context.Background(), "fid", 0)
 	require.NoError(t, err)
@@ -139,9 +139,9 @@ func TestCacheLayer_FetcherCalled(t *testing.T) {
 	assert.Equal(t, int64(2), fetcherCalls.Load(), "fetcher should be called for each unique batch")
 }
 
-// TestCacheLayer_ConcurrentDedup verifies that concurrent reads of the same
+// TestReadCache_ConcurrentDedup verifies that concurrent reads of the same
 // (fid, blockIdx) coalesce into a single fetch call.
-func TestCacheLayer_ConcurrentDedup(t *testing.T) {
+func TestReadCache_ConcurrentDedup(t *testing.T) {
 	t.Parallel()
 
 	var callCount atomic.Int64
@@ -158,13 +158,13 @@ func TestCacheLayer_ConcurrentDedup(t *testing.T) {
 		return blocks, nil
 	}
 
-	cl, _ := newTestCacheLayer(t, &callCount, nil, nil)
+	cl, _ := newTestReadCache(t, &callCount, nil, nil)
 	// Override with the blocking fetcher.
 	tmpDir := t.TempDir()
-	diskCache, err := qrypt.NewCacheManager(tmpDir, 500*1024*1024)
+	diskCache, err := qrypt.NewFileBlockCache(tmpDir, 500*1024*1024)
 	require.NoError(t, err)
 	t.Cleanup(func() { diskCache.Close() })
-	cl = NewCacheLayer(64, diskCache, fetcher)
+	cl = NewReadCache(64, diskCache, fetcher)
 
 	const numGoroutines = 3
 	var wg sync.WaitGroup
@@ -192,14 +192,14 @@ func TestCacheLayer_ConcurrentDedup(t *testing.T) {
 	assert.Equal(t, int64(1), callCount.Load(), "fetcher should be called exactly once for 3 concurrent reads")
 }
 
-// TestCacheLayer_FetcherError verifies errors are propagated to callers and
+// TestReadCache_FetcherError verifies errors are propagated to callers and
 // are NOT cached (subsequent calls retry the fetcher).
-func TestCacheLayer_FetcherError(t *testing.T) {
+func TestReadCache_FetcherError(t *testing.T) {
 	t.Parallel()
 
 	testErr := errors.New("fetch failed")
 	var callCount atomic.Int64
-	cl, _ := newTestCacheLayer(t, &callCount, nil, testErr)
+	cl, _ := newTestReadCache(t, &callCount, nil, testErr)
 
 	_, err := cl.ReadBlock(context.Background(), "fid", 0)
 	assert.ErrorIs(t, err, testErr)
@@ -211,9 +211,9 @@ func TestCacheLayer_FetcherError(t *testing.T) {
 	assert.Equal(t, int64(2), callCount.Load(), "error should not be cached; fetcher called again")
 }
 
-// TestCacheLayer_InvalidateFid verifies InvalidateFid clears both L1 and L2
+// TestReadCache_InvalidateFid verifies InvalidateFid clears both L1 and L2
 // entries for the target fid without affecting other fids.
-func TestCacheLayer_InvalidateFid(t *testing.T) {
+func TestReadCache_InvalidateFid(t *testing.T) {
 	t.Parallel()
 
 	var callCount atomic.Int64
@@ -233,11 +233,11 @@ func TestCacheLayer_InvalidateFid(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	diskCache, err := qrypt.NewCacheManager(tmpDir, 500*1024*1024)
+	diskCache, err := qrypt.NewFileBlockCache(tmpDir, 500*1024*1024)
 	require.NoError(t, err)
 	t.Cleanup(func() { diskCache.Close() })
 
-	cl := NewCacheLayer(64, diskCache, fetcher)
+	cl := NewReadCache(64, diskCache, fetcher)
 
 	// Populate caches for both fids.
 	_, err = cl.ReadBlock(context.Background(), "f1", 0)

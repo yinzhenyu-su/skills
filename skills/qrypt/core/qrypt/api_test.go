@@ -804,53 +804,6 @@ func TestError_Is(t *testing.T) {
 	}
 }
 
-func TestCacheInvalidator(t *testing.T) {
-	var mu sync.Mutex
-	invalidated := make([]string, 0)
-	hooks := &mockCacheHooks{
-		fn: func(mount, dir string) error {
-			mu.Lock()
-			invalidated = append(invalidated, mount+":"+dir)
-			mu.Unlock()
-			return nil
-		},
-	}
-
-	eb := NewEventBus()
-	_ = NewCacheInvalidator(hooks, eb)
-
-	eb.Publish(&Event{
-		Type:     EventSyncCompleted,
-		Progress: &ProgressEntry{Mount: "m1", File: "/dir/file.txt"},
-	})
-	eb.Publish(&Event{
-		Type:     EventSyncProgress,
-		Progress: &ProgressEntry{Mount: "m2", File: "/other/file.txt"},
-	})
-
-	time.Sleep(10 * time.Millisecond)
-	mu.Lock()
-	count := len(invalidated)
-	mu.Unlock()
-	if count != 1 {
-		t.Fatalf("expected 1 invalidation, got %d", count)
-	}
-	mu.Lock()
-	val := invalidated[0]
-	mu.Unlock()
-	if val != "m1:/dir" {
-		t.Fatalf("expected m1:/dir, got %s", val)
-	}
-}
-
-type mockCacheHooks struct {
-	fn func(mount, dir string) error
-}
-
-func (h *mockCacheHooks) InvalidateDirCache(mount, dir string) error {
-	return h.fn(mount, dir)
-}
-
 func TestEncryptDecryptRoundTrip(t *testing.T) {
 	cp := &mockCipher{}
 	plaintext := []byte("hello world this is a test message that spans multiple blocks")

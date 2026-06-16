@@ -21,7 +21,7 @@ import (
 
 type QuarkDriver struct {
 	cl       *client
-	cache    *cacheManager
+	urlCache sync.Map
 	cookie   string
 	rootPath string
 	cipher   cipher.Cipher
@@ -45,26 +45,20 @@ func init() {
 			if cookie == "" {
 				return nil, fmt.Errorf("missing cookie for quark driver")
 			}
-			dirCacheTTL, _ := time.ParseDuration(params["dir_cache_ttl"])
-			if dirCacheTTL <= 0 {
-				dirCacheTTL = 60 * time.Second
-			}
-			return NewDriver(cookie, params["root_path"], dirCacheTTL), nil
+			return NewDriver(cookie, params["root_path"]), nil
 		},
 		Params: []drivers.ParamSpec{
 			{Key: "cookie", Required: true, Help: "Quark cookie string"},
 			{Key: "root_path", Help: "Remote root folder path", Default: "/"},
-			{Key: "dir_cache_ttl", Help: "Directory cache TTL (e.g. 30s, 5m)", Default: "60s"},
 		},
 		RootKey:       "root_path",
 		CredentialKey: "cookie",
 	})
 }
 
-func NewDriver(cookie, rootPath string, dirCacheTTL time.Duration) *QuarkDriver {
+func NewDriver(cookie, rootPath string) *QuarkDriver {
 	return &QuarkDriver{
 		cl:       newClient(cookie),
-		cache:    newCacheManager(dirCacheTTL),
 		cookie:   cookie,
 		rootPath: rootPath,
 	}
@@ -95,10 +89,6 @@ func (d *QuarkDriver) Drop(ctx context.Context) error {
 }
 
 func (d *QuarkDriver) List(ctx context.Context, parentID string) ([]drivers.Entry, error) {
-	if files, ok := d.cache.getDir(parentID); ok {
-		return toEntries(files), nil
-	}
-
 	size := 100
 	var firstResp sortResp
 	err := d.cl.request(http.MethodGet, "/file/sort", map[string]string{
@@ -158,7 +148,6 @@ func (d *QuarkDriver) List(ctx context.Context, parentID string) ([]drivers.Entr
 		}
 	}
 
-	d.cache.setDir(parentID, allFiles)
 	return toEntries(allFiles), nil
 }
 
@@ -180,13 +169,13 @@ func (d *QuarkDriver) Read(ctx context.Context, entry drivers.Entry, offset, siz
 
 	resp, err := d.cl.doDownload(req)
 	if err != nil {
-		d.cache.invalidateURL(fid)
+		d.invalidateURL(fid)
 		return nil, fmt.Errorf("read: download: %w", err)
 	}
 
 	if resp.StatusCode == http.StatusForbidden {
 		resp.Body.Close()
-		d.cache.invalidateURL(fid)
+		d.invalidateURL(fid)
 		return d.Read(ctx, entry, offset, size)
 	}
 
@@ -198,8 +187,26 @@ func (d *QuarkDriver) Read(ctx context.Context, entry drivers.Entry, offset, siz
 	return resp.Body, nil
 }
 
+func (d *QuarkDriver) getURL(fid string) (string, bool) {
+	if val, ok := d.urlCache.Load(fid); ok {
+		cu := val.(cachedURL)
+		if time.Now().Before(cu.expiry) {
+			return cu.url, true
+		}
+	}
+	return "", false
+}
+
+func (d *QuarkDriver) setURL(fid, url string) {
+	d.urlCache.Store(fid, cachedURL{url: url, expiry: time.Now().Add(10 * time.Minute)})
+}
+
+func (d *QuarkDriver) invalidateURL(fid string) {
+	d.urlCache.Delete(fid)
+}
+
 func (d *QuarkDriver) getDownloadURL(fid string) (string, error) {
-	if url, ok := d.cache.getURL(fid); ok {
+	if url, ok := d.getURL(fid); ok {
 		return url, nil
 	}
 
@@ -218,7 +225,7 @@ func (d *QuarkDriver) getDownloadURL(fid string) (string, error) {
 		return "", fmt.Errorf("no download url found")
 	}
 	url := resp.Data[0].DownloadUrl
-	d.cache.setURL(fid, url)
+	d.setURL(fid, url)
 	return url, nil
 }
 
@@ -252,7 +259,6 @@ func (d *QuarkDriver) Mkdir(ctx context.Context, parentID, name string) (drivers
 	if rerr := apiError(resp.resp); rerr != nil {
 		return drivers.Entry{}, rerr
 	}
-	d.cache.removeDir(parentID)
 	return drivers.Entry{
 		ID:    resp.Data.Fid,
 		Name:  name,
@@ -275,10 +281,6 @@ func (d *QuarkDriver) Move(ctx context.Context, entry drivers.Entry, dstParentID
 	if rerr := apiError(resp); rerr != nil {
 		return rerr
 	}
-	if entry.ParentID != "" {
-		d.cache.removeDir(entry.ParentID)
-	}
-	d.cache.removeDir(dstParentID)
 	return nil
 }
 
@@ -294,9 +296,6 @@ func (d *QuarkDriver) Rename(ctx context.Context, entry drivers.Entry, newName s
 	}
 	if rerr := apiError(resp); rerr != nil {
 		return rerr
-	}
-	if entry.ParentID != "" {
-		d.cache.removeDir(entry.ParentID)
 	}
 	return nil
 }
@@ -331,7 +330,6 @@ func (d *QuarkDriver) BatchRemove(ctx context.Context, entries []drivers.Entry) 
 
 func (d *QuarkDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drivers.Entry, error) {
 	d.deleteExistingFileByName(parentID, name)
-	defer d.cache.removeDir(parentID)
 
 	mtime := time.Now()
 	if mt, ok := drivers.MtimeFromContext(ctx); ok {
