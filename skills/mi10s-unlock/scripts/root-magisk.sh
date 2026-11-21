@@ -46,8 +46,9 @@ require_device() {
   [ "$("$ADB" get-state 2>/dev/null)" = "device" ] || die "no adb device"
 }
 
-# V816.0.4.0.TGACNXM (build prop) and OS1.0.4.0.TGACNXM (rom filename) are the same build
-norm() { echo "$1" | sed -e 's/^V816\./0./' -e 's/^OS1\.0\./0./'; }
+# V816.0.4.0.TGACNXM (build prop) and OS1.0.4.0.TGACNXM (rom filename) are the same build:
+# "V816." and "OS1." are the HyperOS prefixes, everything after them must match
+norm() { echo "$1" | sed -e 's/^V816\.//' -e 's/^OS1\.//'; }
 
 detect_part() {
   if "$ADB" shell "ls /dev/block/by-name/init_boot_a" >/dev/null 2>&1; then
@@ -63,15 +64,20 @@ prep() {
   [ -f "$ROM" ] || die "no such file: $ROM"
   mkdir -p "$DIR"
 
-  local build rom_build
+  # a Xiaomi fastboot rom is one top-level dir: <codename>_images_<version>_<android>/
+  local prefix rom_build build
+  prefix=$(tar -tzf "$ROM" 2>/dev/null | head -1 | cut -d/ -f1)
+  rom_build=$(echo "$prefix" | grep -oE '(OS|V)[0-9.]+[A-Z]+XM' | head -1 || true)
   build=$(g ro.build.version.incremental)
-  rom_build=$(basename "$ROM" | grep -oE '(OS[0-9.]+|V[0-9.]+)\.[A-Z]+XM' | head -1 || true)
+
   say "build check"
   echo "device : $build"
-  echo "rom    : ${rom_build:-unknown}"
-  if [ -n "$rom_build" ] && [ "$(norm "$build")" != "$(norm "$rom_build")" ]; then
-    die "ROM does not match the device build - flashing it would brick the boot image"
+  echo "rom    : ${rom_build:-unknown}  ($prefix)"
+  if [ -z "$rom_build" ]; then
+    die "cannot read the build version from the archive - refusing to guess"
   fi
+  [ "$(norm "$build")" = "$(norm "$rom_build")" ] \
+    || die "ROM does not match the device build - flashing it would brick the boot image"
 
   if [ -n "$ROM_MD5" ]; then
     say "md5"
@@ -83,8 +89,11 @@ prep() {
 
   local part
   part=$(detect_part)
-  say "extracting images/$part.img"
-  tar -xzf "$ROM" -C "$DIR" "images/$part.img"
+  say "extracting $prefix/images/$part.img"
+  tar -xzf "$ROM" -C "$DIR" "$prefix/images/$part.img"
+  mkdir -p "$DIR/images"
+  mv -f "$DIR/$prefix/images/$part.img" "$DIR/images/$part.img"
+  rm -rf "$DIR/$prefix"
   ls -l "$DIR/images/$part.img"
   shasum -a 256 "$DIR/images/$part.img" 2>/dev/null || sha256sum "$DIR/images/$part.img"
 
