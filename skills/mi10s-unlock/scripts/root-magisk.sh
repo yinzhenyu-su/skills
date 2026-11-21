@@ -168,7 +168,15 @@ verify() {
   v=$("$ADB" shell su -v 2>/dev/null | tr -d '\r' || true)
   [ -n "$v" ] || die "no su - root is not active"
   echo "su version : $v"
-  "$ADB" shell "su -c id" | tr -d '\r'
+
+  # Magisk v31+ has no su prompt: apps are granted from the Superuser tab.
+  # Right after the first boot the shell can still be rejected; opening the
+  # Magisk app once lets its policy db settle, then su -c works.
+  if "$ADB" shell "su -c id" 2>/dev/null | grep -q "uid=0"; then
+    echo "shell root : ok"
+  else
+    echo "shell root : rejected - open the Magisk app once, then retry"
+  fi
 }
 
 restore() {
