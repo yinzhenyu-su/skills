@@ -15,7 +15,8 @@ Skills monorepo — collection of AI agent skills for OpenCode. Contains CLI too
 │   ├── bili/          # Tampermonkey 视频下载脚本
 │   ├── joke-learner/  # 喜剧解构创作引擎 (skill definition)
 │   ├── trending/      # 热搜榜聚合 (skill definition)
-│   └── xiaomi-tts/    # MiMo TTS 语音合成 (skill definition)
+│   ├── xiaomi-tts/    # MiMo TTS 语音合成 (skill definition)
+│   └── mi10s-unlock/  # 小米 10S 解锁 BL + Magisk root (skill definition)
 ├── openspec/
 │   ├── specs/         # OpenSpec 详细规格文档
 │   └── changes/       # 进行中的变更
@@ -31,6 +32,7 @@ Skills monorepo — collection of AI agent skills for OpenCode. Contains CLI too
 | tampermonkey 脚本 | `skills/bili/` | Single JS userscript |
 | 热搜榜 | `skills/trending/` | Skill definition only |
 | TTS | `skills/xiaomi-tts/` | Shell script skill |
+| 小米解锁 BL / root | `skills/mi10s-unlock/` | Skill + scripts（探测 / 绑定绕过 / 跨平台解锁 / Magisk） |
 | OpenSpec 文档 | `openspec/` | Specs + changes + archive |
 
 ## CONVENTIONS
