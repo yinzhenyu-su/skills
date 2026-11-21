@@ -77,7 +77,32 @@ HyperOS 给解锁加了一道"社区资格"门槛（5 级 + 实名 + 答题）�
 
 `pwd=0` 表示本次会话没走过密码校验，`/sts` 会直接 `401`。换成账号+密码+短信的浏览器登录后 `pwd` 才有效。这在 MiUnlockTool 的 issue 里也是高频坑（#135 / #142 / #144）。
 
-## 7. 风险与红线
+## 7. 刷完之后：应用拿不到 root
+
+Magisk v31 取消了授权弹窗，改成"按应用预先授权"，于是常见症状是**应用明明装了却显示未 root**，日志里是：
+
+```
+W Magisk : su: request rejected (10266)
+```
+
+排查顺序：
+
+1. Magisk → 超级用户 页看有没有该应用的条目，有就打开开关
+2. 没有条目 → 先打开一次 Magisk App（策略库初始化），再回应用请求一次
+3. 检查设置里的「遵守排除列表」是否把该应用排除了、「限制超级用户权能」是否开着
+
+要绕过 UI 直接授权，先拿到 uid（`pm list packages -U | grep <pkg>`），再写策略表：
+
+```bash
+# 注意 v31 的 policies 只有 uid 维度：uid|policy|until|logging|notification
+# policy: 1=拒绝 2=允许
+su -c '/debug_ramdisk/magisk --sqlite "INSERT OR REPLACE INTO policies (uid,policy,until,logging,notification) VALUES (<uid>,2,0,1,1)"'
+```
+
+> **必须重启才生效**：magiskd 启动时把策略读进内存，直接改 DB 不会被识别。
+> **uid 是复用的**：卸载应用后对应记录不会自动清掉，后来者若占用同一 uid 会白拿 root，记得删。
+
+## 8. 风险与红线
 
 - **只能对你自己拥有的设备操作。**
 - 解锁会**清空全部数据**，且不可逆；先备份。
