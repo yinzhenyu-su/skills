@@ -1,0 +1,11 @@
+# 抓包结果里有活的会话 Cookie，绝不入库
+capture.json
+*.log
+
+# 刷机产物与固件（体积大、含设备专属信息）
+*.img
+*.apk
+*.tgz
+*.zip
+__pycache__/
+*.pyc
